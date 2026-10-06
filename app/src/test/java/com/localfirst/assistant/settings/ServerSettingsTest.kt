@@ -16,6 +16,25 @@ class ServerSettingsTest {
     }
 
     @Test
+    fun allowsABlankSearchAddressAndRejectsABadOne() {
+        assertNull(
+            ServerSettings(
+                baseUrl = "http://127.0.0.1:11434/v1",
+                model = "llama3.2",
+                searchBaseUrl = "  ",
+            ).validate(),
+        )
+        assertEquals(
+            "Search service address must start with http:// or https://.",
+            ServerSettings(
+                baseUrl = "http://127.0.0.1:11434/v1",
+                model = "llama3.2",
+                searchBaseUrl = "10.0.2.2:8765",
+            ).validate(),
+        )
+    }
+
+    @Test
     fun rejectsAMissingModelAndABadTimeout() {
         assertEquals(
             "Enter the model name.",

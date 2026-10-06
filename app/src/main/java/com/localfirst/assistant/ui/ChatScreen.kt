@@ -281,6 +281,7 @@ private fun SettingsPage(
     var model by remember(initial) { mutableStateOf(initial.model) }
     var apiKey by remember(initial) { mutableStateOf(initial.apiKey) }
     var timeout by remember(initial) { mutableStateOf(initial.timeoutSeconds.toString()) }
+    var searchUrl by remember(initial) { mutableStateOf(initial.searchBaseUrl) }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(modifier = Modifier.fillMaxSize()) {
@@ -330,6 +331,21 @@ private fun SettingsPage(
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 )
+                Text("Search", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = "Separate from the model. The phone POSTs /search to this address. Leave blank to keep chat and volume without web search.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = searchUrl,
+                    onValueChange = { searchUrl = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Search service address") },
+                    placeholder = { Text(ServerSettings.DEFAULT_SEARCH_BASE_URL) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                )
                 if (error != null) {
                     Text(text = error, color = MaterialTheme.colorScheme.error)
                 }
@@ -342,6 +358,7 @@ private fun SettingsPage(
                                     model = model,
                                     apiKey = apiKey,
                                     timeoutSeconds = timeout.toIntOrNull() ?: -1,
+                                    searchBaseUrl = searchUrl,
                                 ),
                             )
                         },

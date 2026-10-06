@@ -91,6 +91,10 @@ The purpose is to prove that:
 
 Do not add a large tool library yet.
 
+E. Web search grounding
+
+`web_search` is a second registered tool on the same registry. The phone owns the tool call. A separate PC HTTP service runs the search. That service is not the LLM endpoint. See section 6b.
+
 
 ## 4. Conversation Architecture
 
@@ -173,15 +177,49 @@ Do not couple the rest of the application to llama.cpp, Ollama, OpenAI-compatibl
 An OpenAI-compatible local endpoint is acceptable for the first implementation if convenient.
 
 
+## 6b. Web grounding
+
+Web search is provider-agnostic and self-hosted. It is not part of ModelProvider.
+
+Flow:
+
+User asks for something on the web
+→ conversation engine sends tools, including web_search, to the model
+→ model returns a tool call
+→ Android executes web_search
+→ Android POSTs to the PC search service (its own URL, not the LLM URL)
+→ that service calls SearchProvider.search
+→ optional PageFetcher, only when the tool call sets fetch_pages
+→ tool result (titles, URLs, snippets, and page text when fetched) goes back into the conversation
+→ the model answers in the same turn
+
+Desktop contracts:
+
+SearchProvider
+    search(query, options) → SearchResults
+    each hit: title, url, snippet, optional score
+
+PageFetcher
+    fetch(url) → page text for citations
+
+The default SearchProvider is SearXNG. The default PageFetcher is Crawl4AI, and it runs only when a call opts in. Search snippets do not require a crawl.
+
+The LLM client must not import SearXNG or Crawl4AI. The search service must not call the model. Local models, cloud model APIs, and search backends swap independently.
+
+Do not implement paid hosted search (Bing, Google, SerpAPI, Tavily, or similar) in this service. A later SearchProvider can be added beside SearXNG without changing the phone's tool or the model client.
+
+Voice, memory, model routing, and other PC tools stay out of scope.
+
+
 ## 7. PC-Side Requirements
 
 Keep the PC-side implementation minimal.
 
-It only needs to provide an LLM endpoint.
+The model server only needs to provide an LLM endpoint. Web search, when used, is a second process with no conversation logic (section 6b).
 
 Do NOT build:
-- Assistant logic on the PC
-- Android tool logic on the PC
+- Assistant or conversation logic on the PC
+- Tool registration on the PC (the phone owns the tool list)
 - Speech processing
 - Image generation
 - Video generation
@@ -303,8 +341,9 @@ The same tool architecture may later expose remote PC capabilities such as:
 - Video generation
 - Image editing
 - File processing
-- Local search
 - Specialized AI models
+
+Web search grounding is specified in section 6b. It is the only PC capability implemented here.
 
 Example future call:
 
@@ -316,7 +355,7 @@ Android
 → generate
 → return result
 
-Do not implement this now.
+Do not implement image, video, file, or specialized-model tools now.
 
 
 ### Dynamic Model Management

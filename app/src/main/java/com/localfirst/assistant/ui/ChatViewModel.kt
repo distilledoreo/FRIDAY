@@ -10,11 +10,14 @@ import com.localfirst.assistant.conversation.TurnOutcome
 import com.localfirst.assistant.model.ModelProvider
 import com.localfirst.assistant.model.OpenAiCompatibleConfig
 import com.localfirst.assistant.model.OpenAiCompatibleModelProvider
+import com.localfirst.assistant.search.HttpSearchService
+import com.localfirst.assistant.search.SearchServiceConfig
 import com.localfirst.assistant.settings.ServerSettings
 import com.localfirst.assistant.settings.ServerSettingsStore
 import com.localfirst.assistant.tools.AndroidMediaVolume
 import com.localfirst.assistant.tools.SetMediaVolumeTool
 import com.localfirst.assistant.tools.ToolRegistry
+import com.localfirst.assistant.tools.WebSearchTool
 import android.app.Application
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,6 +41,7 @@ class ChatViewModel(
     private val settingsStore: ServerSettingsStore,
     toolRegistry: ToolRegistry,
     private val providers: (ServerSettings) -> ModelProvider,
+    private val onSettingsSaved: (ServerSettings) -> Unit = {},
 ) : ViewModel() {
     private val session = ConversationSession(
         modelProvider = providers(settingsStore.load()),
@@ -76,9 +80,11 @@ class ChatViewModel(
             baseUrl = settings.baseUrl.trim(),
             model = settings.model.trim(),
             apiKey = settings.apiKey.trim(),
+            searchBaseUrl = settings.searchBaseUrl.trim(),
         )
         settingsStore.save(normalized)
         session.modelProvider = providers(normalized)
+        onSettingsSaved(normalized)
         _state.update {
             it.copy(
                 settings = normalized,
@@ -237,14 +243,26 @@ class ChatViewModelFactory(
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        val settingsStore = ServerSettingsStore(app)
         val volume = AndroidMediaVolume(app)
+        val search = HttpSearchService(settingsStore.load().toSearchConfig())
         val registry = ToolRegistry().apply {
             register(SetMediaVolumeTool { level -> volume.setPercent(level) })
+            register(WebSearchTool(search))
         }
         return ChatViewModel(
-            settingsStore = ServerSettingsStore(app),
+            settingsStore = settingsStore,
             toolRegistry = registry,
             providers = ChatViewModel.Companion::openAiProvider,
+            onSettingsSaved = { saved -> search.config = saved.toSearchConfig() },
         ) as T
     }
+}
+
+internal fun ServerSettings.toSearchConfig(): SearchServiceConfig {
+    return SearchServiceConfig(
+        baseUrl = searchBaseUrl.trim(),
+        connectTimeoutMillis = 10_000,
+        readTimeoutMillis = 60_000,
+    )
 }

@@ -15,3 +15,7 @@ local.properties
 *.class
 *.log
 .kotlin/
+__pycache__/
+*.pyc
+.venv/
+desktop/search_service/.venv/

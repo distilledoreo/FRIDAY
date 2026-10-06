@@ -1,0 +1,14 @@
+# Minimal SearXNG settings for this assistant.
+# JSON must be listed or GET /search?format=json returns HTTP 403.
+use_default_settings: true
+
+server:
+  secret_key: "local-android-assistant"
+  limiter: false
+  image_proxy: false
+
+search:
+  formats:
+    - html
+    - json
+  safe_search: 0
