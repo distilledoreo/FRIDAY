@@ -152,7 +152,7 @@ class OpenAiCompatibleModelProviderTest {
                 systemPrompt = "",
             )
             val failed = session.submitUserMessage("Hello") as TurnOutcome.Failed
-            assertTrue(failed.error.contains("did not return JSON"))
+            assertTrue(failed.error, failed.error.contains("did not return a JSON object"))
             assertEquals(listOf(Message.User("Hello")), session.snapshot())
         } finally {
             server.stop(0)

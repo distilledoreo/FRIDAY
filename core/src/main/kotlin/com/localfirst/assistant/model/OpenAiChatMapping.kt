@@ -83,7 +83,7 @@ internal fun parseChatCompletion(body: String): ModelResponse {
         throw ModelProviderException("The model server did not return JSON.")
     }
     if (root !is JsonObject) {
-        throw ModelProviderException("The model server returned an unexpected response.")
+        throw ModelProviderException("The model server did not return a JSON object.")
     }
     val errorMessage = errorMessage(root["error"])
     val choices = root["choices"] as? JsonArray

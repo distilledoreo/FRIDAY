@@ -138,7 +138,7 @@ class ConversationSessionTest {
         assertFalse(executed)
         val bad = retrySession.snapshot().filterIsInstance<Message.ToolResult>().single()
         assertFalse(bad.success)
-        assertTrue(bad.content.contains("not valid JSON"))
+        assertEquals("Tool arguments must be a JSON object.", bad.content)
     }
 
     @Test
