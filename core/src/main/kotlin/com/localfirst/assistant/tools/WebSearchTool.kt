@@ -43,6 +43,7 @@ class WebSearchTool(
             ToolExecutionResult(
                 success = true,
                 content = formatWebSearchResult(request.query, response),
+                sources = response.results.map { SourceLink(title = it.title.ifBlank { it.url }, url = it.url) },
             )
         } catch (e: CancellationException) {
             throw e

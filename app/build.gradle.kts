@@ -52,6 +52,7 @@ dependencies {
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons.core)
+    implementation(libs.markdown.renderer.m3)
 
     testImplementation(libs.junit)
 }

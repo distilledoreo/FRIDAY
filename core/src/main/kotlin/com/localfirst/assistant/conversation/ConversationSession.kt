@@ -17,10 +17,11 @@ class ConversationSession(
     val toolRegistry: ToolRegistry,
     val systemPrompt: String,
     private val engine: ConversationEngine = ConversationEngine(),
+    initialMessages: List<Message> = emptyList(),
 ) {
     var modelProvider: ModelProvider = modelProvider
 
-    private val messages = mutableListOf<Message>()
+    private val messages = initialMessages.toMutableList()
     private val mutex = Mutex()
 
     fun snapshot(): List<Message> = messages.toList()
@@ -35,13 +36,7 @@ class ConversationSession(
         }
         messages += Message.User(trimmed)
         onUpdate(messages.toList())
-        engine.continueTurn(
-            messages = messages,
-            modelProvider = modelProvider,
-            toolRegistry = toolRegistry,
-            systemPrompt = systemPrompt,
-            onUpdate = onUpdate,
-        )
+        runTurn(onUpdate)
     }
 
     /**
@@ -53,6 +48,50 @@ class ConversationSession(
         if (messages.isEmpty()) {
             return@withLock TurnOutcome.EmptyInput(messages.toList())
         }
+        runTurn(onUpdate)
+    }
+
+    /**
+     * Drops everything after the latest user message (the previous answer and
+     * any tool activity) and asks the model again.
+     */
+    suspend fun regenerate(onUpdate: (List<Message>) -> Unit = {}): TurnOutcome = mutex.withLock {
+        val lastUser = messages.indexOfLast { it is Message.User }
+        if (lastUser < 0) {
+            return@withLock TurnOutcome.EmptyInput(messages.toList())
+        }
+        truncateAfter(lastUser)
+        onUpdate(messages.toList())
+        runTurn(onUpdate)
+    }
+
+    /**
+     * Replaces the user message at [index] with [text], drops everything after
+     * it, and asks the model again. [index] refers to [snapshot].
+     */
+    suspend fun editUserMessage(
+        index: Int,
+        text: String,
+        onUpdate: (List<Message>) -> Unit = {},
+    ): TurnOutcome = mutex.withLock {
+        val trimmed = text.trim()
+        require(messages.getOrNull(index) is Message.User) { "Message $index is not a user message." }
+        if (trimmed.isEmpty()) {
+            return@withLock TurnOutcome.EmptyInput(messages.toList())
+        }
+        messages[index] = Message.User(trimmed)
+        truncateAfter(index)
+        onUpdate(messages.toList())
+        runTurn(onUpdate)
+    }
+
+    suspend fun clear() {
+        mutex.withLock {
+            messages.clear()
+        }
+    }
+
+    private suspend fun runTurn(onUpdate: (List<Message>) -> Unit): TurnOutcome =
         engine.continueTurn(
             messages = messages,
             modelProvider = modelProvider,
@@ -60,11 +99,10 @@ class ConversationSession(
             systemPrompt = systemPrompt,
             onUpdate = onUpdate,
         )
-    }
 
-    suspend fun clear() {
-        mutex.withLock {
-            messages.clear()
+    private fun truncateAfter(index: Int) {
+        while (messages.size > index + 1) {
+            messages.removeAt(messages.lastIndex)
         }
     }
 }

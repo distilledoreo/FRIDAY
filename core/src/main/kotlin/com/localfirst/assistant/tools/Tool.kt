@@ -36,7 +36,15 @@ data class ToolDefinition(
 
 data class ToolExecutionResult(
     val success: Boolean,
+    /** What the model reads. */
     val content: String,
+    /** Links the UI can show with the result, such as search sources. Not sent to the model. */
+    val sources: List<SourceLink> = emptyList(),
+)
+
+data class SourceLink(
+    val title: String,
+    val url: String,
 )
 
 /**

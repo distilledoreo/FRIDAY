@@ -1,5 +1,7 @@
 package com.localfirst.assistant.conversation
 
+import com.localfirst.assistant.tools.SourceLink
+
 /**
  * Explicit conversation entries. Tool activity is never stored as a user message.
  */
@@ -39,6 +41,8 @@ sealed interface Message {
         val name: String,
         val content: String,
         val success: Boolean,
+        /** Display-only links (for example, search sources). Not sent to the model. */
+        val sources: List<SourceLink> = emptyList(),
     ) : Message {
         override val role: MessageRole = MessageRole.TOOL_RESULT
     }
