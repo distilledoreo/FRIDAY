@@ -136,6 +136,11 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.Bottom),
                 ) {
+                    state.pendingApproval?.let { approval ->
+                        item(key = "approval") {
+                            ApprovalCard(approval = approval, onAnswer = viewModel::answerApproval)
+                        }
+                    }
                     val error = state.error
                     if (error != null && !state.busy) {
                         item(key = "error") {

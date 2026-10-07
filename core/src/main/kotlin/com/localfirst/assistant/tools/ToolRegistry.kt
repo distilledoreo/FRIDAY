@@ -21,13 +21,13 @@ class ToolRegistry {
 
     fun definitions(): List<ToolDefinition> = tools.values.map { it.definition() }
 
-    suspend fun execute(call: ToolCall): ToolExecutionResult {
+    suspend fun execute(call: ToolCall, confirmer: ToolConfirmer? = null): ToolExecutionResult {
         val tool = tools[call.name]
             ?: return ToolExecutionResult(
                 success = false,
                 content = "Unknown tool '${call.name}'.",
             )
-        if (tool.requiresConfirmation) {
+        if (tool.requiresConfirmation && confirmer == null) {
             return ToolExecutionResult(
                 success = false,
                 content = "Tool '${tool.name}' requires confirmation before it can run.",
@@ -42,6 +42,15 @@ class ToolRegistry {
             )
         }
         return try {
+            if (tool.requiresConfirmation && confirmer != null) {
+                val prompt = tool.confirmationPrompt(arguments)
+                if (!confirmer.confirm(ConfirmationRequest(call.id, tool.name, prompt))) {
+                    return ToolExecutionResult(
+                        success = false,
+                        content = "The user declined: $prompt. Do not retry unless they ask again.",
+                    )
+                }
+            }
             tool.execute(arguments)
         } catch (e: CancellationException) {
             throw e

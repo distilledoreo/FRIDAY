@@ -1,5 +1,9 @@
 package com.localfirst.assistant.ui
 
+import android.content.Intent
+import android.os.Build
+import android.provider.Settings
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,6 +15,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -21,10 +26,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import com.localfirst.assistant.phone.MediaListenerService
 import com.localfirst.assistant.settings.ServerSettings
 
 @Composable
@@ -112,6 +119,7 @@ internal fun SettingsPage(
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                 )
+                PhoneAccessSection()
                 if (error != null) {
                     Text(text = error, color = MaterialTheme.colorScheme.error)
                 }
@@ -138,5 +146,43 @@ internal fun SettingsPage(
                 }
             }
         }
+    }
+}
+
+/**
+ * Notification access is a special permission the app can't request with a
+ * dialog; it only links to the system screen. Other permissions are asked for
+ * the first time a tool needs them.
+ */
+@Composable
+private fun PhoneAccessSection() {
+    val context = LocalContext.current
+    var enabled by remember { mutableStateOf(MediaListenerService.isEnabled(context)) }
+    LifecycleResumeEffect(Unit) {
+        enabled = MediaListenerService.isEnabled(context)
+        onPauseOrDispose { }
+    }
+    Text("Phone access", style = MaterialTheme.typography.titleMedium)
+    Text(
+        text = "Contacts, calls, texts, and calendar are requested the first time you ask for them. " +
+            "Calls and texts always ask for your approval in the chat. " +
+            "Notification access lets the assistant see what's playing (for example in Spotify) and control that player directly; " +
+            "it is used only for media.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    OutlinedButton(
+        onClick = {
+            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
+                    .putExtra(Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME, MediaListenerService.component(context).flattenToString())
+            } else {
+                Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+            }
+            runCatching { context.startActivity(intent) }
+                .onFailure { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+        },
+    ) {
+        Text(if (enabled) "Notification access: allowed" else "Allow notification access")
     }
 }

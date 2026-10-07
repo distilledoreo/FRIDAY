@@ -20,13 +20,18 @@ import com.localfirst.assistant.search.HttpSearchService
 import com.localfirst.assistant.search.SearchServiceConfig
 import com.localfirst.assistant.settings.ServerSettings
 import com.localfirst.assistant.settings.ServerSettingsStore
+import com.localfirst.assistant.phone.AndroidPhoneActions
 import com.localfirst.assistant.tools.AndroidMediaVolume
 import com.localfirst.assistant.tools.SetMediaVolumeTool
+import com.localfirst.assistant.tools.ToolConfirmer
 import com.localfirst.assistant.tools.ToolRegistry
 import com.localfirst.assistant.tools.WebSearchTool
+import com.localfirst.assistant.tools.phone.phoneTools
 import java.io.File
+import java.time.ZonedDateTime
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -51,7 +56,11 @@ data class ChatUiState(
     val settings: ServerSettings = ServerSettings(),
     val showSettings: Boolean = false,
     val settingsError: String? = null,
+    /** A tool call waiting for the user to approve or deny it. */
+    val pendingApproval: PendingApproval? = null,
 )
+
+data class PendingApproval(val toolName: String, val prompt: String)
 
 class ChatViewModel(
     private val settingsStore: ServerSettingsStore,
@@ -61,11 +70,25 @@ class ChatViewModel(
     private val onSettingsSaved: (ServerSettings) -> Unit = {},
     private val clock: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
+    private var approval: CompletableDeferred<Boolean>? = null
+
+    /** Suspends the turn until the user answers the approval card. Stop cancels it. */
+    private val confirmer = ToolConfirmer { request ->
+        val answer = CompletableDeferred<Boolean>()
+        approval = answer
+        _state.update { it.copy(pendingApproval = PendingApproval(request.toolName, request.prompt)) }
+        try {
+            answer.await()
+        } finally {
+            approval = null
+            _state.update { it.copy(pendingApproval = null) }
+        }
+    }
+
     private var provider: ModelProvider = providers(settingsStore.load())
     private var session = newSession(emptyList())
     private var turnJob: Job? = null
     private var createdAt: Long = 0
-
     private val _state = MutableStateFlow(ChatUiState(settings = settingsStore.load()))
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
@@ -114,6 +137,10 @@ class ChatViewModel(
         turnJob?.cancel()
     }
 
+    fun answerApproval(approved: Boolean) {
+        approval?.complete(approved)
+    }
+
     fun startEditing(index: Int) {
         val message = _state.value.messages.getOrNull(index) as? Message.User ?: return
         if (_state.value.busy) return
@@ -126,6 +153,7 @@ class ChatViewModel(
 
     private fun runTurn(block: suspend (onUpdate: (List<Message>) -> Unit) -> TurnOutcome) {
         val isFirstExchange = session.snapshot().none { it is Message.Assistant }
+        session.systemPrompt = AssistantPrompts.system(ZonedDateTime.now())
         _state.update { it.copy(busy = true, error = null) }
         turnJob = viewModelScope.launch {
             var outcome: TurnOutcome? = null
@@ -273,8 +301,9 @@ class ChatViewModel(
     private fun newSession(messages: List<Message>) = ConversationSession(
         modelProvider = provider,
         toolRegistry = toolRegistry,
-        systemPrompt = AssistantPrompts.SYSTEM,
+        systemPrompt = AssistantPrompts.system(ZonedDateTime.now()),
         initialMessages = messages,
+        confirmer = confirmer,
     )
 
     // ---- settings ------------------------------------------------------------
@@ -338,6 +367,7 @@ class ChatViewModelFactory(
         val registry = ToolRegistry().apply {
             register(SetMediaVolumeTool { level -> volume.setPercent(level) })
             register(WebSearchTool(search))
+            phoneTools(AndroidPhoneActions(app)).forEach(::register)
         }
         return ChatViewModel(
             settingsStore = settingsStore,

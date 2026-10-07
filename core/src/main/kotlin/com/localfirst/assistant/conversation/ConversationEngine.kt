@@ -3,6 +3,7 @@ package com.localfirst.assistant.conversation
 import com.localfirst.assistant.model.ModelProvider
 import com.localfirst.assistant.model.ModelProviderException
 import com.localfirst.assistant.model.ModelResponse
+import com.localfirst.assistant.tools.ToolConfirmer
 import com.localfirst.assistant.tools.ToolRegistry
 import kotlinx.coroutines.CancellationException
 
@@ -29,6 +30,7 @@ class ConversationEngine(
         toolRegistry: ToolRegistry,
         systemPrompt: String,
         onUpdate: (List<Message>) -> Unit = {},
+        confirmer: ToolConfirmer? = null,
     ): TurnOutcome {
         var rounds = 0
         while (true) {
@@ -40,10 +42,10 @@ class ConversationEngine(
                 ) { delta ->
                     // Providers may deliver deltas on their own thread.
                     val soFar = synchronized(partial) { partial.append(delta).toString() }
-                    onUpdate(messages.toList() + Message.Assistant(soFar))
+                    onUpdate(messages.toList() + Message.Assistant(visibleText(soFar)))
                 }
             } catch (e: CancellationException) {
-                val text = synchronized(partial) { partial.toString() }.trim()
+                val text = visibleText(synchronized(partial) { partial.toString() })
                 if (text.isNotEmpty()) {
                     messages += Message.Assistant(text)
                 }
@@ -65,14 +67,14 @@ class ConversationEngine(
 
             when (response) {
                 is ModelResponse.TextResponse -> {
-                    messages += Message.Assistant(response.text)
+                    messages += Message.Assistant(visibleText(response.text))
                     onUpdate(messages.toList())
                     return TurnOutcome.Completed(messages.toList())
                 }
 
                 is ModelResponse.ToolCallResponse -> {
                     if (response.calls.isEmpty()) {
-                        messages += Message.Assistant(response.text.orEmpty())
+                        messages += Message.Assistant(visibleText(response.text.orEmpty()))
                         onUpdate(messages.toList())
                         return TurnOutcome.Completed(messages.toList())
                     }
@@ -84,7 +86,7 @@ class ConversationEngine(
                         )
                     }
                     rounds += 1
-                    val text = response.text?.trim().orEmpty()
+                    val text = visibleText(response.text.orEmpty())
                     if (text.isNotEmpty()) {
                         messages += Message.Assistant(text)
                     }
@@ -101,7 +103,7 @@ class ConversationEngine(
                     onUpdate(messages.toList())
                     for ((index, call) in response.calls.withIndex()) {
                         val result = try {
-                            toolRegistry.execute(call)
+                            toolRegistry.execute(call, confirmer)
                         } catch (e: CancellationException) {
                             for (unanswered in response.calls.drop(index)) {
                                 messages += Message.ToolResult(
@@ -134,6 +136,20 @@ class ConversationEngine(
     }
 
     companion object {
+        /**
+         * Hides reasoning markup some models emit even with reasoning off:
+         * text before a closing `</think>` (often a draft the model then repeats)
+         * and anything after an unclosed `<think>`.
+         */
+        fun visibleText(raw: String): String {
+            var text = raw
+            if (text.contains(THINK_CLOSE)) text = text.substringAfterLast(THINK_CLOSE)
+            if (text.contains(THINK_OPEN)) text = text.substringBefore(THINK_OPEN)
+            return text.trim()
+        }
+
+        private const val THINK_OPEN = "<think>"
+        private const val THINK_CLOSE = "</think>"
         const val DEFAULT_MAX_TOOL_ROUNDS = 4
         const val STOPPED_RESULT = "Stopped by the user before this tool finished."
     }

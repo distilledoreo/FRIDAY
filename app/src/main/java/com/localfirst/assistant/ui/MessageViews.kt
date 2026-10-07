@@ -27,12 +27,23 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.ExitToApp
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -154,12 +165,7 @@ private fun ToolStepRow(step: ToolStep) {
     var expanded by remember(step.callId) { mutableStateOf(false) }
     Column {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            val icon = when {
-                step.state == ToolStepState.FAILED -> Icons.Filled.Warning
-                step.name == "web_search" -> Icons.Filled.Search
-                step.name == "set_media_volume" -> AppIcons.VolumeUp
-                else -> Icons.Filled.Build
-            }
+            val icon = if (step.state == ToolStepState.FAILED) Icons.Filled.Warning else toolIcon(step.name)
             val tint = if (step.state == ToolStepState.FAILED) {
                 MaterialTheme.colorScheme.error
             } else {
@@ -251,6 +257,62 @@ private fun SourceRow(number: Int, source: SourceLink) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
             )
+        }
+    }
+}
+
+internal fun toolIcon(name: String): ImageVector = when (name) {
+    "web_search" -> Icons.Filled.Search
+    "set_media_volume" -> AppIcons.VolumeUp
+    "open_app" -> Icons.Filled.ExitToApp
+    "open_url" -> Icons.Filled.Share
+    "open_maps" -> Icons.Filled.Place
+    "media_control", "play_music", "now_playing" -> Icons.Filled.PlayArrow
+    "set_alarm", "set_timer" -> Icons.Filled.Notifications
+    "flashlight" -> AppIcons.Flashlight
+    "battery_status" -> Icons.Filled.Info
+    "search_contacts" -> Icons.Filled.Person
+    "place_call" -> Icons.Filled.Call
+    "send_text" -> Icons.Filled.Email
+    "add_calendar_event", "upcoming_events" -> Icons.Filled.DateRange
+    else -> Icons.Filled.Build
+}
+
+/** Asks the user to approve a tool call, such as a phone call or a text. */
+@Composable
+internal fun ApprovalCard(approval: PendingApproval, onAnswer: (Boolean) -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    toolIcon(approval.toolName),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    text = "Allow this?",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+            Text(
+                text = approval.prompt,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                OutlinedButton(onClick = { onAnswer(false) }) { Text("Deny") }
+                Button(onClick = { onAnswer(true) }) { Text("Approve") }
+            }
         }
     }
 }
