@@ -81,6 +81,7 @@ class ChatViewModel(
             model = settings.model.trim(),
             apiKey = settings.apiKey.trim(),
             searchBaseUrl = settings.searchBaseUrl.trim(),
+            searchApiKey = settings.searchApiKey.trim(),
         )
         settingsStore.save(normalized)
         session.modelProvider = providers(normalized)
@@ -262,6 +263,7 @@ class ChatViewModelFactory(
 internal fun ServerSettings.toSearchConfig(): SearchServiceConfig {
     return SearchServiceConfig(
         baseUrl = searchBaseUrl.trim(),
+        apiKey = searchApiKey.trim().ifEmpty { null },
         connectTimeoutMillis = 10_000,
         readTimeoutMillis = 60_000,
     )

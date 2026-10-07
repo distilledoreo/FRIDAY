@@ -282,6 +282,7 @@ private fun SettingsPage(
     var apiKey by remember(initial) { mutableStateOf(initial.apiKey) }
     var timeout by remember(initial) { mutableStateOf(initial.timeoutSeconds.toString()) }
     var searchUrl by remember(initial) { mutableStateOf(initial.searchBaseUrl) }
+    var searchApiKey by remember(initial) { mutableStateOf(initial.searchApiKey) }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(modifier = Modifier.fillMaxSize()) {
@@ -346,6 +347,14 @@ private fun SettingsPage(
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 )
+                OutlinedTextField(
+                    value = searchApiKey,
+                    onValueChange = { searchApiKey = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Search API key (optional)") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                )
                 if (error != null) {
                     Text(text = error, color = MaterialTheme.colorScheme.error)
                 }
@@ -359,6 +368,7 @@ private fun SettingsPage(
                                     apiKey = apiKey,
                                     timeoutSeconds = timeout.toIntOrNull() ?: -1,
                                     searchBaseUrl = searchUrl,
+                                    searchApiKey = searchApiKey,
                                 ),
                             )
                         },

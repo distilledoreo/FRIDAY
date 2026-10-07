@@ -86,6 +86,10 @@ class HttpSearchService(
             doOutput = true
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
             setRequestProperty("Accept", "application/json")
+            val key = current.apiKey?.trim().orEmpty()
+            if (key.isNotEmpty()) {
+                setRequestProperty("Authorization", "Bearer $key")
+            }
         }
     }
 }

@@ -41,6 +41,7 @@ Run any server that implements `POST {base}/chat/completions`. In the app, open 
 - **API key:** leave blank unless the server requires a bearer token.
 - **Timeout:** how long a single completion may take. Default is 90 seconds. Connecting gives up after 10 seconds so an unreachable PC fails faster than a slow generation.
 - **Search service address:** optional root of the desktop search service, not the model URL. The app POSTs `{address}/search`. The emulator default is `http://10.0.2.2:8765`. Leave it blank to keep chat and volume without web search.
+- **Search API key:** optional. Sent as `Authorization: Bearer <key>` on search requests. Separate from the model's API key, so the two services can live on different hosts.
 
 Examples:
 
@@ -88,6 +89,7 @@ How to run SearXNG and the service is in [desktop/search_service/README.md](desk
 | Where | Knob | Default | Meaning |
 | --- | --- | --- | --- |
 | Phone settings | Search service address | `http://10.0.2.2:8765` | Search service root. Independent of the model URL. |
+| Phone settings | Search API key | blank | Bearer token for the search service. Blank sends no `Authorization` header. |
 | Phone tool call | `fetch_pages` | false | Ask the PC to extract page text. |
 | PC | `SEARCH_HOST` / `SEARCH_PORT` | `127.0.0.1:8765` | Bind address. Use `0.0.0.0` for a phone on Wi-Fi. |
 | PC | `SEARCH_PROVIDER` | `searxng` | Only SearXNG is implemented. |
@@ -96,6 +98,8 @@ How to run SearXNG and the service is in [desktop/search_service/README.md](desk
 | PC | `PAGE_FETCH_LIMIT` | `2` | How many hits to fetch when `fetch_pages` is true. |
 
 A search-service failure becomes a failed tool result. The transcript stays.
+
+Any server that accepts that `POST /search` body and returns `provider`, `fetched`, and `results` (`title`, `url`, `snippet`, optional `score`, `page_text`, `page_error`) works. A single authenticated gateway can serve both chat and search: set **Server address** to `https://<host>/v1`, **Search service address** to `https://<host>`, and put the same token in both key fields.
 
 ## Try the two milestones
 

@@ -9,6 +9,8 @@ data class ServerSettings(
     val timeoutSeconds: Int = DEFAULT_TIMEOUT_SECONDS,
     /** PC search service root. Blank leaves web_search registered but unable to run. */
     val searchBaseUrl: String = DEFAULT_SEARCH_BASE_URL,
+    /** Bearer token for the search service. Blank sends no Authorization header. */
+    val searchApiKey: String = "",
 ) {
     fun validate(): String? {
         val url = baseUrl.trim()
@@ -49,6 +51,7 @@ class ServerSettingsStore(
         timeoutSeconds = prefs.getInt(KEY_TIMEOUT, ServerSettings.DEFAULT_TIMEOUT_SECONDS),
         searchBaseUrl = prefs.getString(KEY_SEARCH_URL, ServerSettings.DEFAULT_SEARCH_BASE_URL)
             ?: ServerSettings.DEFAULT_SEARCH_BASE_URL,
+        searchApiKey = prefs.getString(KEY_SEARCH_API_KEY, "") ?: "",
     )
 
     fun save(settings: ServerSettings) {
@@ -58,6 +61,7 @@ class ServerSettingsStore(
             .putString(KEY_API_KEY, settings.apiKey.trim())
             .putInt(KEY_TIMEOUT, settings.timeoutSeconds)
             .putString(KEY_SEARCH_URL, settings.searchBaseUrl.trim())
+            .putString(KEY_SEARCH_API_KEY, settings.searchApiKey.trim())
             .apply()
     }
 
@@ -68,5 +72,6 @@ class ServerSettingsStore(
         const val KEY_API_KEY = "api_key"
         const val KEY_TIMEOUT = "timeout_seconds"
         const val KEY_SEARCH_URL = "search_base_url"
+        const val KEY_SEARCH_API_KEY = "search_api_key"
     }
 }

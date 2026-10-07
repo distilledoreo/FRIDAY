@@ -10,6 +10,8 @@ interface SearchService {
 
 data class SearchServiceConfig(
     val baseUrl: String,
+    /** Sent as a bearer token when set. Independent of the model server's key. */
+    val apiKey: String? = null,
     val connectTimeoutMillis: Int = 10_000,
     val readTimeoutMillis: Int = 60_000,
 )
