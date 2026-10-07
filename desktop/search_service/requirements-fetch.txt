@@ -1,0 +1,3 @@
+# Optional. Install only if web_search calls should extract page text.
+# The SearXNG snippet path does not need this package.
+crawl4ai>=0.7.0
