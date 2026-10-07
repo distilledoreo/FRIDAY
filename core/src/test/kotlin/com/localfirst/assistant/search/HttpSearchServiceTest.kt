@@ -68,6 +68,33 @@ class HttpSearchServiceTest {
     }
 
     @Test
+    fun sendsOptionalApiKey() = runBlocking {
+        val authorization = AtomicReference<String?>("unset")
+        val server = localServer()
+        server.createContext("/search") { exchange ->
+            authorization.set(exchange.requestHeaders.getFirst("Authorization"))
+            write(exchange, 200, """{"provider":"searxng","fetched":false,"results":[]}""")
+        }
+        server.start()
+        try {
+            fun service(apiKey: String?) = HttpSearchService(
+                SearchServiceConfig(
+                    baseUrl = "http://127.0.0.1:${server.address.port}",
+                    apiKey = apiKey,
+                    connectTimeoutMillis = 2_000,
+                    readTimeoutMillis = 2_000,
+                ),
+            )
+            service("secret").search(WebSearchRequest("q", 5, false))
+            assertEquals("Bearer secret", authorization.get())
+            service(" ").search(WebSearchRequest("q", 5, false))
+            assertEquals(null, authorization.get())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun httpFailureAndUnreachableHostBecomeSearchErrors() = runBlocking {
         val server = localServer()
         server.createContext("/search") { exchange ->
