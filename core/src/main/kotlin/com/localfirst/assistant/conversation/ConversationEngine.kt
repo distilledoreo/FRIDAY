@@ -31,13 +31,14 @@ class ConversationEngine(
         systemPrompt: String,
         onUpdate: (List<Message>) -> Unit = {},
         confirmer: ToolConfirmer? = null,
+        latestUserNote: String? = null,
     ): TurnOutcome {
         var rounds = 0
         while (true) {
             val partial = StringBuilder()
             val response = try {
                 modelProvider.streamConversation(
-                    messages = outboundMessages(systemPrompt, messages),
+                    messages = outboundMessages(systemPrompt, messages, latestUserNote),
                     tools = toolRegistry.definitions(),
                 ) { delta ->
                     // Providers may deliver deltas on their own thread.
@@ -130,9 +131,19 @@ class ConversationEngine(
         }
     }
 
-    private fun outboundMessages(systemPrompt: String, messages: List<Message>): List<Message> {
-        if (systemPrompt.isBlank()) return messages.toList()
-        return listOf(Message.System(systemPrompt)) + messages
+    /**
+     * What the model is sent. [note] is appended to the latest user message
+     * only, and never stored: per-turn context such as the time goes there
+     * instead of the system prompt, so the system prompt and earlier messages
+     * stay identical between turns and the server's prompt cache keeps working.
+     */
+    internal fun outboundMessages(systemPrompt: String, messages: List<Message>, note: String? = null): List<Message> {
+        val lastUser = if (note.isNullOrBlank()) -1 else messages.indexOfLast { it is Message.User }
+        val body = messages.mapIndexed { i, m ->
+            if (i == lastUser) Message.User("${(m as Message.User).content}\n\n$note") else m
+        }
+        if (systemPrompt.isBlank()) return body
+        return listOf(Message.System(systemPrompt)) + body
     }
 
     companion object {

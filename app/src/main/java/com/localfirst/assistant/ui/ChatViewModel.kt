@@ -225,7 +225,9 @@ class ChatViewModel(
 
     private fun runTurn(block: suspend (onUpdate: (List<Message>) -> Unit) -> TurnOutcome) {
         val isFirstExchange = session.snapshot().none { it is Message.Assistant }
-        session.systemPrompt = AssistantPrompts.system(ZonedDateTime.now())
+        val now = ZonedDateTime.now()
+        session.systemPrompt = AssistantPrompts.system(now)
+        session.latestUserNote = AssistantPrompts.timeNote(now)
         _state.update { it.copy(busy = true, error = null) }
         turnJob = viewModelScope.launch {
             var outcome: TurnOutcome? = null

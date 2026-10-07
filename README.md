@@ -144,7 +144,7 @@ Each tool is an explicit Android API or intent; the model never gets general con
 - **Permissions:** contacts, phone, SMS, and calendar are requested the first time a tool needs them. Notification access can't be requested with a dialog; **Settings → Phone access → Allow notification access** opens the system screen. It's used only to see and control media sessions.
 - **Spotify:** there's no Spotify account or developer app to register. Playback starts through Android's standard *play from search* intent, which Spotify handles, and `now_playing` reads Spotify's media session.
 
-The system prompt includes the current date, time, and time zone each turn, so "tomorrow at 3" and "in 20 minutes" resolve correctly.
+The system prompt includes today's date and time zone, and the newest message carries the time it was sent ("[Sent at 9:41 AM]", added when sending, not stored or shown), so "tomorrow at 3" and "in 20 minutes" resolve correctly. Keeping the time out of the system prompt keeps it identical all day, so the model server reuses its cached prompt instead of re-reading the whole conversation every minute. On the author's setup, the next turn of a ~1,400-token chat went from 12.3 s to 2.2 s before the reply started.
 
 ## Voice mode
 

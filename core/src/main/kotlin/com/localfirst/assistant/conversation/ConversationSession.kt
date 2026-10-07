@@ -24,8 +24,14 @@ class ConversationSession(
 ) {
     var modelProvider: ModelProvider = modelProvider
 
-    /** Can change between turns, e.g. to include the current time. */
+    /**
+     * Can change between turns, but every change makes the server re-read the
+     * whole conversation. Put things that change often in [latestUserNote].
+     */
     var systemPrompt: String = systemPrompt
+
+    /** Added to the latest user message when it is sent (not stored), e.g. the current time. */
+    var latestUserNote: String? = null
 
     private val messages = initialMessages.toMutableList()
     private val mutex = Mutex()
@@ -105,6 +111,7 @@ class ConversationSession(
             systemPrompt = systemPrompt,
             onUpdate = onUpdate,
             confirmer = confirmer,
+            latestUserNote = latestUserNote,
         )
 
     private fun truncateAfter(index: Int) {
