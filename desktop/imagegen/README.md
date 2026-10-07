@@ -1,6 +1,6 @@
 # Local image generation
 
-The Android `generate_image` tool submits a durable, idempotent job to the authenticated existing workspace API. The assistant chooses dimensions, steps, seed, transparency and up to two uploaded reference images. Android Settings → Image generation supplies manual overrides; Images shows progress, cancellation and previous results. Completed PNGs appear directly in the conversation and in Library.
+The Android `generate_image` tool submits a durable, idempotent job to the authenticated existing workspace API. The assistant chooses dimensions, steps, seed, transparency and up to two uploaded reference images. The composer’s plus menu → Create image activates image mode; its chip opens aspect ratio and other manual overrides; Images shows progress, cancellation and previous results. Completed PNGs appear directly in the conversation and in Library.
 
 Server policy is authoritative: dimensions are multiples of 16 from 256 to 2000, at most 2000×2000 pixels, 4–12 Euler steps and at most 32 million pixel-steps (8 steps at the largest size). Defaults are 768×768 and 8 steps. Reference images are resized to at most 512 pixels. Rendering has a hard 150-second timeout; loading and chat restoration have separate bounded waits. Maximum dimensions do not guarantee completion within the render deadline.
 

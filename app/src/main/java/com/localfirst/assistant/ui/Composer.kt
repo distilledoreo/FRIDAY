@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.InputChip
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -44,6 +45,10 @@ internal fun Composer(
     editingHasAttachments: Boolean = false,
     onAttach: () -> Unit = {},
     onRemoveAttachment: (String) -> Unit = {},
+    imageMode: Boolean = false,
+    imageSummary: String = "Auto",
+    onImageSettings: () -> Unit = {},
+    onExitImageMode: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
@@ -75,73 +80,83 @@ internal fun Composer(
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Row(
-                verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                modifier = Modifier.padding(end = 6.dp, bottom = 6.dp),
-            ) {
-                IconButton(
-                    onClick = onAttach,
-                    enabled = !busy && !editing && attachments.size < ChatViewModel.MAX_ATTACHMENTS,
-                    modifier = Modifier.size(40.dp),
+            Column {
+                if (imageMode && !editing) {
+                    InputChip(
+                        selected = true, onClick = onImageSettings, enabled = !busy,
+                        label = { Text("Create image · $imageSummary") },
+                        trailingIcon = { IconButton(onClick = onExitImageMode, enabled = !busy, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.Close, "Exit image mode", Modifier.size(16.dp)) } },
+                        modifier = Modifier.padding(start = 14.dp, top = 8.dp),
+                    )
+                }
+                Row(
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.padding(end = 6.dp, bottom = 6.dp),
                 ) {
-                    Icon(Icons.Filled.Add, contentDescription = "Attach photos or files")
-                }
-                TextField(
-                    value = draft,
-                    onValueChange = onDraftChange,
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Message") },
-                    maxLines = 6,
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
-                        disabledContainerColor = Color.Transparent,
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                        disabledIndicatorColor = Color.Transparent,
-                    ),
-                )
-                if (!busy && !editing && attachments.isNotEmpty() && attachments.all { it.status == DraftStatus.READY } && onVoice != null) {
-                    IconButton(onClick = onVoice) { Icon(AppIcons.Mic, contentDescription = "Talk about attachments") }
-                }
-                if (busy) {
-                    FilledIconButton(
-                        onClick = onStop,
-                        shape = CircleShape,
+                    IconButton(
+                        onClick = onAttach,
+                        enabled = !busy && !editing,
                         modifier = Modifier.size(40.dp),
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.onSurface,
-                            contentColor = MaterialTheme.colorScheme.surface,
-                        ),
                     ) {
-                        Icon(AppIcons.Stop, contentDescription = "Stop", modifier = Modifier.size(18.dp))
+                        Icon(Icons.Filled.Add, contentDescription = "Attachments and tools")
                     }
-                } else if (draft.isBlank() && attachments.isEmpty() && onVoice != null && !editing) {
-                    FilledIconButton(
-                        onClick = onVoice,
-                        shape = CircleShape,
-                        modifier = Modifier.size(40.dp),
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.onSurface,
-                            contentColor = MaterialTheme.colorScheme.surface,
+                    TextField(
+                        value = draft,
+                        onValueChange = onDraftChange,
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text(if (imageMode && !editing) "Describe an image" else "Message") },
+                        maxLines = 6,
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            disabledContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            disabledIndicatorColor = Color.Transparent,
                         ),
-                    ) {
-                        Icon(AppIcons.Mic, contentDescription = "Voice mode", modifier = Modifier.size(20.dp))
+                    )
+                    if (!busy && !editing && attachments.isNotEmpty() && attachments.all { it.status == DraftStatus.READY } && onVoice != null) {
+                        IconButton(onClick = onVoice) { Icon(AppIcons.Mic, contentDescription = "Talk about attachments") }
                     }
-                } else {
-                    FilledIconButton(
-                        onClick = onSend,
-                        enabled = sendEnabled,
-                        shape = CircleShape,
-                        modifier = Modifier.size(40.dp),
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.onSurface,
-                            contentColor = MaterialTheme.colorScheme.surface,
-                        ),
-                    ) {
-                        Icon(AppIcons.ArrowUpward, contentDescription = "Send", modifier = Modifier.size(20.dp))
+                    if (busy) {
+                        FilledIconButton(
+                            onClick = onStop,
+                            shape = CircleShape,
+                            modifier = Modifier.size(40.dp),
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.onSurface,
+                                contentColor = MaterialTheme.colorScheme.surface,
+                            ),
+                        ) {
+                            Icon(AppIcons.Stop, contentDescription = "Stop", modifier = Modifier.size(18.dp))
+                        }
+                    } else if (draft.isBlank() && attachments.isEmpty() && onVoice != null && !editing && !imageMode) {
+                        FilledIconButton(
+                            onClick = onVoice,
+                            shape = CircleShape,
+                            modifier = Modifier.size(40.dp),
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.onSurface,
+                                contentColor = MaterialTheme.colorScheme.surface,
+                            ),
+                        ) {
+                            Icon(AppIcons.Mic, contentDescription = "Voice mode", modifier = Modifier.size(20.dp))
+                        }
+                    } else {
+                        FilledIconButton(
+                            onClick = onSend,
+                            enabled = sendEnabled,
+                            shape = CircleShape,
+                            modifier = Modifier.size(40.dp),
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.onSurface,
+                                contentColor = MaterialTheme.colorScheme.surface,
+                            ),
+                        ) {
+                            Icon(AppIcons.ArrowUpward, contentDescription = "Send", modifier = Modifier.size(20.dp))
+                        }
                     }
                 }
             }

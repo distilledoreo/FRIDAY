@@ -64,9 +64,8 @@ internal fun ImageJobs(state: ChatUiState, vm: ChatViewModel) {
 }
 
 @Composable
-internal fun ImageEditor(state: ChatUiState, vm: ChatViewModel) {
+internal fun ImageOptions(state: ChatUiState, vm: ChatViewModel, onDone: () -> Unit) {
     val saved = state.imageSettings
-    var prompt by rememberSaveable { mutableStateOf("") }
     var automatic by rememberSaveable { mutableStateOf(saved.automatic) }
     var width by rememberSaveable { mutableStateOf(saved.width.toString()) }
     var height by rememberSaveable { mutableStateOf(saved.height.toString()) }
@@ -80,15 +79,18 @@ internal fun ImageEditor(state: ChatUiState, vm: ChatViewModel) {
         error = if (!automatic && seed.isNotBlank() && seed.toIntOrNull() == null) "Enter a valid integer seed, or leave it blank." else s.validate()
         return s.takeIf { error == null }
     }
-    Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        OutlinedTextField(prompt, { prompt = it.take(4000) }, label = { Text("Describe your image") }, minLines = 3, modifier = Modifier.fillMaxWidth())
+    Column(Modifier.fillMaxWidth().heightIn(max = 640.dp).imePadding().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text("Image settings", style = MaterialTheme.typography.titleLarge)
+        Text("Describe your image in the message box. These choices apply when you send it.", style = MaterialTheme.typography.bodyMedium)
         Row(verticalAlignment = Alignment.CenterVertically) { Text("Let the assistant choose settings", Modifier.weight(1f)); Switch(automatic, { automatic = it }) }
         Text(if (automatic) "The assistant chooses size, aspect ratio, steps and references from your request. Selected references below are always used." else "These settings override the assistant’s choices.", style = MaterialTheme.typography.bodySmall)
-        if (!automatic) {
-            Text("Aspect ratio", style = MaterialTheme.typography.labelLarge)
-            listOf("Square · 768×768" to (768 to 768), "Landscape · 1024×576" to (1024 to 576), "Portrait · 576×1024" to (576 to 1024)).forEach { (label, size) ->
-                TextButton(onClick = { width = size.first.toString(); height = size.second.toString() }) { Text(label) }
+        Text("Aspect ratio", style = MaterialTheme.typography.labelLarge)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("1:1" to (768 to 768), "16:9" to (1024 to 576), "9:16" to (576 to 1024)).forEach { (label, size) ->
+                FilterChip(selected = !automatic && width == size.first.toString() && height == size.second.toString(), onClick = { automatic = false; width = size.first.toString(); height = size.second.toString() }, label = { Text(label) })
             }
+        }
+        if (!automatic) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedTextField(width, { width = it.take(4) }, label = { Text("Width") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
                 OutlinedTextField(height, { height = it.take(4) }, label = { Text("Height") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
@@ -108,8 +110,7 @@ internal fun ImageEditor(state: ChatUiState, vm: ChatViewModel) {
             }
         }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        Button(onClick = { options()?.let { vm.generateImage(prompt, it) } }, enabled = prompt.isNotBlank() && !state.busy && !state.workspaceBusy, modifier = Modifier.fillMaxWidth()) { Text("Generate in this chat") }
-        OutlinedButton(onClick = { options()?.let(vm::saveImageSettings) }, enabled = !state.busy && !state.workspaceBusy, modifier = Modifier.fillMaxWidth()) { Text("Save settings") }
+        Button(onClick = { options()?.let { vm.saveImageSettings(it); onDone() } }, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) { Text("Done") }
         Text("Default: 768×768, 8 steps. Rendering stops after 150 seconds and the chat model reloads. No image request can exceed the server limits.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

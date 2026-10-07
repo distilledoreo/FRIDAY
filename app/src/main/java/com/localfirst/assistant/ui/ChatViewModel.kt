@@ -76,6 +76,7 @@ data class ChatUiState(
     val tasks: List<BackgroundTask> = emptyList(),
     val workspaceFiles: List<WorkspaceFile> = emptyList(),
     val syncConflicts: List<SyncConflict> = emptyList(),
+    val imageMode: Boolean = false,
     val imageSettings: com.localfirst.assistant.workspace.ImageSettings = com.localfirst.assistant.workspace.ImageSettings(),
     val imageJobs: List<JSONObject> = emptyList(),
     val imageStatus: String? = null,
@@ -186,7 +187,7 @@ class ChatViewModel(
 
     fun send() {
         val current = _state.value
-        val draft = current.draft
+        val draft = if (current.imageMode && current.editingIndex == null) "Generate an image: ${current.draft}" else current.draft
         if (!current.canSend) return
         if (!settingsReady()) return
         val editing = current.editingIndex
@@ -473,7 +474,7 @@ class ChatViewModel(
             turnJob?.join()
             if (id == null) {
                 resetToNewChat()
-                _state.update { it.copy(projectId = newProjectId, showWorkspace = false) }
+                _state.update { it.copy(projectId = newProjectId, showWorkspace = false, imageMode = false) }
                 return@launch
             }
             val stored = withContext(Dispatchers.IO) { conversationStore.load(id) }
@@ -487,6 +488,7 @@ class ChatViewModel(
             _state.update {
                 it.copy(
                     conversationId = id,
+                    imageMode = false,
                     projectId = stored.summary.projectId,
                     title = stored.summary.title,
                     messages = stored.messages,
@@ -623,17 +625,21 @@ class ChatViewModel(
         _state.update { it.copy(projectId = id) }
         viewModelScope.launch { persist() }
     }
+    fun setImageMode(enabled: Boolean) {
+        if (_state.value.busy || _state.value.editingIndex != null) return
+        _state.update { it.copy(imageMode = enabled, showWorkspace = false) }
+        if (enabled) viewModelScope.launch {
+            runCatching {
+                val files = JSONArray(workspace?.request("/workspace/files") ?: return@launch)
+                _state.update { it.copy(workspaceFiles = (0 until files.length()).map { n -> WorkspaceFile.from(files.getJSONObject(n)) }) }
+            }
+        }
+    }
+
     fun saveImageSettings(settings: com.localfirst.assistant.workspace.ImageSettings) {
         val client = workspace ?: return
         client.imageSettings.save(settings, client.serverIdentity)
         _state.update { it.copy(imageSettings = settings, workspaceStatus = "Image settings saved.") }
-    }
-    fun generateImage(prompt: String, settings: com.localfirst.assistant.workspace.ImageSettings) {
-        if (_state.value.busy || _state.value.workspaceBusy) return
-        saveImageSettings(settings)
-        dismissWorkspace()
-        onDraftChange("Generate an image: " + prompt)
-        send()
     }
     private var imageRefreshJob: Job? = null
     fun refreshImages() {

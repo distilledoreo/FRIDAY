@@ -34,6 +34,7 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Scaffold
@@ -66,6 +67,7 @@ import kotlinx.coroutines.launch
 fun ChatScreen(viewModel: ChatViewModel) {
     val context = LocalContext.current
     var attachmentMenu by remember { mutableStateOf(false) }
+    var imageOptions by remember { mutableStateOf(false) }
     var cameraPath by rememberSaveable { mutableStateOf<String?>(null) }
     val photos = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         viewModel.addAttachments(uris)
@@ -192,6 +194,10 @@ fun ChatScreen(viewModel: ChatViewModel) {
                             editing = state.editingIndex != null,
                             onDraftChange = viewModel::onDraftChange,
                             onSend = viewModel::send,
+                            imageMode = state.imageMode,
+                            imageSummary = if (state.imageSettings.automatic) "Auto" else "${state.imageSettings.width}×${state.imageSettings.height}",
+                            onImageSettings = { imageOptions = true },
+                            onExitImageMode = { viewModel.setImageMode(false) },
                             onStop = viewModel::stop,
                             onCancelEdit = viewModel::cancelEditing,
                             onVoice = viewModel::startVoice,
@@ -204,6 +210,11 @@ fun ChatScreen(viewModel: ChatViewModel) {
                             modifier = Modifier.navigationBarsPadding().imePadding(),
                         )
                         DropdownMenu(expanded = attachmentMenu, onDismissRequest = { attachmentMenu = false }) {
+                            DropdownMenuItem(text = { Text("Create image") }, onClick = {
+                                attachmentMenu = false
+                                viewModel.setImageMode(true)
+                                imageOptions = true
+                            })
                             DropdownMenuItem(text = { Text("Photos") }, onClick = {
                                 attachmentMenu = false
                                 photos.launch(arrayOf("image/*"))
@@ -293,6 +304,11 @@ fun ChatScreen(viewModel: ChatViewModel) {
     }
 
     if (state.showWorkspace) WorkspacePage(state, viewModel)
+    }
+    if (imageOptions && !state.showSettings && !state.showWorkspace) {
+        ModalBottomSheet(onDismissRequest = { imageOptions = false }) {
+            ImageOptions(state, viewModel) { imageOptions = false }
+        }
     }
     if (state.showSettings) {
         SettingsPage(
