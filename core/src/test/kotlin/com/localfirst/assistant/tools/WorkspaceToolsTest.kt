@@ -36,13 +36,17 @@ class WorkspaceToolsTest {
         val dir = Files.createTempDirectory("workspace-tools").toFile()
         try {
             val knowledge = KnowledgeStore(dir.resolve("knowledge.json"))
-            val registry = ToolRegistry().apply { workspaceTools(FakeGateway(), knowledge, FileConversationStore(dir.resolve("chats"))).forEach(::register) }
+            val gateway = FakeGateway()
+            val registry = ToolRegistry().apply { workspaceTools(gateway, knowledge, FileConversationStore(dir.resolve("chats"))).forEach(::register) }
             val call = ToolCall("1", "remember", """{"text":"Prefer concise answers"}""")
             registry.execute(call, ToolConfirmer { false })
             assertTrue(knowledge.load().memories.isEmpty())
+            assertEquals("", gateway.path)
             registry.execute(call, ToolConfirmer { true })
-            val memory = knowledge.load().memories.single()
-            registry.execute(ToolCall("2", "forget_memory", """{"id":"${memory.id}"}"""), ToolConfirmer { true })
+            assertEquals("/workspace/memory/memories", gateway.path)
+            assertEquals("Prefer concise answers", Json.parseToJsonElement(gateway.body!!).jsonObject["text"]!!.jsonPrimitive.content)
+            registry.execute(ToolCall("2", "forget_memory", """{"id":"pc-memory-id"}"""), ToolConfirmer { true })
+            assertEquals("/workspace/memory/memories/pc-memory-id", gateway.path)
             assertTrue(knowledge.load().memories.isEmpty())
         } finally { dir.deleteRecursively() }
     }

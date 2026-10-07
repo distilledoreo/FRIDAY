@@ -42,10 +42,10 @@ class KnowledgeStore(private val file: File) {
 
     @Synchronized fun forget(id: String) { val k = load(); save(k.copy(memories = k.memories.filterNot { it.id == id })) }
 
-    fun context(projectId: String?): String {
+    fun context(projectId: String?, includeMemories: Boolean = true): String {
         val k = load()
         return buildString {
-            if (k.memories.isNotEmpty()) {
+            if (includeMemories && k.memories.isNotEmpty()) {
                 append("\n\nUser-saved memory (use when relevant):\n")
                 k.memories.takeLast(30).forEach { append("- ").append(it.text.take(400)).append('\n') }
                 append("Use search_memory for other saved details.\n")

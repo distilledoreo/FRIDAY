@@ -76,6 +76,18 @@ data class ChatUiState(
     val tasks: List<BackgroundTask> = emptyList(),
     val workspaceFiles: List<WorkspaceFile> = emptyList(),
     val syncConflicts: List<SyncConflict> = emptyList(),
+    val memorySummary: JSONObject? = null,
+    val pcMemories: List<JSONObject> = emptyList(),
+    val memorySituations: List<JSONObject> = emptyList(),
+    val memorySuggestions: List<JSONObject> = emptyList(),
+    val importPreview: JSONObject? = null,
+    val archiveSources: List<JSONObject> = emptyList(),
+    val archiveQuery: String = "",
+    val archiveOffset: Int = 0,
+    val archiveSource: JSONObject? = null,
+    val memoryEdit: JSONObject? = null,
+    val recallSources: List<JSONObject> = emptyList(),
+    val recallStatus: String? = null,
     val imageMode: Boolean = false,
     val imageSettings: com.localfirst.assistant.workspace.ImageSettings = com.localfirst.assistant.workspace.ImageSettings(),
     val imageJobs: List<JSONObject> = emptyList(),
@@ -191,6 +203,7 @@ class ChatViewModel(
         if (!current.canSend) return
         if (!settingsReady()) return
         val editing = current.editingIndex
+        pendingRecallQuery = draft
         val ready = current.draftAttachments.mapNotNull { it.attachment } + if (editing == null) listOfNotNull(app?.let(ScreenContextService::snapshot)) else emptyList()
         _state.update { it.copy(draft = "", editingIndex = null, draftAttachments = emptyList()) }
         if (editing != null) {
@@ -283,13 +296,17 @@ class ChatViewModel(
         send()
     }
 
+    private var pendingRecallQuery: String = ""
+
     fun retry() {
         if (_state.value.busy || !settingsReady()) return
+        pendingRecallQuery = session.snapshot().filterIsInstance<Message.User>().lastOrNull()?.content.orEmpty()
         runTurn { onUpdate -> session.retry(onUpdate) }
     }
 
     fun regenerate() {
         if (_state.value.busy || !settingsReady()) return
+        pendingRecallQuery = session.snapshot().filterIsInstance<Message.User>().lastOrNull()?.content.orEmpty()
         runTurn { onUpdate -> session.regenerate(onUpdate) }
     }
 
@@ -345,6 +362,7 @@ class ChatViewModel(
         if (_state.value.draftAttachments.any { it.status != DraftStatus.READY }) return false
         val files = _state.value.draftAttachments.mapNotNull { it.attachment } + listOfNotNull(app?.let(ScreenContextService::snapshot))
         _state.update { it.copy(draftAttachments = emptyList(), draft = "") }
+        pendingRecallQuery = text
         runTurn { onUpdate -> session.submitUserMessage(text, attachments = files, onUpdate = onUpdate) }
         return true
     }
@@ -359,6 +377,7 @@ class ChatViewModel(
         val messages = session.snapshot()
         val lastUser = messages.indexOfLast { it is Message.User }
         if (lastUser < 0 || messages.drop(lastUser + 1).any { it is Message.ToolCall }) return false
+        pendingRecallQuery = text
         runTurn { onUpdate -> session.editUserMessage(lastUser, text, onUpdate) }
         return true
     }
@@ -384,13 +403,25 @@ class ChatViewModel(
     private fun runTurn(block: suspend (onUpdate: (List<Message>) -> Unit) -> TurnOutcome) {
         val isFirstExchange = session.snapshot().none { it is Message.Assistant }
         val now = ZonedDateTime.now()
-        session.systemPrompt = try { AssistantPrompts.system(now) + knowledgeStore?.context(_state.value.projectId).orEmpty() }
+        session.systemPrompt = try { AssistantPrompts.system(now) + knowledgeStore?.context(_state.value.projectId, includeMemories = workspace == null).orEmpty() }
         catch (e: Exception) { _state.update { it.copy(error = "Couldn't read saved knowledge: ${e.message}") }; return }
         session.latestUserNote = AssistantPrompts.timeNote(now)
         _state.update { it.copy(busy = true, error = null) }
         turnJob = viewModelScope.launch {
             var outcome: TurnOutcome? = null
             try {
+                val client = workspace
+                if (client != null) {
+                    client.memoryScope = _state.value.projectId.orEmpty()
+                    try {
+                        migrateLegacyMemory()
+                        val recalled = JSONObject(client.request("/workspace/memory/context", "POST", JSONObject().put("query", pendingRecallQuery.take(4000)).put("scope", _state.value.projectId.orEmpty()).put("current_id", _state.value.conversationId?.let { "native-" + it.replace("-", "") }.orEmpty()), timeoutMs = 8000))
+                        session.systemPrompt += recalled.optString("context")
+                        val sources = recalled.optJSONArray("sources") ?: JSONArray()
+                        _state.update { it.copy(recallSources = jsonRows(sources), recallStatus = if (sources.length() == 0) "No relevant memories needed." else "${sources.length()} relevant memory sources supplied.") }
+                    } catch (e: CancellationException) { throw e }
+                    catch (e: Exception) { _state.update { it.copy(recallSources = emptyList(), recallStatus = "PC memory unavailable; this reply uses the current conversation.") } }
+                }
                 outcome = block { messages ->
                     _state.update { it.copy(messages = messages) }
                 }
@@ -410,7 +441,9 @@ class ChatViewModel(
                 turnJob = null
             }
             // Save even when the user pressed Stop; this job is cancelled at that point.
+            val completedSnapshot = _state.value.copy(messages = session.snapshot())
             withContext(NonCancellable) { persist() }
+            if (outcome is TurnOutcome.Completed) archiveCurrentChat(completedSnapshot)
             if (isFirstExchange && outcome is TurnOutcome.Completed) generateTitle()
         }
     }
@@ -576,6 +609,7 @@ class ChatViewModel(
         if (destination == WorkspaceDestination.PROJECTS) searchHistory("")
         _state.update { it.copy(showWorkspace = true, workspaceDestination = destination, knowledge = runCatching { knowledgeStore?.load() }.getOrNull() ?: Knowledge()) }
         refreshWorkspace()
+        if (destination in listOf(WorkspaceDestination.MEMORY, WorkspaceDestination.IMPORT_CHATGPT, WorkspaceDestination.MEMORY_REVIEW, WorkspaceDestination.MEMORY_ARCHIVE)) refreshMemory()
     }
     fun dismissWorkspace() { _state.update { it.copy(showWorkspace = false) } }
 
@@ -604,8 +638,104 @@ class ChatViewModel(
         _state.update { it.copy(tasks = tasks, workspaceFiles = files) }
         "Computer online · Python sandbox ${if (health.optBoolean("sandbox")) "available" else "unavailable"} · Model/search/fetch ${if (services?.optBoolean("ok") == true) "healthy" else "check Settings or computer services"}"
     }
-    fun saveMemory(text: String) = workspaceAction { knowledgeStore?.remember(text); "Memory saved." }
-    fun forgetMemory(id: String) = workspaceAction { knowledgeStore?.forget(id); "Memory deleted." }
+    fun saveMemory(text: String) = workspaceAction {
+        val old = _state.value.memoryEdit
+        val body = JSONObject().put("text", text).put("category", old?.optString("category") ?: if (text.contains("prefer", true)) "preference" else "other").put("scope", old?.optString("scope").orEmpty()).put("pinned", old?.optInt("pinned", 1)?.let { it != 0 } ?: true)
+        workspace?.request("/workspace/memory/memories" + (old?.optString("id")?.let { "/$it" } ?: ""), if (old == null) "POST" else "PUT", body) ?: error("PC memory unavailable.")
+        _state.update { it.copy(memoryEdit = null) }; refreshMemory(); "Memory saved."
+    }
+    fun editMemory(memory: JSONObject?) { _state.update { it.copy(memoryEdit = memory) } }
+    fun forgetMemory(id: String) = workspaceAction { workspace?.request("/workspace/memory/memories/$id", "DELETE") ?: error("PC memory unavailable."); refreshMemory(); "Memory deleted. Its original source is excluded from recall to prevent it resurfacing." }
+    private fun jsonRows(array: JSONArray): List<JSONObject> = (0 until array.length()).map { array.getJSONObject(it) }
+    private val memoryMigration = kotlinx.coroutines.sync.Mutex()
+    private suspend fun migrateLegacyMemory() {
+        memoryMigration.lock()
+        try {
+            val client = workspace ?: return
+            val store = knowledgeStore ?: return
+            val legacy = withContext(Dispatchers.IO) { store.load() }
+            if (legacy.memories.isEmpty()) return
+            val rows = JSONArray().apply { legacy.memories.forEach { put(JSONObject().put("text", it.text)) } }
+            val result = JSONObject(client.request("/workspace/memory/legacy", "POST", JSONObject().put("memories", rows), timeoutMs = 30000))
+            if (result.optInt("skipped") == 0) withContext(Dispatchers.IO) { val latest = store.load(); store.save(latest.copy(memories = latest.memories.filter { m -> legacy.memories.none { it.id == m.id } })) }
+        } finally { memoryMigration.unlock() }
+    }
+    private var memoryRefreshJob: Job? = null
+    fun refreshMemory(query: String = "") {
+        if (memoryRefreshJob?.isActive == true) return
+        memoryRefreshJob = viewModelScope.launch {
+            try {
+                migrateLegacyMemory()
+                val client = workspace ?: return@launch
+                val summary = JSONObject(client.request("/workspace/memory"))
+                val facts = JSONArray(client.request("/workspace/memory/memories?q=" + java.net.URLEncoder.encode(query, "UTF-8")))
+                val suggestions = JSONArray(client.request("/workspace/memory/suggestions"))
+                val situations = JSONArray(client.request("/workspace/memory/situations"))
+                _state.update { it.copy(memorySummary = summary, pcMemories = jsonRows(facts), memorySuggestions = jsonRows(suggestions), memorySituations = jsonRows(situations)) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _state.update { it.copy(workspaceStatus = "PC memory: ${e.message}") } }
+        }
+    }
+    fun resolveSituation(id: String) = workspaceAction { workspace?.request("/workspace/memory/situations/$id", "PATCH", JSONObject().put("status", "resolved")); refreshMemory(); "Situation marked resolved." }
+    fun forgetSituation(id: String) = workspaceAction { workspace?.request("/workspace/memory/situations/$id", "DELETE"); refreshMemory(); "Situation forgotten and its source excluded from recall." }
+    fun setMemorySetting(key: String, enabled: Boolean) = workspaceAction { workspace?.request("/workspace/memory/settings", "PATCH", JSONObject().put(key, enabled)); refreshMemory(); "Memory settings updated." }
+    fun stageChatGptImport(uri: Uri) = workspaceAction {
+        val preview = JSONObject(workspace?.stageChatGptExport(uri) ?: error("PC memory unavailable."))
+        _state.update { it.copy(importPreview = preview) }; "Export preview ready. Nothing imported yet."
+    }
+    fun commitChatGptImport(extract: Boolean) = workspaceAction {
+        val id = _state.value.importPreview?.getString("id") ?: error("Choose an export first.")
+        val result = JSONObject(workspace?.request("/workspace/memory/imports/$id", "POST", JSONObject().put("extract", extract)) ?: error("PC memory unavailable."))
+        _state.update { it.copy(importPreview = null) }; refreshMemory(); refreshArchive(); "Imported ${result.optInt("imported")} chats on the PC; ${result.optInt("duplicates")} duplicates skipped. Memory suggestions appear as they are processed."
+    }
+    fun discardChatGptImport() = workspaceAction { _state.value.importPreview?.optString("id")?.let { workspace?.request("/workspace/memory/imports/$it", "DELETE") }; _state.update { it.copy(importPreview = null) }; "Import preview discarded." }
+    fun reviewMemory(id: String, accept: Boolean, text: String? = null) = workspaceAction { workspace?.request("/workspace/memory/suggestions/$id", "POST", JSONObject().put("accept", accept).apply { text?.let { put("text", it) } }); refreshMemory(); if (accept) "Memory approved." else "Suggestion dismissed." }
+    fun refreshArchive(query: String = _state.value.archiveQuery, offset: Int = 0) {
+        _state.update { it.copy(archiveQuery = query, archiveOffset = offset) }
+        viewModelScope.launch {
+            try {
+                val rows = JSONArray(workspace?.request("/workspace/memory/sources?q=" + java.net.URLEncoder.encode(query, "UTF-8") + "&offset=$offset") ?: return@launch)
+                if (_state.value.archiveQuery == query && _state.value.archiveOffset == offset) _state.update { it.copy(archiveSources = jsonRows(rows)) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _state.update { it.copy(workspaceStatus = e.message) } }
+        }
+    }
+    fun openMemorySource(id: String) = workspaceAction {
+        val source = JSONObject(workspace?.request("/workspace/memory/sources/$id") ?: error("PC memory unavailable."))
+        _state.update { it.copy(archiveSource = source) }; "Source loaded."
+    }
+    fun excludeMemorySource(id: String, excluded: Boolean) = workspaceAction { workspace?.request("/workspace/memory/sources/$id", "PATCH", JSONObject().put("excluded", excluded)); _state.update { it.copy(archiveSource = it.archiveSource?.apply { put("excluded", excluded) }) }; refreshArchive(); "Recall source updated." }
+    fun deleteMemorySource(id: String) = workspaceAction { workspace?.request("/workspace/memory/sources/$id", "DELETE"); _state.update { it.copy(archiveSource = null) }; refreshArchive(); refreshMemory(); "PC archive source deleted. Approved memories remain separately managed." }
+    fun extractMemorySource(id: String) = workspaceAction { workspace?.request("/workspace/memory/sources/$id/extract", "POST", JSONObject()); refreshMemory(); "Source queued for memory suggestions." }
+    fun continueMemorySource() {
+        val source = _state.value.archiveSource ?: return
+        if (_state.value.busy || _state.value.workspaceBusy) return
+        val rows = source.getJSONArray("messages")
+        val messages = (0 until rows.length()).map { i -> val m = rows.getJSONObject(i); if (m.getString("role") == "user") Message.User(m.getString("content")) else Message.Assistant(m.getString("content")) }
+        viewModelScope.launch {
+            val id = UUID.randomUUID().toString(); val now = clock()
+            withContext(Dispatchers.IO) { conversationStore.save(StoredConversation(ConversationSummary(id, source.optString("title"), now, now), messages)) }
+            _state.update { it.copy(showWorkspace = false) }; switchTo(id)
+        }
+    }
+    private suspend fun archiveCurrentChat(current: ChatUiState) {
+        val id = current.conversationId ?: return
+        val rows = JSONArray().apply { current.messages.forEach { m -> when (m) { is Message.User -> put(JSONObject().put("role", "user").put("content", m.content)); is Message.Assistant -> put(JSONObject().put("role", "assistant").put("content", m.content)); else -> Unit } } }
+        try { workspace?.request("/workspace/memory/chats", "POST", JSONObject().put("id", id).put("title", current.title.take(200)).put("scope", current.projectId.orEmpty()).put("messages", rows).put("created", createdAt / 1000.0).put("updated", clock() / 1000.0), timeoutMs = 10000) }
+        catch (e: CancellationException) { throw e }
+        catch (_: Exception) { _state.update { it.copy(recallStatus = "Reply saved on the phone; PC history indexing will retry after the next reply.") } }
+    }
+    fun indexExistingChats() = workspaceAction {
+        val client = workspace ?: error("PC memory unavailable.")
+        var count = 0
+        for (summary in conversationStore.list()) {
+            val chat = conversationStore.load(summary.id) ?: continue
+            val rows = JSONArray().apply { chat.messages.forEach { m -> when (m) { is Message.User -> put(JSONObject().put("role", "user").put("content", m.content)); is Message.Assistant -> put(JSONObject().put("role", "assistant").put("content", m.content)); else -> Unit } } }
+            client.request("/workspace/memory/chats", "POST", JSONObject().put("id", summary.id).put("title", summary.title.take(200)).put("scope", summary.projectId.orEmpty()).put("messages", rows).put("created", summary.createdAt / 1000.0).put("updated", summary.updatedAt / 1000.0)); count++
+        }
+        refreshMemory(); "$count existing chats indexed on the PC."
+    }
+
     fun saveProject(id: String?, name: String, instructions: String, context: String) = workspaceAction {
         require(name.isNotBlank()) { "Enter a project name." }
         val store = knowledgeStore ?: error("Knowledge unavailable.")

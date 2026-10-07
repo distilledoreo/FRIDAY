@@ -1,6 +1,6 @@
 # Local Android Assistant
 
-Phase 1 MVP. The Android app is the assistant: it keeps the conversation, decides which tools exist, and runs them. A computer on your network serves two independent things: an OpenAI-compatible chat model, and an optional search service. This repo includes the search service. It does not include a model server, voice, cloud model providers, long-term memory, or paid search APIs.
+The Android assistant supports persistent chat, voice, attachments, phone tools, a PC workspace, local image generation, and PC-hosted memory. A computer on your private network serves the chat model and authenticated workspace APIs. Version 0.5 adds ChatGPT export import, source-linked semantic recall and recent-situation continuity. See [PC memory](desktop/memory/README.md) and [continuity plan](desktop/memory/PLAN.md).
 
 Milestones implemented:
 
@@ -234,4 +234,4 @@ Unreachable hosts, timeouts, HTTP errors, non-JSON bodies, unknown tool names, i
 
 ## Not in this build
 
-Voice, cloud model providers, model routing, long-term memory, image/video/file PC tools, paid hosted search APIs, and a permission dialog are specified for later and are not implemented.
+Connected-account integrations, video generation and paid hosted search APIs are not implemented. A real ChatGPT export, physical phone layout and two-device behavior still need user/device validation.

@@ -12,6 +12,8 @@ import com.localfirst.assistant.tools.*
 import java.io.File
 import java.io.IOException
 import java.util.UUID
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
@@ -20,12 +22,14 @@ import org.json.JSONObject
 
 /** Uses the existing authenticated computer endpoint; no connected-service accounts. */
 class WorkspaceClient(private val context: Context, private val settings: () -> ServerSettings) : WorkspaceGateway {
+    var memoryScope: String = ""
     val imageSettings = ImageSettingsStore(context)
     val imageStatus = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
     override suspend fun toolRequest(path: String, method: String, body: String?): String {
         val payload = body?.let(::JSONObject)
         if (path == "/workspace/images" && method == "POST" && payload != null) imageSettings.apply(payload, serverIdentity)
-        val result = request(path, method, payload)
+        val target = if (path.startsWith("/workspace/memory/tool-search?")) path + "&scope=" + java.net.URLEncoder.encode(memoryScope, "UTF-8") else path
+        val result = request(target, method, payload)
         if (path.startsWith("/workspace/images/") && method == "GET") {
             val job = JSONObject(result)
             imageStatus.value = if (job.optString("status") in listOf("completed", "failed", "cancelled")) null else job.optString("phase").replace('_', ' ')
@@ -34,13 +38,41 @@ class WorkspaceClient(private val context: Context, private val settings: () -> 
         return result
     }
     val serverIdentity: String get() = settings().searchBaseUrl.trim().trimEnd('/')
-    suspend fun request(path: String, method: String = "GET", body: JSONObject? = null): String = withContext(Dispatchers.IO) {
+    suspend fun request(path: String, method: String = "GET", body: JSONObject? = null, timeoutMs: Int = 120000): String = withContext(Dispatchers.IO) {
         val s = settings()
         val (code, bytes) = desktopRequest(s.searchBaseUrl, s.searchApiKey, method, path,
-            body?.toString()?.toByteArray(), "application/json", timeoutMs = 120000)
+            body?.toString()?.toByteArray(), "application/json", timeoutMs = timeoutMs)
         if (code !in 200..299) throw IOException("Computer returned HTTP $code: ${bytes.toString(Charsets.UTF_8).take(500)}")
         if (path == "/workspace/jobs" && method == "POST") TaskNotifications.enable(context)
         bytes.toString(Charsets.UTF_8)
+    }
+
+    /** Streams directly to the PC; never copies the export into phone storage. */
+    suspend fun stageChatGptExport(uri: Uri): String = withContext(Dispatchers.IO) {
+        val s = settings()
+        val connection = java.net.URL(s.searchBaseUrl.trimEnd('/') + "/workspace/memory/imports").openConnection() as java.net.HttpURLConnection
+        try {
+            connection.requestMethod = "POST"; connection.doOutput = true
+            connection.connectTimeout = 15000; connection.readTimeout = 180000
+            connection.setChunkedStreamingMode(65536)
+            connection.setRequestProperty("Content-Type", "application/octet-stream")
+            connection.setRequestProperty("Authorization", "Bearer " + s.searchApiKey.trim())
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                connection.outputStream.use { output ->
+                    val buffer = ByteArray(65536); var total = 0L
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val count = input.read(buffer); if (count < 0) break
+                        total += count; require(total <= 256L * 1024 * 1024) { "Export exceeds the 256 MB upload limit." }
+                        output.write(buffer, 0, count)
+                    }
+                }
+            } ?: error("Couldn't open the export.")
+            val code = connection.responseCode
+            val result = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
+            if (code !in 200..299) throw IOException("Export import failed (HTTP $code): " + result.take(300))
+            result
+        } finally { connection.disconnect() }
     }
 
     suspend fun upload(file: File, name: String = file.name): String = withContext(Dispatchers.IO) {

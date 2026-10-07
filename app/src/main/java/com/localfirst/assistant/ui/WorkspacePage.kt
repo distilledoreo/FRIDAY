@@ -31,7 +31,7 @@ import java.time.format.DateTimeFormatter
 enum class WorkspaceDestination(val title: String) {
     SETTINGS("Settings"), MEMORY("Memory"), PROJECTS("Projects"), PROJECT("Project"),
     EDIT_PROJECT("Project settings"), TASKS("Tasks"), TASK("Task"), NEW_TASK("New task"),
-    FILES("Library"), DATA("Data controls"), NEW_MEMORY("Add memory"), IMAGES("Images")
+    FILES("Library"), DATA("Data controls"), NEW_MEMORY("Add memory"), IMAGES("Images"), IMPORT_CHATGPT("Import ChatGPT"), MEMORY_REVIEW("Review memories"), MEMORY_ARCHIVE("PC archive"), MEMORY_SOURCE("Source chat"), MEMORY_CONTEXT("Recall context")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -62,7 +62,8 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
             WorkspaceDestination.PROJECT -> WorkspaceDestination.PROJECTS
             WorkspaceDestination.PROJECTS -> { if (initial == WorkspaceDestination.PROJECT || initial == WorkspaceDestination.PROJECTS) { vm.dismissWorkspace(); return }; parent }
             WorkspaceDestination.NEW_TASK, WorkspaceDestination.TASK -> WorkspaceDestination.TASKS
-            WorkspaceDestination.NEW_MEMORY -> WorkspaceDestination.MEMORY
+            WorkspaceDestination.NEW_MEMORY, WorkspaceDestination.IMPORT_CHATGPT, WorkspaceDestination.MEMORY_REVIEW, WorkspaceDestination.MEMORY_ARCHIVE, WorkspaceDestination.MEMORY_CONTEXT -> WorkspaceDestination.MEMORY
+            WorkspaceDestination.MEMORY_SOURCE -> WorkspaceDestination.MEMORY_ARCHIVE
             else -> { if (page == initial) { vm.dismissWorkspace(); return }; parent }
         }
     }
@@ -85,7 +86,7 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                         when (page) {
                             WorkspaceDestination.PROJECTS -> IconButton(onClick = { editProject(null) }, enabled = !state.workspaceBusy) { Icon(Icons.Filled.Add, "New project") }
                             WorkspaceDestination.IMAGES -> IconButton(onClick = { vm.setImageMode(true) }) { Icon(Icons.Filled.Add, "Generate image or change settings") }
-                            WorkspaceDestination.MEMORY -> IconButton(onClick = { page = WorkspaceDestination.NEW_MEMORY }, enabled = !state.workspaceBusy) { Icon(Icons.Filled.Add, "Add memory") }
+                            WorkspaceDestination.MEMORY -> IconButton(onClick = { memory = ""; vm.editMemory(null); page = WorkspaceDestination.NEW_MEMORY }, enabled = !state.workspaceBusy) { Icon(Icons.Filled.Add, "Add memory") }
                             WorkspaceDestination.TASKS -> IconButton(onClick = { page = WorkspaceDestination.NEW_TASK }, enabled = !state.workspaceBusy) { Icon(Icons.Filled.Add, "New task") }
                             WorkspaceDestination.PROJECT -> MoreActions(listOf("Edit instructions" to { editProject(project) }, "Delete project" to { deletingProject = project }))
                             WorkspaceDestination.FILES, WorkspaceDestination.TASK -> TextButton(onClick = vm::refreshWorkspace, enabled = !state.workspaceBusy) { Text("Refresh") }
@@ -108,13 +109,17 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                             item { SettingsRow("App updates", "Check for a new version", vm::checkUpdate) }
                             item { SettingsRow("Install update", "Download and verify before opening Android’s installer", vm::installUpdate) }
                         }
-                        WorkspaceDestination.MEMORY -> ScreenList {
-                            item { ScreenHint("Saved memories are used across chats. You control what stays here.") }
-                            if (state.knowledge.memories.isEmpty()) item { EmptyList("No saved memories", "Ask the assistant to remember something, or add it here.") }
-                            items(state.knowledge.memories, key = { it.id }) { m ->
-                                ListItem(headlineContent = { Text(m.text) }, trailingContent = { MoreActions(listOf("Forget" to { vm.forgetMemory(m.id) })) })
-                            }
-                        }
+                        WorkspaceDestination.MEMORY -> MemoryHub(state, vm,
+                            onImport = { page = WorkspaceDestination.IMPORT_CHATGPT },
+                            onReview = { page = WorkspaceDestination.MEMORY_REVIEW },
+                            onArchive = { page = WorkspaceDestination.MEMORY_ARCHIVE; vm.refreshArchive() },
+                            onEdit = { item -> memory = item.getString("text"); vm.editMemory(item); page = WorkspaceDestination.NEW_MEMORY },
+                            onContext = { page = WorkspaceDestination.MEMORY_CONTEXT })
+                        WorkspaceDestination.IMPORT_CHATGPT -> ChatGptImport(state, vm)
+                        WorkspaceDestination.MEMORY_REVIEW -> MemoryReview(state, vm)
+                        WorkspaceDestination.MEMORY_ARCHIVE -> MemoryArchive(state, vm) { page = WorkspaceDestination.MEMORY_SOURCE }
+                        WorkspaceDestination.MEMORY_SOURCE -> MemorySource(state, vm)
+                        WorkspaceDestination.MEMORY_CONTEXT -> MemoryContext(state)
                         WorkspaceDestination.NEW_MEMORY -> FormScreen {
                             OutlinedTextField(memory, { memory = it.take(2000) }, label = { Text("What should I remember?") }, minLines = 4, modifier = Modifier.fillMaxWidth())
                             Button(onClick = { vm.saveMemory(memory) }, enabled = memory.isNotBlank() && !state.workspaceBusy, modifier = Modifier.fillMaxWidth()) { Text("Save") }
@@ -184,6 +189,7 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                             items(state.syncConflicts, key = { it.id }) { conflict -> SyncComparison(conflict, state.workspaceBusy, vm) }
                             item { SectionLabel("Export and restore") }
                             item { SettingsRow("Export chats and files", "Create a portable backup without server settings") { backup.launch("local-assistant-backup.zip") } }
+                            item { SettingsRow("Import ChatGPT export", "History and memory suggestions stored on PC") { page = WorkspaceDestination.IMPORT_CHATGPT } }
                             item { SettingsRow("Restore a backup", "Import chats as new copies") { restore.launch(arrayOf("application/zip", "application/octet-stream")) } }
                             if (state.conversationId != null) item { SettingsRow("Export current chat", "Save as Markdown") { export.launch("chat.md") } }
                         }
