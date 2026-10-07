@@ -23,4 +23,4 @@ Controls independently disable approved-memory use, historical recall, new chat 
 
 Phone backup covers local chats/projects, not this database. Back up the PC memory directory with the service stopped (or use SQLite's backup API); retain the model manifest if copying the encoder. No downloaded models or user data belong in Git.
 
-Tests: `python -m unittest desktop.memory.tests.test_memory desktop.memory.tests.test_api desktop.memory.tests.test_continuity` from the repository root. Synthetic exports and continuity fixtures are tested; a real user export and phone layout still require device validation. Biological resemblance and parity with ChatGPT are not asserted.
+Tests: `python -m unittest desktop.memory.tests.test_memory desktop.memory.tests.test_extraction desktop.memory.tests.test_api desktop.memory.tests.test_continuity` from the repository root. Synthetic exports and continuity fixtures are tested; a real user export and phone layout still require device validation. Biological resemblance and parity with ChatGPT are not asserted.

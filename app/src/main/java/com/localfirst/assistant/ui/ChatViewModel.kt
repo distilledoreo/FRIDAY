@@ -59,6 +59,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private const val MEMORY_PAGE = 50
+private const val MEMORY_PAGE_MAX = 200 // the PC caps one request at 200
+
 data class ChatUiState(
     /** Null until the first message of a new chat is saved. */
     val conversationId: String? = null,
@@ -78,6 +81,7 @@ data class ChatUiState(
     val syncConflicts: List<SyncConflict> = emptyList(),
     val memorySummary: JSONObject? = null,
     val pcMemories: List<JSONObject> = emptyList(),
+    val pcMemoriesMore: Boolean = false,
     val memorySituations: List<JSONObject> = emptyList(),
     val memorySuggestions: List<JSONObject> = emptyList(),
     val importPreview: JSONObject? = null,
@@ -661,6 +665,10 @@ class ChatViewModel(
         } finally { memoryMigration.unlock() }
     }
     private var memoryRefreshJob: Job? = null
+    private var memoryMoreJob: Job? = null
+    private var memoryQuery = ""
+    private suspend fun memoryPage(client: WorkspaceClient, query: String, offset: Int, limit: Int) =
+        jsonRows(JSONArray(client.request("/workspace/memory/memories?q=" + java.net.URLEncoder.encode(query, "UTF-8") + "&offset=$offset&limit=$limit")))
     fun refreshMemory(query: String = "") {
         if (memoryRefreshJob?.isActive == true) return
         memoryRefreshJob = viewModelScope.launch {
@@ -668,10 +676,35 @@ class ChatViewModel(
                 migrateLegacyMemory()
                 val client = workspace ?: return@launch
                 val summary = JSONObject(client.request("/workspace/memory"))
-                val facts = JSONArray(client.request("/workspace/memory/memories?q=" + java.net.URLEncoder.encode(query, "UTF-8")))
+                // Reload as many memories as are already on screen, so a periodic refresh keeps the scroll position.
+                val wanted = if (query == memoryQuery) maxOf(MEMORY_PAGE, _state.value.pcMemories.size) else MEMORY_PAGE
+                val facts = mutableListOf<JSONObject>()
+                while (facts.size < wanted) {
+                    val limit = minOf(MEMORY_PAGE_MAX, wanted - facts.size)
+                    val page = memoryPage(client, query, facts.size, limit)
+                    facts += page
+                    if (page.size < limit) break
+                }
                 val suggestions = JSONArray(client.request("/workspace/memory/suggestions"))
                 val situations = JSONArray(client.request("/workspace/memory/situations"))
-                _state.update { it.copy(memorySummary = summary, pcMemories = jsonRows(facts), memorySuggestions = jsonRows(suggestions), memorySituations = jsonRows(situations)) }
+                memoryQuery = query
+                _state.update { it.copy(memorySummary = summary, pcMemories = facts, pcMemoriesMore = facts.size >= wanted, memorySuggestions = jsonRows(suggestions), memorySituations = jsonRows(situations)) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _state.update { it.copy(workspaceStatus = "PC memory: ${e.message}") } }
+        }
+    }
+    /** Appends the next page of approved memories when the list is scrolled to its end. */
+    fun loadMoreMemories() {
+        if (memoryMoreJob?.isActive == true) return
+        memoryMoreJob = viewModelScope.launch {
+            try {
+                memoryRefreshJob?.join()
+                val client = workspace ?: return@launch
+                val loaded = _state.value.pcMemories
+                if (!_state.value.pcMemoriesMore) return@launch
+                val page = memoryPage(client, memoryQuery, loaded.size, MEMORY_PAGE)
+                val seen = loaded.mapTo(HashSet()) { it.getString("id") }
+                _state.update { s -> if (s.pcMemories !== loaded) s else s.copy(pcMemories = loaded + page.filter { it.getString("id") !in seen }, pcMemoriesMore = page.size == MEMORY_PAGE) }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { _state.update { it.copy(workspaceStatus = "PC memory: ${e.message}") } }
         }

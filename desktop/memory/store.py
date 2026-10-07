@@ -131,11 +131,11 @@ class MemoryStore:
     def delete_source(self,sid):
         with self.db() as db:
             db.execute('DELETE FROM situations WHERE source_id=?',(sid,));db.execute('DELETE FROM situation_events WHERE source_id=?',(sid,));db.execute('DELETE FROM chunks WHERE source_id=?',(sid,));db.execute('DELETE FROM sources WHERE id=?',(sid,));db.execute('DELETE FROM history_fts WHERE id=?',(sid,));db.execute('DELETE FROM extraction WHERE source_id=?',(sid,));db.execute('DELETE FROM suggestions WHERE source_id=?',(sid,))
-    def memories(self,query=''):
+    def memories(self,query='',offset=0,limit=100):
         tokens=terms(query)
         with self.db() as db:
-            if tokens:rows=db.execute('SELECT m.*,s.title source_title FROM memory_fts f JOIN memories m ON m.id=f.id LEFT JOIN sources s ON s.id=m.source_id WHERE memory_fts MATCH ? ORDER BY bm25(memory_fts) LIMIT 100',(' OR '.join('"'+t+'"' for t in tokens),))
-            else:rows=db.execute('SELECT m.*,s.title source_title FROM memories m LEFT JOIN sources s ON s.id=m.source_id ORDER BY pinned DESC,updated DESC LIMIT 100')
+            if tokens:rows=db.execute('SELECT m.*,s.title source_title FROM memory_fts f JOIN memories m ON m.id=f.id LEFT JOIN sources s ON s.id=m.source_id WHERE memory_fts MATCH ? ORDER BY bm25(memory_fts) LIMIT ? OFFSET ?',(' OR '.join('"'+t+'"' for t in tokens),limit,offset))
+            else:rows=db.execute('SELECT m.*,s.title source_title FROM memories m LEFT JOIN sources s ON s.id=m.source_id ORDER BY pinned DESC,updated DESC,id LIMIT ? OFFSET ?',(limit,offset))
             return [dict(r) for r in rows]
     def remember(self,text,category='other',scope='',pinned=True,source_id=None,quote='',memory_id=None):
         text=text.strip()

@@ -65,7 +65,12 @@ internal fun MemoryHub(state: ChatUiState, vm: ChatViewModel, onImport: () -> Un
                 HorizontalDivider()
             }
         }
-        item { Text("Shows up to 100 matches; search to find other memories. Phone chat backups cover local chats and projects; the PC memory database is separate.", style = MaterialTheme.typography.bodySmall) }
+        if (state.pcMemoriesMore) item(key = "more-memories") {
+            // Composed only when scrolled into view, so reaching the end of the list loads the next page.
+            LaunchedEffect(state.pcMemories.size) { vm.loadMoreMemories() }
+            Box(Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp) }
+        }
+        item { Text("Phone chat backups cover local chats and projects; the PC memory database is separate.", style = MaterialTheme.typography.bodySmall) }
     }
 }
 
