@@ -28,9 +28,8 @@ import com.localfirst.assistant.tools.ToolRegistry
 import com.localfirst.assistant.tools.WebSearchTool
 import com.localfirst.assistant.tools.phone.phoneTools
 import com.localfirst.assistant.voice.VoiceController
-import com.localfirst.assistant.voice.VoiceIo
+import com.localfirst.assistant.voice.VoiceEngines
 import com.localfirst.assistant.voice.VoiceUiState
-import com.localfirst.assistant.voice.androidVoiceIo
 import java.io.File
 import java.time.ZonedDateTime
 import java.util.UUID
@@ -73,7 +72,7 @@ class ChatViewModel(
     private val providers: (ServerSettings) -> ModelProvider,
     private val onSettingsSaved: (ServerSettings) -> Unit = {},
     private val clock: () -> Long = System::currentTimeMillis,
-    voiceIo: VoiceIo? = null,
+    private val voiceEngines: VoiceEngines? = null,
 ) : ViewModel() {
     private var approval: CompletableDeferred<Boolean>? = null
 
@@ -97,10 +96,10 @@ class ChatViewModel(
     private val _state = MutableStateFlow(ChatUiState(settings = settingsStore.load()))
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
-    private val voice = voiceIo?.let { io ->
+    private val voice = voiceEngines?.let { engines ->
         VoiceController(
             scope = viewModelScope,
-            io = io,
+            selectIo = { engines.select(_state.value.settings) },
             chat = state,
             submit = ::submitSpoken,
             stopTurn = ::stop,
@@ -433,7 +432,7 @@ class ChatViewModelFactory(
             toolRegistry = registry,
             providers = ChatViewModel.Companion::openAiProvider,
             onSettingsSaved = { saved -> search.config = saved.toSearchConfig() },
-            voiceIo = androidVoiceIo(app),
+            voiceEngines = VoiceEngines(app),
         ) as T
     }
 }

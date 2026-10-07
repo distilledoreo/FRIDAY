@@ -35,24 +35,7 @@ class VoiceControllerTest {
 
     private val controller = VoiceController(
         scope = scope,
-        io = VoiceIo(
-            input = object : SpeechInput {
-                override suspend fun listen(onPartial: (String) -> Unit, onLevel: (Float) -> Unit): ListenResult {
-                    synchronized(listens) { listens += listens.size }
-                    delay(20)
-                    return synchronized(heard) { if (heard.isEmpty()) ListenResult.Silence else heard.removeAt(0) }
-                }
-            },
-            speaker = speaker,
-            bargeIn = object : BargeInListener {
-                override suspend fun awaitSpeech() = bargeIn.await()
-            },
-            focus = object : VoiceAudioFocus {
-                override fun acquire() = Unit
-                override fun release() = Unit
-            },
-            ensureMicrophone = { true },
-        ),
+        selectIo = { selection },
         chat = chat,
         submit = { text ->
             chat.update { it.copy(messages = it.messages + Message.User(text), busy = true) }
@@ -69,6 +52,29 @@ class VoiceControllerTest {
         },
         bargeInEnabled = { true },
     )
+
+    private val selection get() = VoiceSelection(io)
+
+    private val io by lazy {
+        VoiceIo(
+            input = object : SpeechInput {
+                override suspend fun listen(onPartial: (String) -> Unit, onLevel: (Float) -> Unit): ListenResult {
+                    synchronized(listens) { listens += listens.size }
+                    delay(20)
+                    return synchronized(heard) { if (heard.isEmpty()) ListenResult.Silence else heard.removeAt(0) }
+                }
+            },
+            speaker = speaker,
+            bargeIn = object : BargeInListener {
+                override suspend fun awaitSpeech() = bargeIn.await()
+            },
+            focus = object : VoiceAudioFocus {
+                override fun acquire() = Unit
+                override fun release() = Unit
+            },
+            ensureMicrophone = { true },
+        )
+    }
 
     @After
     fun tearDown() = scope.cancel()

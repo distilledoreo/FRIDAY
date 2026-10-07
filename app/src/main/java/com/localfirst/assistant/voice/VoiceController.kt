@@ -31,16 +31,19 @@ data class VoiceUiState(
     val note: String? = null,
 )
 
+/** The audio setup for one voice session, and a note to show (for example, why it fell back). */
+class VoiceSelection(val io: VoiceIo, val note: String? = null)
+
 /**
  * Hands-free conversation: listen → send → speak the streamed reply sentence
- * by sentence → listen again. While the assistant thinks or speaks, a barge-in
- * listener holds the mic; if the user starts talking, speech stops, the reply
- * is cancelled (keeping what arrived), and it listens. Calls and texts are
- * approved by voice ("yes" / "no") or by tapping the card.
+ * by sentence → listen again. While the assistant thinks or speaks, the
+ * barge-in listener watches the mic; if the user starts talking, speech stops,
+ * the reply is cancelled (keeping what arrived), and it listens. Calls and
+ * texts are approved by voice ("yes" / "no") or by tapping the card.
  */
 class VoiceController(
     private val scope: CoroutineScope,
-    private val io: VoiceIo,
+    private val selectIo: suspend () -> VoiceSelection,
     private val chat: StateFlow<ChatUiState>,
     private val submit: (String) -> Boolean,
     private val stopTurn: () -> Unit,
@@ -54,6 +57,8 @@ class VoiceController(
 
     private var loop: Job? = null
     private var interrupt: CompletableDeferred<Unit>? = null
+    private var current: VoiceIo? = null
+    private val io: VoiceIo get() = checkNotNull(current) { "voice mode isn't running" }
 
     val active: Boolean get() = _state.value != null
 
@@ -68,16 +73,16 @@ class VoiceController(
     fun pause(note: String? = null) {
         loop?.cancel()
         loop = null
-        io.speaker.stop()
-        io.focus.release()
+        current?.speaker?.stop()
+        current?.focus?.release()
         _state.update { it?.copy(phase = VoicePhase.PAUSED, level = 0f, note = note ?: it.note) }
     }
 
     fun close() {
         loop?.cancel()
         loop = null
-        io.speaker.stop()
-        io.focus.release()
+        current?.speaker?.stop()
+        current?.focus?.release()
         _state.value = null
     }
 
@@ -88,13 +93,18 @@ class VoiceController(
 
     fun shutdown() {
         close()
-        io.speaker.shutdown()
+        current?.speaker?.shutdown()
+        current = null
     }
 
     private suspend fun runLoop() {
         try {
+            val selection = selectIo()
+            if (current !== selection.io) current?.speaker?.shutdown()
+            current = selection.io
+            selection.note?.let { note -> _state.update { it?.copy(note = note) } }
             if (!io.ensureMicrophone()) return pauseWith("Voice needs microphone access. Allow it and tap to talk.")
-            if (!io.speaker.prepare()) return pauseWith("Text-to-speech isn't available on this phone.")
+            if (!io.speaker.prepare()) return pauseWith("Text-to-speech isn't available.")
             io.focus.acquire()
             var quiet = 0
             while (true) {
@@ -213,13 +223,19 @@ class VoiceController(
             heard = heard ?: it.heard,
             speaking = speaking ?: if (phase == VoicePhase.LISTENING) "" else it.speaking,
             level = 0f,
-            note = null,
+            // A fallback note stays visible; other hints clear when the phase changes.
+            note = it.note?.takeIf { note -> note.startsWith(FALLBACK_PREFIX) },
         )
     }
 
     private fun pauseWith(note: String) {
-        io.speaker.stop()
-        io.focus.release()
+        current?.speaker?.stop()
+        current?.focus?.release()
         _state.update { it?.copy(phase = VoicePhase.PAUSED, level = 0f, note = note) }
+    }
+
+    companion object {
+        /** Notes starting with this stay on screen for the whole session. */
+        const val FALLBACK_PREFIX = "Using the phone's voice"
     }
 }

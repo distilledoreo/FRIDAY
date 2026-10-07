@@ -148,14 +148,23 @@ The system prompt includes the current date, time, and time zone each turn, so "
 
 ## Voice mode
 
-Tap the mic in the composer (shown while the message box is empty), or launch the app as the assistant. Voice mode is a loop:
+Tap the mic in the composer (shown while the message box is empty), or launch the app as the assistant. Voice mode is a loop: listen → send when you stop talking → speak the reply as it streams, sentence by sentence → listen again. After two quiet turns it pauses ("Tap to talk").
 
-1. **Listen.** Android's speech recognizer, preferring the on-device one so audio stays on the phone. It falls back to the default recognition service, which is asked to work offline when it can. Your words show live.
-2. **Send** when you stop talking.
-3. **Speak the reply as it streams.** The reply is split into sentences (`SpeechChunker`) and Markdown is turned into speakable text (`SpeechText`), so speech starts before the answer is finished. Code blocks are summarized as "The code is on screen." Other audio, like Spotify, is ducked.
-4. **Listen again.** After two quiet turns it pauses ("Tap to talk").
+There are two engines (**Settings → Voice & assistant**):
 
-**Barge-in (quasi-full-duplex).** While the assistant is thinking or speaking, a second mic stream runs with Android's voice-communication source, echo canceller, and noise suppressor. A loudness-onset detector (`SpeechOnsetDetector`) watches it, and talking over the reply stops speech, cancels the reply (keeping what arrived), and listens to you. On the loudspeaker some of the assistant's own voice still reaches the mic, so the trigger is stricter there; headphones and Bluetooth work best. Tapping the orb always interrupts. Turn barge-in off in **Settings → Voice & assistant**.
+| Engine | Speech recognition | Voice | Echo handling |
+| --- | --- | --- | --- |
+| **Your computer** (default) | [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), int8 ONNX, on the desktop API's `/transcribe` | [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) via `/speak` (default voice "Heart"; seven voices to choose from) | Full duplex in communication mode (below) |
+| **This phone** | Android `SpeechRecognizer`, on-device when available | Android text-to-speech | Separate barge-in mic; weaker |
+
+The computer engine uses the **search service address and key**; the desktop assistant API serves `/voice`, `/transcribe`, and `/speak` next to `/search`. If that address isn't set or the service can't be reached, voice falls back to the phone engine and says so. On the author's Ryzen 7 3700X, recognition takes about 0.3 s for a 4 s utterance, and each sentence of speech is ready in about 1 s.
+
+**Full duplex (computer engine).** While voice mode is open, the phone is in communication mode, like a speakerphone call: audio goes to the loudspeaker, or to a headset or Bluetooth device if one is connected, and the platform echo canceller removes the assistant's own voice from the mic.
+
+- **One continuous mic stream.** It's cut into utterances by `Endpointer` (core), which tracks the background level, needs about 200 ms of speech to trigger, ends after about 750 ms of silence, and keeps 800 ms of audio from before the trigger, so the first word of an interruption isn't lost.
+- **Interrupting.** Start talking while it's speaking or thinking: speech stops, the reply is cancelled (keeping what arrived), and what you said is transcribed. The trigger is 6 dB stricter while the assistant is speaking.
+- **Other controls.** Tapping the orb always interrupts. Turn **Interrupt by talking** off to ignore the mic while it speaks.
+- **Volume.** Because it's a communication-mode stream, the volume buttons control call volume while voice mode is open.
 
 **Spoken approvals.** Calls and texts are read out ("Text Jordan Lee (mobile, …): “Running late”. Should I go ahead?"). Say yes or no; anything unclear is asked again, and "no" wins over "yes" in mixed answers. The Approve/Deny card works too.
 
