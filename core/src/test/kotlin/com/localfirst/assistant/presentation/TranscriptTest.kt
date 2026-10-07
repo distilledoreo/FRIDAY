@@ -108,8 +108,8 @@ class TranscriptTest {
 
     @Test
     fun unknownToolsAndBadArgumentsStillGetLabels() {
-        val step = Transcript.step(Message.ToolCall("x", "open_app", "not json"), null)
-        assertEquals("Running open_app…", step.label)
+        val step = Transcript.step(Message.ToolCall("x", "launch_rocket", "not json"), null)
+        assertEquals("Running launch_rocket…", step.label)
         val search = Transcript.step(Message.ToolCall("y", "web_search", "{}"), Message.ToolResult("y", "web_search", "ok", true))
         assertEquals("Searched the web", search.label)
     }

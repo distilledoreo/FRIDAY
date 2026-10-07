@@ -130,31 +130,7 @@ object Transcript {
             result.success -> ToolStepState.DONE
             else -> ToolStepState.FAILED
         }
-        val label = when (call.name) {
-            "web_search" -> {
-                val query = (args?.get("query") as? JsonPrimitive)?.contentOrNull?.trim()
-                val subject = if (query.isNullOrEmpty()) "" else " for “$query”"
-                when (state) {
-                    ToolStepState.RUNNING -> "Searching the web$subject…"
-                    ToolStepState.DONE -> "Searched the web$subject"
-                    ToolStepState.FAILED -> "Web search failed$subject"
-                }
-            }
-            "set_media_volume" -> {
-                val level = (args?.get("level") as? JsonPrimitive)?.intOrNull
-                val amount = if (level == null) "" else " to $level%"
-                when (state) {
-                    ToolStepState.RUNNING -> "Setting media volume$amount…"
-                    ToolStepState.DONE -> "Set media volume$amount"
-                    ToolStepState.FAILED -> "Couldn't set media volume$amount"
-                }
-            }
-            else -> when (state) {
-                ToolStepState.RUNNING -> "Running ${call.name}…"
-                ToolStepState.DONE -> "Used ${call.name}"
-                ToolStepState.FAILED -> "${call.name} failed"
-            }
-        }
+        val label = ToolLabels.label(call.name, args ?: JsonObject(emptyMap()), state)
         return ToolStep(
             callId = call.id,
             name = call.name,
@@ -187,5 +163,110 @@ object ConversationGroups {
             updatedAt >= startOfToday - 30 * day -> LAST_MONTH
             else -> OLDER
         }
+    }
+}
+
+/** Card text for each tool, in running / done / failed form. Unknown tools get a generic label. */
+internal object ToolLabels {
+    fun label(name: String, args: JsonObject, state: ToolStepState): String {
+        fun str(key: String) = (args[key] as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+        fun int(key: String) = (args[key] as? JsonPrimitive)?.intOrNull
+        fun quoted(key: String) = str(key)?.let { "“$it”" }
+        fun pick(running: String, done: String, failed: String) = when (state) {
+            ToolStepState.RUNNING -> "$running…"
+            ToolStepState.DONE -> done
+            ToolStepState.FAILED -> failed
+        }
+
+        return when (name) {
+            "web_search" -> {
+                val subject = quoted("query")?.let { " for $it" }.orEmpty()
+                pick("Searching the web$subject", "Searched the web$subject", "Web search failed$subject")
+            }
+            "set_media_volume" -> {
+                val amount = int("level")?.let { " to $it%" }.orEmpty()
+                pick("Setting media volume$amount", "Set media volume$amount", "Couldn't set media volume$amount")
+            }
+            "open_app" -> {
+                val app = str("name") ?: "the app"
+                pick("Opening $app", "Opened $app", "Couldn't open $app")
+            }
+            "open_url" -> {
+                val site = str("url")?.let { runCatching { java.net.URI(it).host?.removePrefix("www.") }.getOrNull() } ?: "the page"
+                pick("Opening $site", "Opened $site", "Couldn't open $site")
+            }
+            "open_maps" -> {
+                val place = str("query") ?: "the place"
+                if ((args["navigate"] as? JsonPrimitive)?.contentOrNull == "true") {
+                    pick("Starting navigation to $place", "Started navigation to $place", "Couldn't start navigation to $place")
+                } else {
+                    pick("Showing $place on the map", "Showed $place on the map", "Couldn't show $place on the map")
+                }
+            }
+            "media_control" -> {
+                val done = when (str("action")) {
+                    "play" -> "Resumed playback"
+                    "pause" -> "Paused playback"
+                    "next" -> "Skipped to the next track"
+                    "previous" -> "Went back a track"
+                    else -> "Toggled playback"
+                }
+                pick("Controlling playback", done, "Couldn't control playback")
+            }
+            "play_music" -> {
+                val what = quoted("query") ?: "music"
+                pick("Asking Spotify to play $what", "Playing $what on Spotify", "Couldn't play $what")
+            }
+            "now_playing" -> pick("Checking what's playing", "Checked what's playing", "Couldn't check what's playing")
+            "set_alarm" -> {
+                val time = clockTime(int("hour"), int("minute"))?.let { " for $it" }.orEmpty()
+                pick("Setting an alarm$time", "Set an alarm$time", "Couldn't set the alarm$time")
+            }
+            "set_timer" -> {
+                val seconds = (int("hours") ?: 0) * 3600 + (int("minutes") ?: 0) * 60 + (int("seconds") ?: 0)
+                val length = duration(seconds)?.let { " $it" }.orEmpty()
+                pick("Starting a$length timer", "Started a$length timer", "Couldn't start the$length timer")
+            }
+            "flashlight" -> {
+                val on = (args["on"] as? JsonPrimitive)?.contentOrNull != "false"
+                val word = if (on) "on" else "off"
+                pick("Turning the flashlight $word", "Turned the flashlight $word", "Couldn't turn the flashlight $word")
+            }
+            "battery_status" -> pick("Checking the battery", "Checked the battery", "Couldn't check the battery")
+            "search_contacts" -> {
+                val who = quoted("query")?.let { " for $it" }.orEmpty()
+                pick("Looking up contacts$who", "Looked up contacts$who", "Couldn't look up contacts$who")
+            }
+            "place_call" -> {
+                val who = str("to") ?: "the contact"
+                pick("Calling $who", "Called $who", "Didn't call $who")
+            }
+            "send_text" -> {
+                val who = str("to") ?: "the contact"
+                pick("Texting $who", "Texted $who", "Didn't text $who")
+            }
+            "add_calendar_event" -> {
+                val what = quoted("title") ?: "the event"
+                pick("Adding $what to your calendar", "Added $what to your calendar", "Couldn't add $what to your calendar")
+            }
+            "upcoming_events" -> pick("Checking your calendar", "Checked your calendar", "Couldn't read your calendar")
+            else -> pick("Running $name", "Used $name", "$name failed")
+        }
+    }
+
+    private fun clockTime(hour: Int?, minute: Int?): String? {
+        if (hour == null || hour !in 0..23) return null
+        val m = (minute ?: 0).coerceIn(0, 59)
+        val h12 = if (hour % 12 == 0) 12 else hour % 12
+        return "$h12:${m.toString().padStart(2, '0')} ${if (hour < 12) "AM" else "PM"}"
+    }
+
+    private fun duration(seconds: Int): String? = when {
+        seconds <= 0 -> null
+        seconds < 60 -> "$seconds sec"
+        seconds % 3600 == 0 -> "${seconds / 3600} hr"
+        seconds % 60 == 0 && seconds < 3600 -> "${seconds / 60} min"
+        seconds >= 3600 -> "${seconds / 3600} hr ${seconds % 3600 / 60} min"
+        else -> "${seconds / 60} min ${seconds % 60} sec"
     }
 }

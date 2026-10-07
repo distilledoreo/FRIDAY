@@ -167,6 +167,22 @@ class ConversationStreamingTest {
         assertEquals(saved + Message.User("Still there?"), provider.requests.single())
     }
 
+    @Test
+    fun leakedThinkingMarkupIsHidden() = runBlocking {
+        assertEquals("Answer.", ConversationEngine.visibleText("Draft answer. </think>\n\nAnswer."))
+        assertEquals("Visible", ConversationEngine.visibleText("Visible <think>hidden so far"))
+        assertEquals("Plain", ConversationEngine.visibleText("  Plain "))
+
+        val provider = StreamingProvider(
+            listOf(listOf("Nothing tomorrow. ", "</think>", " Nothing on tomorrow.") to ModelResponse.TextResponse("Nothing tomorrow. </think> Nothing on tomorrow.")),
+        )
+        val updates = mutableListOf<String>()
+        val session = ConversationSession(provider, ToolRegistry(), systemPrompt = "")
+        session.submitUserMessage("Tomorrow?") { m -> (m.lastOrNull() as? Message.Assistant)?.let { updates += it.content } }
+        assertEquals(Message.Assistant("Nothing on tomorrow."), session.snapshot().last())
+        assertTrue(updates.last() == "Nothing on tomorrow.")
+    }
+
     /** Replays scripted (deltas, final response) pairs. */
     private class StreamingProvider(
         script: List<Pair<List<String>, ModelResponse>>,

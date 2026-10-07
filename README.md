@@ -8,6 +8,7 @@ Milestones implemented:
 2. A tool registry and `set_media_volume`, so the model can ask the phone to change media volume and then keep talking.
 3. `web_search` on that same registry. The phone calls a separate PC search service. SearXNG is the default search backend. Crawl4AI is an optional page fetch.
 4. A ChatGPT-style chat experience: streamed replies, Markdown, Stop, copy/regenerate/edit, saved chats in a drawer with generated titles, and web searches shown as cards with their sources.
+5. Phone control: apps, web, maps, media and Spotify, alarms and timers, flashlight, battery, contacts, calls and texts (approved in the chat), and the calendar.
 
 ## Layout
 
@@ -22,7 +23,9 @@ desktop/search_service/  PC search HTTP service (SearchProvider + optional PageF
 | `com.localfirst.assistant.conversation` | `Message`, `ConversationSession`, `ConversationEngine`, `FileConversationStore`, `ConversationTitles` |
 | `com.localfirst.assistant.model` | `ModelProvider`, `ModelResponse`, OpenAI-compatible HTTP client with SSE streaming |
 | `com.localfirst.assistant.search` | Phone client for the PC search service. Not a model provider. |
-| `com.localfirst.assistant.tools` | `Tool`, `ToolRegistry`, `set_media_volume`, `web_search` |
+| `com.localfirst.assistant.tools` | `Tool`, `ToolRegistry`, `ToolConfirmer`, `set_media_volume`, `web_search` |
+| `com.localfirst.assistant.tools.phone` | Phone tools and their argument checks, behind the `PhoneActions` interface |
+| `com.localfirst.assistant.phone` (app) | `AndroidPhoneActions`, runtime permission requests, media-session access |
 | `com.localfirst.assistant.presentation` | `Transcript`: messages → what the chat shows (tool cards, labels, thinking state). Plain Kotlin, unit-tested |
 | `com.localfirst.assistant.ui` | Compose chat screen, chats drawer, composer, message views, settings |
 | `com.localfirst.assistant.settings` | Model URL and search URL, stored separately |
@@ -115,6 +118,32 @@ Any server that accepts that `POST /search` body and returns `provider`, `fetche
 To try web search after the desktop service is up, ask something the model should look up, such as `Search the web for SearXNG`. The transcript should show a `web_search` tool call, then titles and URLs, then an assistant reply in the same conversation. A follow-up message still uses that transcript. Stopping only the search service fails that tool and leaves the chat in place. Stopping only the model does not require you to change the search address.
 
 Other phrases that should select the same tool: "Turn the volume down" or "Set media volume to 70". The model chooses the level. Smaller models sometimes answer in text instead of calling the tool; that is a model limitation, not a second code path.
+
+## Phone tools
+
+Each tool is an explicit Android API or intent; the model never gets general control of the phone. Tool definitions and argument checks live in `core` (`tools/phone`, unit-tested against a fake phone). `AndroidPhoneActions` in the app does the Android work.
+
+| Tool | What it does | Needs |
+| --- | --- | --- |
+| `open_app` | Opens an installed app by name. An ambiguous name ("maps") makes the assistant ask which app. | — |
+| `open_url` | Opens an http(s) page in the browser. | — |
+| `open_maps` | Shows a place, or starts navigation (Google Maps if installed, otherwise any `geo:` app). | — |
+| `media_control` | Play, pause, next, previous for whatever is playing. | Notification access for direct control; otherwise a media key |
+| `play_music` | Asks Spotify to play a song, artist, album, or playlist (Android's *play from search*). Falls back to opening a Spotify search. | Spotify installed |
+| `now_playing` | What's playing (title, artist, album, app). | Notification access |
+| `set_alarm`, `set_timer` | Sets them in the Clock app without opening it. | — |
+| `flashlight` | On or off. | — |
+| `battery_status` | Level, charging source, time to full. | — |
+| `search_contacts` | Names and numbers. | Contacts |
+| `place_call` | Calls a contact or number. **Asks for approval in the chat first.** | Phone |
+| `send_text` | Sends an SMS and waits for the phone to confirm it was sent. **Asks for approval in the chat first.** | SMS |
+| `add_calendar_event`, `upcoming_events` | Adds events to the primary calendar; lists events for given days. | Calendar |
+
+- **Approvals:** tools with `requiresConfirmation` (calls and texts) pause the turn and show an approval card with exactly what will happen, for example "Text Jordan Lee (mobile, +1 555 0142): “Running late”". Deny tells the model the user declined, and Stop cancels the request. Contact names are resolved before the card is shown; if several contacts or numbers match, the model asks you which one instead of guessing.
+- **Permissions:** contacts, phone, SMS, and calendar are requested the first time a tool needs them. Notification access can't be requested with a dialog; **Settings → Phone access → Allow notification access** opens the system screen. It's used only to see and control media sessions.
+- **Spotify:** there's no Spotify account or developer app to register. Playback starts through Android's standard *play from search* intent, which Spotify handles, and `now_playing` reads Spotify's media session.
+
+The system prompt includes the current date, time, and time zone each turn, so "tomorrow at 3" and "in 20 minutes" resolve correctly.
 
 ## Chat features
 

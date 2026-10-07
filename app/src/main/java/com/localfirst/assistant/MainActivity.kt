@@ -6,6 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.remember
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.localfirst.assistant.phone.PermissionBroker
 import com.localfirst.assistant.ui.ChatScreen
 import com.localfirst.assistant.ui.ChatViewModel
 import com.localfirst.assistant.ui.ChatViewModelFactory
@@ -15,6 +16,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        PermissionBroker.attach(this)
         setContent {
             AssistantTheme {
                 val factory = remember { ChatViewModelFactory(application) }
@@ -22,5 +24,10 @@ class MainActivity : ComponentActivity() {
                 ChatScreen(viewModel)
             }
         }
+    }
+
+    override fun onDestroy() {
+        PermissionBroker.detach()
+        super.onDestroy()
     }
 }

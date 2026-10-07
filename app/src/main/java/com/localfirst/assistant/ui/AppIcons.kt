@@ -90,4 +90,24 @@ internal object AppIcons {
             }
         }
     }
+
+    /** A simple torch outline, drawn here because Material's flashlight icon is extended-only. */
+    val Flashlight: ImageVector by lazy {
+        materialIcon(name = "Filled.Flashlight") {
+            materialPath {
+                moveTo(6.0f, 2.0f)
+                horizontalLineToRelative(12.0f)
+                verticalLineToRelative(3.0f)
+                horizontalLineTo(6.0f)
+                close()
+                moveTo(6.0f, 6.5f)
+                lineToRelative(2.0f, 3.5f)
+                verticalLineToRelative(12.0f)
+                horizontalLineToRelative(8.0f)
+                verticalLineTo(10.0f)
+                lineToRelative(2.0f, -3.5f)
+                close()
+            }
+        }
+    }
 }

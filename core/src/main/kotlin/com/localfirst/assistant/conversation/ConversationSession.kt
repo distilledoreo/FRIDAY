@@ -1,6 +1,7 @@
 package com.localfirst.assistant.conversation
 
 import com.localfirst.assistant.model.ModelProvider
+import com.localfirst.assistant.tools.ToolConfirmer
 import com.localfirst.assistant.tools.ToolRegistry
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -15,11 +16,16 @@ import kotlinx.coroutines.sync.withLock
 class ConversationSession(
     modelProvider: ModelProvider,
     val toolRegistry: ToolRegistry,
-    val systemPrompt: String,
+    systemPrompt: String,
     private val engine: ConversationEngine = ConversationEngine(),
     initialMessages: List<Message> = emptyList(),
+    /** Approves tools that require confirmation. Null refuses them. */
+    var confirmer: ToolConfirmer? = null,
 ) {
     var modelProvider: ModelProvider = modelProvider
+
+    /** Can change between turns, e.g. to include the current time. */
+    var systemPrompt: String = systemPrompt
 
     private val messages = initialMessages.toMutableList()
     private val mutex = Mutex()
@@ -98,6 +104,7 @@ class ConversationSession(
             toolRegistry = toolRegistry,
             systemPrompt = systemPrompt,
             onUpdate = onUpdate,
+            confirmer = confirmer,
         )
 
     private fun truncateAfter(index: Int) {
