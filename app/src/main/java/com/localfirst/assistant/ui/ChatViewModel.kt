@@ -27,6 +27,9 @@ import com.localfirst.assistant.tools.ToolConfirmer
 import com.localfirst.assistant.tools.ToolRegistry
 import com.localfirst.assistant.tools.WebSearchTool
 import com.localfirst.assistant.tools.phone.phoneTools
+import com.localfirst.assistant.voice.VoiceController
+import com.localfirst.assistant.voice.VoiceEngines
+import com.localfirst.assistant.voice.VoiceUiState
 import java.io.File
 import java.time.ZonedDateTime
 import java.util.UUID
@@ -69,6 +72,7 @@ class ChatViewModel(
     private val providers: (ServerSettings) -> ModelProvider,
     private val onSettingsSaved: (ServerSettings) -> Unit = {},
     private val clock: () -> Long = System::currentTimeMillis,
+    private val voiceEngines: VoiceEngines? = null,
 ) : ViewModel() {
     private var approval: CompletableDeferred<Boolean>? = null
 
@@ -91,6 +95,22 @@ class ChatViewModel(
     private var createdAt: Long = 0
     private val _state = MutableStateFlow(ChatUiState(settings = settingsStore.load()))
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
+
+    private val voice = voiceEngines?.let { engines ->
+        VoiceController(
+            scope = viewModelScope,
+            selectIo = { engines.select(_state.value.settings) },
+            chat = state,
+            submit = ::submitSpoken,
+            resubmit = ::resubmitSpoken,
+            stopTurn = ::stop,
+            answerApproval = ::answerApproval,
+            bargeInEnabled = { _state.value.settings.voiceBargeIn },
+        )
+    }
+
+    /** Null when voice mode is closed. */
+    val voiceState: StateFlow<VoiceUiState?> = voice?.state ?: MutableStateFlow(null)
 
     init {
         refreshConversationList()
@@ -141,6 +161,58 @@ class ChatViewModel(
         approval?.complete(approved)
     }
 
+    // ---- voice -----------------------------------------------------------------
+
+    fun startVoice() {
+        if (!settingsReady()) return
+        voice?.start()
+    }
+
+    fun closeVoice() = voice?.close()
+
+    /** Called when the app goes to the background, where Android blocks the mic. */
+    fun pauseVoice() {
+        if (voice?.active == true) voice.pause("Paused while the app was in the background. Tap to talk.")
+    }
+
+    fun interruptVoice() = voice?.interrupt()
+
+    /** Opened as the phone's assistant (long-press power, headset button): a fresh chat in voice mode. */
+    fun startAssistantSession() {
+        viewModelScope.launch {
+            voice?.close()
+            turnJob?.cancel()
+            turnJob?.join()
+            if (_state.value.messages.isNotEmpty()) resetToNewChat()
+            startVoice()
+        }
+    }
+
+    private fun submitSpoken(text: String): Boolean {
+        if (_state.value.busy || text.isBlank() || _state.value.settings.validate() != null) return false
+        runTurn { onUpdate -> session.submitUserMessage(text, onUpdate) }
+        return true
+    }
+
+    /**
+     * Replaces the last user message with [text] and asks again, for a spoken
+     * message that turned out to continue after a pause. Not when a tool already
+     * ran for it, so actions never repeat.
+     */
+    private fun resubmitSpoken(text: String): Boolean {
+        if (_state.value.busy || text.isBlank() || _state.value.settings.validate() != null) return false
+        val messages = session.snapshot()
+        val lastUser = messages.indexOfLast { it is Message.User }
+        if (lastUser < 0 || messages.drop(lastUser + 1).any { it is Message.ToolCall }) return false
+        runTurn { onUpdate -> session.editUserMessage(lastUser, text, onUpdate) }
+        return true
+    }
+
+    override fun onCleared() {
+        voice?.shutdown()
+        super.onCleared()
+    }
+
     fun startEditing(index: Int) {
         val message = _state.value.messages.getOrNull(index) as? Message.User ?: return
         if (_state.value.busy) return
@@ -153,7 +225,9 @@ class ChatViewModel(
 
     private fun runTurn(block: suspend (onUpdate: (List<Message>) -> Unit) -> TurnOutcome) {
         val isFirstExchange = session.snapshot().none { it is Message.Assistant }
-        session.systemPrompt = AssistantPrompts.system(ZonedDateTime.now())
+        val now = ZonedDateTime.now()
+        session.systemPrompt = AssistantPrompts.system(now)
+        session.latestUserNote = AssistantPrompts.timeNote(now)
         _state.update { it.copy(busy = true, error = null) }
         turnJob = viewModelScope.launch {
             var outcome: TurnOutcome? = null
@@ -375,6 +449,7 @@ class ChatViewModelFactory(
             toolRegistry = registry,
             providers = ChatViewModel.Companion::openAiProvider,
             onSettingsSaved = { saved -> search.config = saved.toSearchConfig() },
+            voiceEngines = VoiceEngines(app),
         ) as T
     }
 }

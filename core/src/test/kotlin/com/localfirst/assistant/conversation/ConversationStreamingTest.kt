@@ -183,6 +183,35 @@ class ConversationStreamingTest {
         assertTrue(updates.last() == "Nothing on tomorrow.")
     }
 
+    @Test
+    fun theTimeNoteGoesOnTheLatestUserMessageOnlyAndIsNotStored() = runBlocking {
+        val provider = StreamingProvider(
+            listOf(
+                listOf("A") to ModelResponse.TextResponse("A"),
+                listOf("B") to ModelResponse.TextResponse("B"),
+            ),
+        )
+        val session = ConversationSession(provider, ToolRegistry(), systemPrompt = "Today is Wednesday.")
+        session.latestUserNote = "[Sent at 9:00 AM]"
+        session.submitUserMessage("First")
+        session.latestUserNote = "[Sent at 9:01 AM]"
+        session.submitUserMessage("Second")
+
+        assertEquals(Message.User("First\n\n[Sent at 9:00 AM]"), provider.requests[0][1])
+        // Next turn: the system prompt and the earlier exchange are unchanged except
+        // that the old note is gone; only the newest message carries one.
+        assertEquals(
+            listOf(
+                Message.System("Today is Wednesday."),
+                Message.User("First"),
+                Message.Assistant("A"),
+                Message.User("Second\n\n[Sent at 9:01 AM]"),
+            ),
+            provider.requests[1],
+        )
+        assertEquals(listOf(Message.User("First"), Message.Assistant("A"), Message.User("Second"), Message.Assistant("B")), session.snapshot())
+    }
+
     /** Replays scripted (deltas, final response) pairs. */
     private class StreamingProvider(
         script: List<Pair<List<String>, ModelResponse>>,

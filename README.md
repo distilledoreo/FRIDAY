@@ -9,6 +9,7 @@ Milestones implemented:
 3. `web_search` on that same registry. The phone calls a separate PC search service. SearXNG is the default search backend. Crawl4AI is an optional page fetch.
 4. A ChatGPT-style chat experience: streamed replies, Markdown, Stop, copy/regenerate/edit, saved chats in a drawer with generated titles, and web searches shown as cards with their sources.
 5. Phone control: apps, web, maps, media and Spotify, alarms and timers, flashlight, battery, contacts, calls and texts (approved in the chat), and the calendar.
+6. Voice mode and assistant registration: a hands-free voice conversation with barge-in, and the app can be the phone's default digital assistant.
 
 ## Layout
 
@@ -143,7 +144,43 @@ Each tool is an explicit Android API or intent; the model never gets general con
 - **Permissions:** contacts, phone, SMS, and calendar are requested the first time a tool needs them. Notification access can't be requested with a dialog; **Settings → Phone access → Allow notification access** opens the system screen. It's used only to see and control media sessions.
 - **Spotify:** there's no Spotify account or developer app to register. Playback starts through Android's standard *play from search* intent, which Spotify handles, and `now_playing` reads Spotify's media session.
 
-The system prompt includes the current date, time, and time zone each turn, so "tomorrow at 3" and "in 20 minutes" resolve correctly.
+The system prompt includes today's date and time zone, and the newest message carries the time it was sent ("[Sent at 9:41 AM]", added when sending, not stored or shown), so "tomorrow at 3" and "in 20 minutes" resolve correctly. Keeping the time out of the system prompt keeps it identical all day, so the model server reuses its cached prompt instead of re-reading the whole conversation every minute. On the author's setup, the next turn of a ~1,400-token chat went from 12.3 s to 2.2 s before the reply started.
+
+## Voice mode
+
+Tap the mic in the composer (shown while the message box is empty), or launch the app as the assistant. Voice mode is a loop: listen → send when you stop talking → speak the reply as it streams, sentence by sentence → listen again. After two quiet turns it pauses ("Tap to talk").
+
+There are two engines (**Settings → Voice & assistant**):
+
+| Engine | Speech recognition | Voice | Echo handling |
+| --- | --- | --- | --- |
+| **Your computer** (default) | [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), int8 ONNX, on the desktop API's `/transcribe` | [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) via `/speak` (default voice "Heart"; seven voices to choose from) | Full duplex in communication mode (below) |
+| **This phone** | Android `SpeechRecognizer`, on-device when available | Android text-to-speech | Separate barge-in mic; weaker |
+
+The computer engine uses the **search service address and key**; the desktop assistant API serves `/voice`, `/transcribe`, and `/speak` next to `/search`. If that address isn't set or the service can't be reached, voice falls back to the phone engine and says so. On the author's Ryzen 7 3700X, recognition takes about 0.3 s for a 4 s utterance, and each sentence of speech is ready in about 1 s.
+
+**Full duplex (computer engine).** While voice mode is open, the phone is in communication mode, like a speakerphone call: audio goes to the loudspeaker, or to a headset or Bluetooth device if one is connected, and the platform echo canceller removes the assistant's own voice from the mic.
+
+- **One continuous mic stream.** It's cut into utterances by `Endpointer` (core), which tracks the background level, needs about 200 ms of speech to trigger, ends after about 1 s of silence, and keeps 800 ms of audio from before the trigger, so the first word of an interruption isn't lost.
+- **Interrupting.** Start talking while it's speaking or thinking: speech stops, the reply is cancelled (keeping what arrived), and what you said is transcribed. The trigger is 6 dB stricter while the assistant is speaking.
+- **Pausing mid-thought.** If you start talking again before the assistant has said anything (within 8 s of sending), the new words are joined to your last message, which is sent again as one. If a tool already ran for the first half, it's sent as a separate message instead, so actions never repeat.
+- **Other controls.** Tapping the orb always interrupts. Turn **Interrupt by talking** off to ignore the mic while it speaks.
+- **Volume.** Because it's a communication-mode stream, the volume buttons control call volume while voice mode is open.
+
+**Spoken approvals.** Calls and texts are read out ("Text Jordan Lee (mobile, …): “Running late”. Should I go ahead?"). Say yes or no; anything unclear is asked again, and "no" wins over "yes" in mixed answers. The Approve/Deny card works too.
+
+Voice pauses when the app goes to the background, because Android blocks the mic for background apps.
+
+## Default assistant
+
+The activity handles `android.intent.action.ASSIST` and `android.intent.action.VOICE_COMMAND`. To use it:
+
+1. Go to **Settings → Voice & assistant → Set as default assistant**. This opens **Default apps**.
+2. Choose **Digital assistant app → Assistant**.
+
+Then long-press the power button (or use your assistant gesture), or press a Bluetooth headset's voice button, and the app opens a new chat in voice mode.
+
+Not possible for a regular app: a wake word (hotword detection is reserved for privileged system apps), and opening over the lock screen without unlocking.
 
 ## Chat features
 

@@ -37,6 +37,7 @@ internal fun Composer(
     onSend: () -> Unit,
     onStop: () -> Unit,
     onCancelEdit: () -> Unit,
+    onVoice: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
@@ -99,6 +100,18 @@ internal fun Composer(
                         ),
                     ) {
                         Icon(AppIcons.Stop, contentDescription = "Stop", modifier = Modifier.size(18.dp))
+                    }
+                } else if (draft.isBlank() && onVoice != null && !editing) {
+                    FilledIconButton(
+                        onClick = onVoice,
+                        shape = CircleShape,
+                        modifier = Modifier.size(40.dp),
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.onSurface,
+                            contentColor = MaterialTheme.colorScheme.surface,
+                        ),
+                    ) {
+                        Icon(AppIcons.Mic, contentDescription = "Voice mode", modifier = Modifier.size(20.dp))
                     }
                 } else {
                     FilledIconButton(

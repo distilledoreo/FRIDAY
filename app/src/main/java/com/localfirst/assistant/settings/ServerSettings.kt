@@ -11,6 +11,12 @@ data class ServerSettings(
     val searchBaseUrl: String = DEFAULT_SEARCH_BASE_URL,
     /** Bearer token for the search service. Blank sends no Authorization header. */
     val searchApiKey: String = "",
+    /** In voice mode, start talking to interrupt the assistant. */
+    val voiceBargeIn: Boolean = true,
+    /** [VOICE_COMPUTER]: Parakeet + Kokoro on the search service's computer. [VOICE_PHONE]: Android speech. */
+    val voiceEngine: String = VOICE_COMPUTER,
+    /** Kokoro voice for the computer engine. */
+    val voiceName: String = DEFAULT_VOICE,
 ) {
     fun validate(): String? {
         val url = baseUrl.trim()
@@ -35,6 +41,9 @@ data class ServerSettings(
         const val DEFAULT_TIMEOUT_SECONDS = 90
         const val MIN_TIMEOUT_SECONDS = 5
         const val MAX_TIMEOUT_SECONDS = 600
+        const val VOICE_COMPUTER = "computer"
+        const val VOICE_PHONE = "phone"
+        const val DEFAULT_VOICE = "af_heart"
     }
 }
 
@@ -52,6 +61,9 @@ class ServerSettingsStore(
         searchBaseUrl = prefs.getString(KEY_SEARCH_URL, ServerSettings.DEFAULT_SEARCH_BASE_URL)
             ?: ServerSettings.DEFAULT_SEARCH_BASE_URL,
         searchApiKey = prefs.getString(KEY_SEARCH_API_KEY, "") ?: "",
+        voiceBargeIn = prefs.getBoolean(KEY_VOICE_BARGE_IN, true),
+        voiceEngine = prefs.getString(KEY_VOICE_ENGINE, ServerSettings.VOICE_COMPUTER) ?: ServerSettings.VOICE_COMPUTER,
+        voiceName = prefs.getString(KEY_VOICE_NAME, ServerSettings.DEFAULT_VOICE) ?: ServerSettings.DEFAULT_VOICE,
     )
 
     fun save(settings: ServerSettings) {
@@ -62,6 +74,9 @@ class ServerSettingsStore(
             .putInt(KEY_TIMEOUT, settings.timeoutSeconds)
             .putString(KEY_SEARCH_URL, settings.searchBaseUrl.trim())
             .putString(KEY_SEARCH_API_KEY, settings.searchApiKey.trim())
+            .putBoolean(KEY_VOICE_BARGE_IN, settings.voiceBargeIn)
+            .putString(KEY_VOICE_ENGINE, settings.voiceEngine)
+            .putString(KEY_VOICE_NAME, settings.voiceName)
             .apply()
     }
 
@@ -73,5 +88,8 @@ class ServerSettingsStore(
         const val KEY_TIMEOUT = "timeout_seconds"
         const val KEY_SEARCH_URL = "search_base_url"
         const val KEY_SEARCH_API_KEY = "search_api_key"
+        const val KEY_VOICE_BARGE_IN = "voice_barge_in"
+        const val KEY_VOICE_ENGINE = "voice_engine"
+        const val KEY_VOICE_NAME = "voice_name"
     }
 }
