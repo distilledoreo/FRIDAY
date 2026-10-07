@@ -140,7 +140,7 @@ class ConversationEngine(
     internal fun outboundMessages(systemPrompt: String, messages: List<Message>, note: String? = null): List<Message> {
         val lastUser = if (note.isNullOrBlank()) -1 else messages.indexOfLast { it is Message.User }
         val body = messages.mapIndexed { i, m ->
-            if (i == lastUser) Message.User("${(m as Message.User).content}\n\n$note") else m
+            if (i == lastUser) (m as Message.User).let { it.copy(content = "${it.content}\n\n$note".trim()) } else m
         }
         if (systemPrompt.isBlank()) return body
         return listOf(Message.System(systemPrompt)) + body

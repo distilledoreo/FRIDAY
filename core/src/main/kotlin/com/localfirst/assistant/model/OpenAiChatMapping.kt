@@ -1,9 +1,12 @@
 package com.localfirst.assistant.model
 
+import com.localfirst.assistant.conversation.AttachmentKind
 import com.localfirst.assistant.conversation.Message
 import com.localfirst.assistant.json.JsonCodec
 import com.localfirst.assistant.tools.ToolCall
 import com.localfirst.assistant.tools.ToolDefinition
+import java.io.File
+import java.util.Base64
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -44,13 +47,22 @@ internal fun buildChatCompletionRequest(
     }
 }
 
-internal fun messagesToOpenAi(messages: List<Message>): JsonArray {
+/** Reads a stored attachment image; null when the file is gone. */
+internal typealias ImageReader = (path: String) -> ByteArray?
+
+internal val readImageFile: ImageReader = { path -> runCatching { File(path).readBytes() }.getOrNull() }
+
+internal fun messagesToOpenAi(messages: List<Message>, readImage: ImageReader = readImageFile): JsonArray {
     val out = mutableListOf<JsonObject>()
     var index = 0
     while (index < messages.size) {
         when (val message = messages[index]) {
             is Message.System -> out += roleMessage("system", message.content)
-            is Message.User -> out += roleMessage("user", message.content)
+            is Message.User -> out += if (message.attachments.isEmpty()) {
+                roleMessage("user", message.content)
+            } else {
+                userMessageWithAttachments(message, readImage)
+            }
             is Message.Assistant -> {
                 val calls = followingToolCalls(messages, index + 1)
                 out += if (calls.isEmpty()) {
@@ -141,6 +153,56 @@ private fun followingToolCalls(messages: List<Message>, start: Int): List<Messag
         index++
     }
     return calls
+}
+
+/**
+ * OpenAI multi-part content: one text part with the user's words and any
+ * document text (wrapped in <file> tags), then the images as data URIs.
+ */
+private fun userMessageWithAttachments(message: Message.User, readImage: ImageReader): JsonObject {
+    val text = buildString {
+        append(message.content)
+        for (doc in message.attachments.filter { it.kind == AttachmentKind.DOCUMENT }) {
+            if (isNotEmpty()) append("\n\n")
+            append("<file name=\"").append(doc.name.replace("\"", "'")).append("\">")
+            doc.text?.takeIf { it.isNotBlank() }?.let { append("\n").append(it) }
+            doc.note?.let { append("\n[").append(it).append(']') }
+            append("\n</file>")
+        }
+    }
+    val parts = buildJsonArray {
+        if (text.isNotBlank()) add(textPart(text))
+        for (attachment in message.attachments) {
+            val paths = attachment.imagePaths
+            if (paths.isEmpty()) continue
+            if (attachment.kind == AttachmentKind.DOCUMENT) add(textPart("[Pages of ${attachment.name}]"))
+            for (path in paths) {
+                val bytes = readImage(path)
+                if (bytes == null) {
+                    add(textPart("[Image no longer available: ${attachment.name}]"))
+                    continue
+                }
+                add(
+                    buildJsonObject {
+                        put("type", "image_url")
+                        put(
+                            "image_url",
+                            buildJsonObject { put("url", "data:image/jpeg;base64," + Base64.getEncoder().encodeToString(bytes)) },
+                        )
+                    },
+                )
+            }
+        }
+    }
+    return buildJsonObject {
+        put("role", "user")
+        put("content", parts)
+    }
+}
+
+private fun textPart(text: String) = buildJsonObject {
+    put("type", "text")
+    put("text", text)
 }
 
 private fun roleMessage(role: String, content: String): JsonObject = buildJsonObject {

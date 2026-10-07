@@ -151,6 +151,42 @@ private data class ConversationDto(
 private data class SourceDto(val title: String, val url: String)
 
 @Serializable
+private data class AttachmentDto(
+    val id: String,
+    val kind: String,
+    val name: String,
+    val mimeType: String,
+    val path: String? = null,
+    val text: String? = null,
+    val pageImages: List<String> = emptyList(),
+    val note: String? = null,
+) {
+    fun toModel() = Attachment(
+        id = id,
+        kind = if (kind == "document") AttachmentKind.DOCUMENT else AttachmentKind.IMAGE,
+        name = name,
+        mimeType = mimeType,
+        path = path,
+        text = text,
+        pageImages = pageImages,
+        note = note,
+    )
+
+    companion object {
+        fun from(a: Attachment) = AttachmentDto(
+            id = a.id,
+            kind = if (a.kind == AttachmentKind.DOCUMENT) "document" else "image",
+            name = a.name,
+            mimeType = a.mimeType,
+            path = a.path,
+            text = a.text,
+            pageImages = a.pageImages,
+            note = a.note,
+        )
+    }
+}
+
+@Serializable
 private data class MessageDto(
     val role: String,
     val content: String = "",
@@ -159,9 +195,10 @@ private data class MessageDto(
     val arguments: String? = null,
     val success: Boolean? = null,
     val sources: List<SourceDto> = emptyList(),
+    val attachments: List<AttachmentDto> = emptyList(),
 ) {
     fun toModel(): Message? = when (role) {
-        "user" -> Message.User(content)
+        "user" -> Message.User(content, attachments.map { it.toModel() })
         "assistant" -> Message.Assistant(content)
         "tool_call" -> Message.ToolCall(id = id.orEmpty(), name = name.orEmpty(), argumentsJson = arguments ?: "{}")
         "tool_result" -> Message.ToolResult(
@@ -177,7 +214,11 @@ private data class MessageDto(
     companion object {
         fun from(message: Message): MessageDto? = when (message) {
             is Message.System -> null
-            is Message.User -> MessageDto(role = "user", content = message.content)
+            is Message.User -> MessageDto(
+                role = "user",
+                content = message.content,
+                attachments = message.attachments.map(AttachmentDto::from),
+            )
             is Message.Assistant -> MessageDto(role = "assistant", content = message.content)
             is Message.ToolCall -> MessageDto(
                 role = "tool_call",

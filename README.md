@@ -10,6 +10,7 @@ Milestones implemented:
 4. A ChatGPT-style chat experience: streamed replies, Markdown, Stop, copy/regenerate/edit, saved chats in a drawer with generated titles, and web searches shown as cards with their sources.
 5. Phone control: apps, web, maps, media and Spotify, alarms and timers, flashlight, battery, contacts, calls and texts (approved in the chat), and the calendar.
 6. Voice mode and assistant registration: a hands-free voice conversation with barge-in, and the app can be the phone's default digital assistant.
+7. Images and file attachments: photos, camera capture, PDFs, Word documents, and text/code files, with previews and saved attachments.
 
 ## Layout
 
@@ -71,6 +72,21 @@ curl http://127.0.0.1:11434/v1/chat/completions \
 ```
 
 Use the model name you actually have. Milestone 2 needs a model and server that emit OpenAI-style `tool_calls`. A server that only returns text can still hold a normal chat; it just will not call `set_media_volume`.
+
+## Images and files
+
+Tap **+** beside the message field to pick photos, take a photo, or select files. You can attach up to six files per message and send them with or without text. Android's share menu can also send files or text to **Assistant**; shared content opens a new draft for review before sending.
+
+Images are resized to a maximum edge of 1,280 pixels, saved as JPEG in the app's private storage, and sent as OpenAI-compatible `image_url` parts. The model server must support vision. Text-only chats keep their existing request format. Tap a sent photo to enlarge it. Attachments stay with saved chats, follow-up turns, retries, and text edits.
+
+Documents are read by the configured **Search service address** using its API key, via `POST /extract`. The desktop assistant API must provide that endpoint; its implementation and integration contract are in [desktop/attachments](desktop/attachments/README.md):
+
+- PDF text and DOCX paragraphs/tables are extracted; plain text, CSV, Markdown, JSON, and source code are read as text.
+- Scanned PDFs use up to four page images for the vision model.
+- Each document is limited to 25 MB and 60,000 extracted characters. Reading errors and truncation notes appear beside the file. Remove failed attachments before sending.
+- Spreadsheet workbooks, presentations, audio, and video attachments are not supported in this version.
+
+Original files stay where they were picked. The app stores the processed attachment data with the chat. Deleting a saved chat also removes its private attachment images.
 
 ## Volume tool
 

@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.FilledIconButton
@@ -38,6 +39,11 @@ internal fun Composer(
     onStop: () -> Unit,
     onCancelEdit: () -> Unit,
     onVoice: (() -> Unit)?,
+    sendEnabled: Boolean,
+    attachments: List<DraftAttachment> = emptyList(),
+    editingHasAttachments: Boolean = false,
+    onAttach: () -> Unit = {},
+    onRemoveAttachment: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
@@ -53,7 +59,7 @@ internal fun Composer(
                     modifier = Modifier.size(16.dp),
                 )
                 Text(
-                    text = "Editing message",
+                    text = if (editingHasAttachments) "Editing message · attachments kept" else "Editing message",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 6.dp).weight(1f),
@@ -63,6 +69,7 @@ internal fun Composer(
                 }
             }
         }
+        if (attachments.isNotEmpty()) DraftAttachmentStrip(attachments, onRemoveAttachment)
         Surface(
             shape = RoundedCornerShape(28.dp),
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -73,6 +80,13 @@ internal fun Composer(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 modifier = Modifier.padding(end = 6.dp, bottom = 6.dp),
             ) {
+                IconButton(
+                    onClick = onAttach,
+                    enabled = !busy && !editing && attachments.size < ChatViewModel.MAX_ATTACHMENTS,
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = "Attach photos or files")
+                }
                 TextField(
                     value = draft,
                     onValueChange = onDraftChange,
@@ -101,7 +115,7 @@ internal fun Composer(
                     ) {
                         Icon(AppIcons.Stop, contentDescription = "Stop", modifier = Modifier.size(18.dp))
                     }
-                } else if (draft.isBlank() && onVoice != null && !editing) {
+                } else if (draft.isBlank() && attachments.isEmpty() && onVoice != null && !editing) {
                     FilledIconButton(
                         onClick = onVoice,
                         shape = CircleShape,
@@ -116,7 +130,7 @@ internal fun Composer(
                 } else {
                     FilledIconButton(
                         onClick = onSend,
-                        enabled = draft.isNotBlank(),
+                        enabled = sendEnabled,
                         shape = CircleShape,
                         modifier = Modifier.size(40.dp),
                         colors = IconButtonDefaults.filledIconButtonColors(

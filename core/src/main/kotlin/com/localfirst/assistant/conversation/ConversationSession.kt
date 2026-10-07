@@ -40,13 +40,14 @@ class ConversationSession(
 
     suspend fun submitUserMessage(
         text: String,
+        attachments: List<Attachment> = emptyList(),
         onUpdate: (List<Message>) -> Unit = {},
     ): TurnOutcome = mutex.withLock {
         val trimmed = text.trim()
-        if (trimmed.isEmpty()) {
+        if (trimmed.isEmpty() && attachments.isEmpty()) {
             return@withLock TurnOutcome.EmptyInput(messages.toList())
         }
-        messages += Message.User(trimmed)
+        messages += Message.User(trimmed, attachments)
         onUpdate(messages.toList())
         runTurn(onUpdate)
     }
@@ -87,11 +88,13 @@ class ConversationSession(
         onUpdate: (List<Message>) -> Unit = {},
     ): TurnOutcome = mutex.withLock {
         val trimmed = text.trim()
-        require(messages.getOrNull(index) is Message.User) { "Message $index is not a user message." }
-        if (trimmed.isEmpty()) {
+        val original = messages.getOrNull(index) as? Message.User
+        require(original != null) { "Message $index is not a user message." }
+        if (trimmed.isEmpty() && original.attachments.isEmpty()) {
             return@withLock TurnOutcome.EmptyInput(messages.toList())
         }
-        messages[index] = Message.User(trimmed)
+        // Editing changes the words; the attachments stay with the message.
+        messages[index] = original.copy(content = trimmed)
         truncateAfter(index)
         onUpdate(messages.toList())
         runTurn(onUpdate)
