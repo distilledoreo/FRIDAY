@@ -162,6 +162,10 @@ private fun followingToolCalls(messages: List<Message>, start: Int): List<Messag
 private fun userMessageWithAttachments(message: Message.User, readImage: ImageReader): JsonObject {
     val text = buildString {
         append(message.content)
+        message.attachments.forEach { a ->
+            a.remoteFileId?.let { append("\n[Workspace file: ${a.name}; file_id=$it]") }
+            if (a.kind == AttachmentKind.IMAGE && a.note != null) append("\n[${a.name}: ${a.note}]")
+        }
         for (doc in message.attachments.filter { it.kind == AttachmentKind.DOCUMENT }) {
             if (isNotEmpty()) append("\n\n")
             append("<file name=\"").append(doc.name.replace("\"", "'")).append("\">")

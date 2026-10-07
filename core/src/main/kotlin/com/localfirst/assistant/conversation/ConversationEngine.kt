@@ -138,12 +138,39 @@ class ConversationEngine(
      * stay identical between turns and the server's prompt cache keeps working.
      */
     internal fun outboundMessages(systemPrompt: String, messages: List<Message>, note: String? = null): List<Message> {
-        val lastUser = if (note.isNullOrBlank()) -1 else messages.indexOfLast { it is Message.User }
-        val body = messages.mapIndexed { i, m ->
+        // Keep complete user turns, including all associated tool calls/results.
+        // The on-device archive remains complete and searchable with search_history.
+        val starts = messages.indices.filter { messages[it] is Message.User }
+        var start = 0
+        var length = messages.sumOf(::contextLength)
+        for (next in starts.drop(1)) {
+            if (length <= 70000) break
+            length -= messages.subList(start, next).sumOf(::contextLength)
+            start = next
+        }
+        val selected = messages.drop(start).map { m ->
+            when (m) {
+                is Message.ToolResult -> m.copy(content = m.content.take(16000))
+                is Message.User -> m.copy(attachments = m.attachments.map { it.copy(text = it.text?.take(24000), note = if ((it.text?.length ?: 0) > 24000)
+                    listOfNotNull(it.note, "Model excerpt limited to 24,000 characters. Use execute_python on the workspace file for complete analysis.").joinToString(" ") else it.note) })
+                else -> m
+            }
+        }
+        val lastUser = if (note.isNullOrBlank()) -1 else selected.indexOfLast { it is Message.User }
+        val body = selected.mapIndexed { i, m ->
             if (i == lastUser) (m as Message.User).let { it.copy(content = "${it.content}\n\n$note".trim()) } else m
         }
-        if (systemPrompt.isBlank()) return body
-        return listOf(Message.System(systemPrompt)) + body
+        val prompt = systemPrompt + if (start > 0) "\nEarlier turns were omitted to fit context. Use search_history to recover details; do not assume you recall them." else ""
+        if (prompt.isBlank()) return body
+        return listOf(Message.System(prompt)) + body
+    }
+
+    private fun contextLength(m: Message): Int = when (m) {
+        is Message.User -> m.content.length + m.attachments.sumOf { (it.text?.length ?: 0) + it.imagePaths.size * 5000 }
+        is Message.Assistant -> m.content.length
+        is Message.ToolResult -> m.content.length
+        is Message.ToolCall -> m.argumentsJson.length
+        is Message.System -> m.content.length
     }
 
     companion object {
@@ -161,7 +188,7 @@ class ConversationEngine(
 
         private const val THINK_OPEN = "<think>"
         private const val THINK_CLOSE = "</think>"
-        const val DEFAULT_MAX_TOOL_ROUNDS = 4
+        const val DEFAULT_MAX_TOOL_ROUNDS = 20
         const val STOPPED_RESULT = "Stopped by the user before this tool finished."
     }
 }

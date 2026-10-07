@@ -103,6 +103,9 @@ internal fun Composer(
                         disabledIndicatorColor = Color.Transparent,
                     ),
                 )
+                if (!busy && !editing && attachments.isNotEmpty() && attachments.all { it.status == DraftStatus.READY } && onVoice != null) {
+                    IconButton(onClick = onVoice) { Icon(AppIcons.Mic, contentDescription = "Talk about attachments") }
+                }
                 if (busy) {
                     FilledIconButton(
                         onClick = onStop,

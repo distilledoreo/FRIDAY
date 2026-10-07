@@ -1,6 +1,9 @@
 package com.localfirst.assistant.ui
 
 import android.widget.Toast
+import android.app.Activity
+import android.media.projection.MediaProjectionManager
+import com.localfirst.assistant.voice.ScreenContextService
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -38,6 +41,9 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.UriHandler
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -79,6 +85,10 @@ fun ChatScreen(viewModel: ChatViewModel) {
         }
         cameraPath = null
     }
+    val sharingScreen by ScreenContextService.active.collectAsState()
+    val screenCapture = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) result.data?.let { ScreenContextService.start(context, it) }
+    }
     val state by viewModel.state.collectAsState()
     val voice by viewModel.voiceState.collectAsState()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -102,12 +112,22 @@ fun ChatScreen(viewModel: ChatViewModel) {
 
     BackHandler(enabled = drawerState.isOpen) { scope.launch { drawerState.close() } }
 
+    val defaultUriHandler = LocalUriHandler.current
+    val workspaceUriHandler = remember(defaultUriHandler, viewModel) { object : UriHandler {
+        override fun openUri(uri: String) {
+            if (uri.startsWith("assistant://artifact/")) viewModel.openArtifact(uri) else defaultUriHandler.openUri(uri)
+        }
+    } }
+    CompositionLocalProvider(LocalUriHandler provides workspaceUriHandler) {
     Box(modifier = Modifier.fillMaxSize()) {
         ModalNavigationDrawer(
             drawerState = drawerState,
             drawerContent = {
                 ChatDrawer(
                     conversations = state.conversations,
+                    query = state.historyQuery,
+                    onQuery = viewModel::searchHistory,
+                    onWorkspace = { closeDrawerThen(viewModel::openWorkspace) },
                     currentId = state.conversationId,
                     onNewChat = { closeDrawerThen(viewModel::newChat) },
                     onOpen = { id -> closeDrawerThen { viewModel.openConversation(id) } },
@@ -137,7 +157,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                                 )
                                 if (state.settings.model.isNotBlank()) {
                                     Text(
-                                        text = state.settings.model,
+                                        text = state.settings.model + if (sharingScreen) " · Screen shared" else "",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -187,6 +207,11 @@ fun ChatScreen(viewModel: ChatViewModel) {
                                     cameraPath = null
                                     Toast.makeText(context, "Couldn't open a camera app.", Toast.LENGTH_SHORT).show()
                                 }
+                            })
+                            DropdownMenuItem(text = { Text(if (sharingScreen) "Stop screen context" else "Share screen context") }, onClick = {
+                                attachmentMenu = false
+                                if (sharingScreen) ScreenContextService.stop(context)
+                                else screenCapture.launch(context.getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent())
                             })
                             DropdownMenuItem(text = { Text("Files") }, onClick = {
                                 attachmentMenu = false
@@ -254,6 +279,8 @@ fun ChatScreen(viewModel: ChatViewModel) {
         }
     }
 
+    if (state.showWorkspace) WorkspacePage(state, viewModel)
+    }
     if (state.showSettings) {
         SettingsPage(
             initial = state.settings,

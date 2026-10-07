@@ -30,7 +30,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -52,8 +55,9 @@ import kotlinx.coroutines.withContext
 /** Loads a stored JPEG scaled down to about [maxEdgePx], off the main thread. */
 @Composable
 private fun rememberImage(path: String?, maxEdgePx: Int): ImageBitmap? {
-    val image by produceState<ImageBitmap?>(null, path, maxEdgePx) {
-        value = path?.let { p ->
+    var image by remember(path, maxEdgePx) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(path, maxEdgePx) {
+        image = path?.let { p ->
             withContext(Dispatchers.IO) {
                 runCatching {
                     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }

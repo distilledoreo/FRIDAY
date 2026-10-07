@@ -54,6 +54,9 @@ internal fun ChatDrawer(
     onRename: (String, String) -> Unit,
     onDelete: (String) -> Unit,
     onOpenSettings: () -> Unit,
+    query: String = "",
+    onQuery: (String) -> Unit = {},
+    onWorkspace: () -> Unit = {},
 ) {
     var renaming by remember { mutableStateOf<ConversationSummary?>(null) }
     var deleting by remember { mutableStateOf<ConversationSummary?>(null) }
@@ -71,6 +74,9 @@ internal fun ChatDrawer(
                 onClick = onNewChat,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             )
+            OutlinedTextField(value = query, onValueChange = onQuery, label = { Text("Search chats") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp))
+            TextButton(onClick = onWorkspace, modifier = Modifier.padding(horizontal = 16.dp)) { Text("Memory, projects & workspace") }
             LazyColumn(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
                 if (conversations.isEmpty()) {
                     item {

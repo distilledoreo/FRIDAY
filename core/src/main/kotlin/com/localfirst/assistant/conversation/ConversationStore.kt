@@ -11,12 +11,19 @@ data class ConversationSummary(
     val title: String,
     val createdAt: Long,
     val updatedAt: Long,
+    val projectId: String? = null,
 )
 
 data class StoredConversation(
     val summary: ConversationSummary,
     val messages: List<Message>,
 )
+
+fun encodeConversation(value: StoredConversation): String =
+    JsonCodec.json.encodeToString(ConversationDto.serializer(), ConversationDto.from(value))
+
+fun decodeConversation(value: String): StoredConversation =
+    JsonCodec.json.decodeFromString(ConversationDto.serializer(), value).toModel()
 
 /** Saved chats on the device. System messages are not stored; the app adds its prompt per request. */
 interface ConversationStore {
@@ -123,11 +130,12 @@ private data class SummaryDto(
     val title: String,
     val createdAt: Long,
     val updatedAt: Long,
+    val projectId: String? = null,
 ) {
-    fun toModel() = ConversationSummary(id, title, createdAt, updatedAt)
+    fun toModel() = ConversationSummary(id, title, createdAt, updatedAt, projectId)
 
     companion object {
-        fun from(s: ConversationSummary) = SummaryDto(s.id, s.title, s.createdAt, s.updatedAt)
+        fun from(s: ConversationSummary) = SummaryDto(s.id, s.title, s.createdAt, s.updatedAt, s.projectId)
     }
 }
 
@@ -160,6 +168,7 @@ private data class AttachmentDto(
     val text: String? = null,
     val pageImages: List<String> = emptyList(),
     val note: String? = null,
+    val remoteFileId: String? = null,
 ) {
     fun toModel() = Attachment(
         id = id,
@@ -170,6 +179,7 @@ private data class AttachmentDto(
         text = text,
         pageImages = pageImages,
         note = note,
+        remoteFileId = remoteFileId,
     )
 
     companion object {
@@ -182,6 +192,7 @@ private data class AttachmentDto(
             text = a.text,
             pageImages = a.pageImages,
             note = a.note,
+            remoteFileId = a.remoteFileId,
         )
     }
 }
