@@ -14,7 +14,7 @@ data class AssistantProject(val id: String, val name: String, val instructions: 
 @Serializable
 data class Knowledge(val memories: List<SavedMemory> = emptyList(), val projects: List<AssistantProject> = emptyList())
 
-/** User-managed knowledge, independent of individual transcripts. Never stores credentials. */
+/** User-managed knowledge, independent of individual transcripts. Does not read server settings or credentials. */
 class KnowledgeStore(private val file: File) {
     @Synchronized fun load(): Knowledge = if (file.isFile) {
         JsonCodec.json.decodeFromString(Knowledge.serializer(), file.readText())

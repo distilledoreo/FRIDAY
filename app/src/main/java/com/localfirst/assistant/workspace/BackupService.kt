@@ -11,7 +11,7 @@ import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 import org.json.JSONObject
 
-/** Portable backups exclude server addresses, credentials, preferences, and executable code. */
+/** Portable backups exclude app/server settings and their credentials. Imported code remains inert transcript text. */
 class BackupService(private val context: Context, private val chats: ConversationStore, private val knowledge: KnowledgeStore) {
     fun export(uri: Uri) {
         val root = File(context.filesDir, "attachments").canonicalFile
