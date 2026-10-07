@@ -127,13 +127,18 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     conversations = state.conversations,
                     query = state.historyQuery,
                     onQuery = viewModel::searchHistory,
-                    onWorkspace = { closeDrawerThen(viewModel::openWorkspace) },
+                    projects = state.knowledge.projects,
+                    activeProjectId = state.projectId,
+                    onProject = { id -> closeDrawerThen { viewModel.openProject(id) } },
+                    onProjects = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.PROJECTS) } },
+                    onTasks = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.TASKS) } },
+                    onFiles = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.FILES) } },
                     currentId = state.conversationId,
                     onNewChat = { closeDrawerThen(viewModel::newChat) },
                     onOpen = { id -> closeDrawerThen { viewModel.openConversation(id) } },
                     onRename = viewModel::renameConversation,
                     onDelete = viewModel::deleteConversation,
-                    onOpenSettings = { closeDrawerThen(viewModel::openSettings) },
+                    onOpenSettings = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.SETTINGS) } },
                 )
             },
         ) {
@@ -150,14 +155,14 @@ fun ChatScreen(viewModel: ChatViewModel) {
                         title = {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(
-                                    text = state.title,
+                                    text = state.knowledge.projects.firstOrNull { it.id == state.projectId }?.name ?: if (state.messages.isEmpty()) "Local Assistant" else state.title,
                                     style = MaterialTheme.typography.titleMedium,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
-                                if (state.settings.model.isNotBlank()) {
+                                if (sharingScreen) {
                                     Text(
-                                        text = state.settings.model + if (sharingScreen) " · Screen shared" else "",
+                                        text = "Screen shared",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -165,7 +170,14 @@ fun ChatScreen(viewModel: ChatViewModel) {
                             }
                         },
                         actions = {
-                            IconButton(onClick = viewModel::newChat, enabled = state.messages.isNotEmpty() || state.draft.isNotBlank() || state.draftAttachments.isNotEmpty()) {
+                            MoreActions(buildList {
+                                add((if (state.projectId == null) "Choose project" else "Project details") to {
+                                    state.projectId?.let(viewModel::openProject) ?: viewModel.openWorkspace(WorkspaceDestination.PROJECTS)
+                                })
+                                if (state.projectId != null) add("Remove from project" to { viewModel.selectProject(null) })
+                                if (state.conversationId != null) add("Export chat" to { viewModel.openWorkspace(WorkspaceDestination.DATA) })
+                            })
+                            IconButton(onClick = viewModel::newChat, enabled = state.messages.isNotEmpty() || state.draft.isNotBlank() || state.draftAttachments.isNotEmpty() || state.projectId != null) {
                                 Icon(Icons.Filled.Create, contentDescription = "New chat")
                             }
                         },

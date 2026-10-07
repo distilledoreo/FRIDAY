@@ -13,6 +13,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Create
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.automirrored.filled.List
+import com.localfirst.assistant.conversation.AssistantProject
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
@@ -56,32 +60,46 @@ internal fun ChatDrawer(
     onOpenSettings: () -> Unit,
     query: String = "",
     onQuery: (String) -> Unit = {},
-    onWorkspace: () -> Unit = {},
+    projects: List<AssistantProject> = emptyList(),
+    activeProjectId: String? = null,
+    onProject: (String) -> Unit,
+    onProjects: () -> Unit,
+    onTasks: () -> Unit,
+    onFiles: () -> Unit,
 ) {
     var renaming by remember { mutableStateOf<ConversationSummary?>(null) }
     var deleting by remember { mutableStateOf<ConversationSummary?>(null) }
     val startOfToday = remember(conversations) { startOfToday() }
-    val grouped = remember(conversations, startOfToday) {
-        conversations.groupBy { ConversationGroups.label(it.updatedAt, startOfToday) }
+    val visibleChats = if (query.isNotBlank()) conversations else conversations.filter { chat ->
+        chat.projectId == null || projects.none { it.id == chat.projectId }
+    }
+    val grouped = remember(visibleChats, startOfToday) {
+        visibleChats.groupBy { ConversationGroups.label(it.updatedAt, startOfToday) }
     }
 
     ModalDrawerSheet(modifier = Modifier.fillMaxHeight()) {
         Column(modifier = Modifier.fillMaxHeight()) {
-            NavigationDrawerItem(
-                label = { Text("New chat", style = MaterialTheme.typography.titleMedium) },
-                icon = { Icon(Icons.Filled.Create, contentDescription = null) },
-                selected = false,
-                onClick = onNewChat,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            )
-            OutlinedTextField(value = query, onValueChange = onQuery, label = { Text("Search chats") }, singleLine = true,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp))
-            TextButton(onClick = onWorkspace, modifier = Modifier.padding(horizontal = 16.dp)) { Text("Memory, projects & workspace") }
+            OutlinedTextField(value = query, onValueChange = onQuery, placeholder = { Text("Search chats") },
+                leadingIcon = { Icon(Icons.Filled.Search, null) }, singleLine = true,
+                shape = RoundedCornerShape(24.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp))
             LazyColumn(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                if (conversations.isEmpty()) {
+                if (query.isBlank()) {
+                    item { NavigationDrawerItem(label = { Text("New chat") }, icon = { Icon(Icons.Filled.Create, null) }, selected = false, onClick = onNewChat) }
+                    item { NavigationDrawerItem(label = { Text("Library") }, icon = { Icon(Icons.AutoMirrored.Filled.List, null) }, selected = false, onClick = onFiles) }
+                    item { NavigationDrawerItem(label = { Text("Tasks") }, icon = { Icon(Icons.Filled.DateRange, null) }, selected = false, onClick = onTasks) }
+                    item { TextButton(onClick = onProjects, modifier = Modifier.padding(top = 12.dp)) { Text("Projects") } }
+                    items(projects, key = { "project:${it.id}" }) { project ->
+                        NavigationDrawerItem(label = { Text(project.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            icon = { Icon(AppIcons.Folder, null) }, selected = activeProjectId == project.id,
+                            onClick = { onProject(project.id) })
+                    }
+                    if (projects.isEmpty()) item { TextButton(onClick = onProjects) { Text("Create a project") } }
+                }
+                if (visibleChats.isEmpty()) {
                     item {
                         Text(
-                            text = "Your chats will appear here.",
+                            text = if (query.isBlank()) "Your chats will appear here." else "No matching chats.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(16.dp),
@@ -110,7 +128,7 @@ internal fun ChatDrawer(
             }
             HorizontalDivider()
             NavigationDrawerItem(
-                label = { Text("Settings") },
+                label = { Column { Text("Local Assistant"); Text("Settings", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } },
                 icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
                 selected = false,
                 onClick = onOpenSettings,
@@ -160,7 +178,7 @@ internal fun ChatDrawer(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ConversationRow(
+internal fun ConversationRow(
     summary: ConversationSummary,
     selected: Boolean,
     onOpen: () -> Unit,

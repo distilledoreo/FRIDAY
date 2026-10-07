@@ -21,9 +21,9 @@ data class WorkspaceFile(val id: String, val name: String, val size: Long) {
     companion object { fun from(j: JSONObject) = WorkspaceFile(j.getString("id"), j.getString("name"), j.getLong("size")) }
 }
 
-data class BackgroundTask(val id: String, val prompt: String, val status: String, val result: String, val error: String) {
+data class BackgroundTask(val id: String, val prompt: String, val status: String, val result: String, val error: String, val runAt: Long = 0, val intervalSeconds: Int = 0) {
     companion object { fun from(j: JSONObject) = BackgroundTask(j.getString("id"), j.getString("prompt"),
-        j.getString("status"), j.optString("result"), j.optString("error")) }
+        j.getString("status"), j.optString("result"), j.optString("error"), (j.optDouble("run_at", 0.0) * 1000).toLong(), j.optInt("interval_seconds")) }
 }
 
 object TaskNotifications {

@@ -13,6 +13,19 @@ import androidx.compose.ui.graphics.vector.addPathNodes
  * pulling in the very large material-icons-extended artifact.
  */
 internal object AppIcons {
+    val Folder: ImageVector by lazy {
+        materialIcon(name = "Filled.Folder") {
+            materialPath {
+                moveTo(10f, 4f); horizontalLineTo(4f)
+                curveTo(2.9f, 4f, 2f, 4.9f, 2f, 6f)
+                verticalLineTo(18f); curveTo(2f, 19.1f, 2.9f, 20f, 4f, 20f)
+                horizontalLineTo(20f); curveTo(21.1f, 20f, 22f, 19.1f, 22f, 18f)
+                verticalLineTo(8f); curveTo(22f, 6.9f, 21.1f, 6f, 20f, 6f)
+                horizontalLineTo(12f); close()
+            }
+        }
+    }
+
     val ArrowUpward: ImageVector by lazy {
         materialIcon(name = "Filled.ArrowUpward") {
             materialPath {

@@ -9,7 +9,7 @@ import kotlinx.serialization.json.*
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class SyncConflict(val id: String, val label: String, val remote: JSONObject)
+data class SyncConflict(val id: String, val label: String, val remote: JSONObject, val phonePreview: String = "Preview unavailable", val computerPreview: String = "Preview unavailable", val phoneHash: String? = null)
 
 /** Three-way sync: remote changes never silently overwrite local edits. */
 @android.annotation.SuppressLint("ApplySharedPref") // Revision checkpoints must reach disk before the next mutation; this runs on IO.
@@ -105,7 +105,10 @@ class ChatSync(private val context: Context, private val client: WorkspaceClient
             val server = remote[id]
             val actual = server?.getInt("revision") ?: 0
             if (actual != expected && (last == null && text != null || last != null && hash != last)) {
-                conflicts += SyncConflict(id, chats.load(id)?.summary?.title ?: id, server!!)
+                val remoteText = if (server!!.optBoolean("deleted")) null else server.getJSONObject("payload").optString(if (id == "knowledge") "knowledge" else "chat", "").takeIf { it.isNotEmpty() }
+                conflicts += SyncConflict(id, chats.load(id)?.summary?.title ?: if (id == "knowledge") "Memories and projects" else id, server,
+                    com.localfirst.assistant.presentation.SyncPreview.describe(text, id == "knowledge"),
+                    com.localfirst.assistant.presentation.SyncPreview.describe(remoteText, id == "knowledge"), hash)
                 continue
             }
             if (actual != expected && server != null) {
@@ -124,6 +127,7 @@ class ChatSync(private val context: Context, private val client: WorkspaceClient
     }
 
     suspend fun resolve(conflict: SyncConflict, keepPhone: Boolean) {
+        require(conflict.phoneHash == null || digest(local(conflict.id)) == conflict.phoneHash) { "This phone’s copy changed. Sync again to compare the latest versions." }
         if (keepPhone) {
             val text = local(conflict.id)
             val saved = JSONObject(client.request("/workspace/items/${conflict.id}", "PUT", JSONObject()

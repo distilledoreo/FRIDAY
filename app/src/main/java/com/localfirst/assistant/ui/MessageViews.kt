@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -376,12 +377,7 @@ internal fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier = Mod
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text("What can I help with?", style = MaterialTheme.typography.headlineSmall)
-        Text(
-            text = "Your chats stay on this phone. The model runs on your computer.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 8.dp, bottom = 20.dp),
-        )
+        Spacer(Modifier.height(24.dp))
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
             verticalArrangement = Arrangement.spacedBy(4.dp),

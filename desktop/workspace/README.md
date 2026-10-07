@@ -49,3 +49,12 @@ python -m unittest discover -s desktop/workspace/tests -v
 ```
 
 These cover conflict/tombstone persistence, authentication, filename handling, host/network isolation, workbook creation, scheduling, checkpoint resumption, browser continuation, concurrent edits, memory, project scope, transcript search, context trimming, tool schemas, confirmation, and file argument mapping. Phone microphone background behavior, MediaProjection lifecycle, notification delivery, SAF backup/restore, actual two-device sync, and installer handoff still require device testing.
+
+
+## Android navigation (0.3.0)
+
+Chat is the default screen. Open the sidebar to search chats, browse date-grouped history, open a project, view Library files, or manage Tasks. Project screens contain their chats, shared instructions and reference text. New chat in the sidebar starts a general chat; New chat inside a project retains that project’s context. A chat’s overflow menu opens project selection/details or Data controls for export.
+
+The sidebar footer opens Settings. Memory and Data controls have separate screens; server/model/voice configuration is under Voice and server. Task creation uses local date/time pickers and repeat choices; non-existent daylight-saving times and past times are rejected. Sync conflicts show bounded, readable previews of both versions, and require another sync if the phone copy changed after comparison.
+
+Device UX checks still required: back navigation across nested screens, date/time pickers, keyboard and system insets, large font sizes, light/dark mode, project chat creation/rename/delete, and selecting a sync version.

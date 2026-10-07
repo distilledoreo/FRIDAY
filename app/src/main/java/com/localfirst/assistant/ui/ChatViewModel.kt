@@ -68,6 +68,8 @@ data class ChatUiState(
     val projectId: String? = null,
     val historyQuery: String = "",
     val showWorkspace: Boolean = false,
+    val workspaceDestination: WorkspaceDestination = WorkspaceDestination.SETTINGS,
+    val workspaceProjectId: String? = null,
     val knowledge: Knowledge = Knowledge(),
     val workspaceBusy: Boolean = false,
     val workspaceStatus: String? = null,
@@ -162,6 +164,7 @@ class ChatViewModel(
 
     init {
         refreshConversationList()
+        _state.update { it.copy(knowledge = runCatching { knowledgeStore?.load() }.getOrNull() ?: Knowledge()) }
         if (app != null) viewModelScope.launch {
             voiceState.collect { if (it == null) VoiceForegroundService.stop(app) }
         }
@@ -416,6 +419,14 @@ class ChatViewModel(
         switchTo(null)
     }
 
+    fun newProjectChat(projectId: String) { switchTo(null, projectId) }
+
+    fun openProject(projectId: String) {
+        searchHistory("")
+        openWorkspace(WorkspaceDestination.PROJECT)
+        _state.update { it.copy(workspaceProjectId = projectId) }
+    }
+
     fun openConversation(id: String) {
         if (id == _state.value.conversationId) return
         switchTo(id)
@@ -448,13 +459,14 @@ class ChatViewModel(
         }
     }
 
-    private fun switchTo(id: String?) {
+    private fun switchTo(id: String?, newProjectId: String? = null) {
         if (_state.value.workspaceBusy) return
         viewModelScope.launch {
             turnJob?.cancel()
             turnJob?.join()
             if (id == null) {
                 resetToNewChat()
+                _state.update { it.copy(projectId = newProjectId, showWorkspace = false) }
                 return@launch
             }
             val stored = withContext(Dispatchers.IO) { conversationStore.load(id) }
@@ -550,8 +562,9 @@ class ChatViewModel(
 
     fun searchHistory(query: String) { _state.update { it.copy(historyQuery = query) }; refreshConversationList() }
 
-    fun openWorkspace() {
-        _state.update { it.copy(showWorkspace = true, knowledge = runCatching { knowledgeStore?.load() }.getOrNull() ?: Knowledge()) }
+    fun openWorkspace(destination: WorkspaceDestination = WorkspaceDestination.SETTINGS) {
+        if (destination == WorkspaceDestination.PROJECTS) searchHistory("")
+        _state.update { it.copy(showWorkspace = true, workspaceDestination = destination, knowledge = runCatching { knowledgeStore?.load() }.getOrNull() ?: Knowledge()) }
         refreshWorkspace()
     }
     fun dismissWorkspace() { _state.update { it.copy(showWorkspace = false) } }
@@ -602,6 +615,10 @@ class ChatViewModel(
         _state.update { it.copy(projectId = id) }
         viewModelScope.launch { persist() }
     }
+    fun projectDocumentText(): String = session.snapshot().filterIsInstance<Message.User>()
+        .flatMap { it.attachments }.filter { !it.text.isNullOrBlank() }.distinctBy { it.id }
+        .joinToString("\n\n") { "${it.name}\n${it.text}" }
+
     fun addProjectFiles(id: String) = workspaceAction {
         val store = knowledgeStore ?: error("Knowledge unavailable.")
         val k = store.load()
@@ -625,22 +642,29 @@ class ChatViewModel(
         _state.update { it.copy(syncConflicts = it.syncConflicts.filterNot { c -> c.id == conflict.id }) }
         "Conflict resolved. Sync again to refresh the open chat."
     }
-    fun scheduleTask(prompt: String, delayMinutes: Int, intervalMinutes: Int) = workspaceAction {
+    fun scheduleTask(prompt: String, delayMinutes: Int, intervalMinutes: Int) =
+        scheduleTaskAt(prompt, clock() + delayMinutes.coerceAtLeast(0) * 60000L, intervalMinutes * 60)
+
+    fun scheduleTaskAt(prompt: String, runAt: Long, intervalSeconds: Int) = workspaceAction {
         require(prompt.isNotBlank()) { "Enter a task." }
         workspace?.request("/workspace/jobs", "POST", JSONObject().put("prompt", prompt)
-            .put("run_at", System.currentTimeMillis() / 1000.0 + delayMinutes.coerceAtLeast(0) * 60)
-            .put("interval_seconds", intervalMinutes.coerceAtLeast(0) * 60)) ?: error("Workspace unavailable.")
+            .put("run_at", runAt / 1000.0)
+            .put("interval_seconds", intervalSeconds.coerceAtLeast(0))) ?: error("Workspace unavailable.")
         app?.let {
             if (android.os.Build.VERSION.SDK_INT >= 33) withContext(Dispatchers.Main) {
                 com.localfirst.assistant.phone.PermissionBroker.ensure(it, android.Manifest.permission.POST_NOTIFICATIONS)
             }
             TaskNotifications.enable(it)
         }
-        "Task scheduled on your computer. Tap Refresh to see progress."
+        val jobs = JSONArray(workspace.request("/workspace/jobs"))
+        _state.update { it.copy(tasks = (0 until jobs.length()).map { i -> BackgroundTask.from(jobs.getJSONObject(i)) }) }
+        "Task scheduled."
     }
     fun manageTask(id: String, action: String) = workspaceAction {
         workspace?.request("/workspace/jobs/$id/$action", "POST") ?: error("Workspace unavailable.")
-        "Task $action requested. Tap Refresh to update."
+        val jobs = JSONArray(workspace.request("/workspace/jobs"))
+        _state.update { it.copy(tasks = (0 until jobs.length()).map { i -> BackgroundTask.from(jobs.getJSONObject(i)) }) }
+        "Task $action requested."
     }
     fun deleteWorkspaceFile(id: String) = workspaceAction {
         workspace?.request("/workspace/files/$id", "DELETE") ?: error("Workspace unavailable.")
