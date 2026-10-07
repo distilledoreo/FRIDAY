@@ -111,6 +111,6 @@ internal fun ImageOptions(state: ChatUiState, vm: ChatViewModel, onDone: () -> U
         }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Button(onClick = { options()?.let { vm.saveImageSettings(it); onDone() } }, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) { Text("Done") }
-        Text("Default: 768×768, 8 steps. Rendering stops after 150 seconds and the chat model reloads. No image request can exceed the server limits.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Default: 768×768, 8 steps. Rendering stops after 15 minutes and the chat model reloads. No image request can exceed the server limits.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

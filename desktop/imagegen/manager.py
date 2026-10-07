@@ -227,7 +227,7 @@ class SystemRuntime:
                 raise RuntimeError(str(state.get('error') or state['status'])[:500])
             update(progress=state.get('progress'))
             await asyncio.sleep(1)
-        raise RuntimeError('Image generation exceeded the 150-second render limit')
+        raise RuntimeError('Image generation exceeded the 15-minute render limit')
 
     async def unload_image(self):
         # This unit is owned exclusively by this manager, never a prior panorama server.

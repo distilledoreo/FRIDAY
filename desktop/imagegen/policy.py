@@ -1,5 +1,5 @@
 """Conservative P100 envelope. The model chooses parameters; this policy is authoritative."""
-MAX_RENDER_SECONDS = 150
+MAX_RENDER_SECONDS = 15 * 60
 MAX_LOAD_SECONDS = 90
 MAX_PIXELS = 2000 * 2000
 MAX_WORK = 2000 * 2000 * 8
