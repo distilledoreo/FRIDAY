@@ -17,6 +17,10 @@ data class ServerSettings(
     val voiceEngine: String = VOICE_COMPUTER,
     /** Kokoro voice for the computer engine. */
     val voiceName: String = DEFAULT_VOICE,
+    /** Bluetooth devices (by name) whose own mic is skipped: voice plays through them and the phone listens. */
+    val voicePhoneMicDevices: Set<String> = emptySet(),
+    /** Show replies in Android Auto as messages, and accept replies from the car. */
+    val androidAuto: Boolean = true,
 ) {
     fun validate(): String? {
         val url = baseUrl.trim()
@@ -64,6 +68,8 @@ class ServerSettingsStore(
         voiceBargeIn = prefs.getBoolean(KEY_VOICE_BARGE_IN, true),
         voiceEngine = prefs.getString(KEY_VOICE_ENGINE, ServerSettings.VOICE_COMPUTER) ?: ServerSettings.VOICE_COMPUTER,
         voiceName = prefs.getString(KEY_VOICE_NAME, ServerSettings.DEFAULT_VOICE) ?: ServerSettings.DEFAULT_VOICE,
+        voicePhoneMicDevices = prefs.getStringSet(KEY_VOICE_PHONE_MIC, null)?.toSet().orEmpty(),
+        androidAuto = prefs.getBoolean(KEY_ANDROID_AUTO, true),
     )
 
     fun save(settings: ServerSettings) {
@@ -77,6 +83,8 @@ class ServerSettingsStore(
             .putBoolean(KEY_VOICE_BARGE_IN, settings.voiceBargeIn)
             .putString(KEY_VOICE_ENGINE, settings.voiceEngine)
             .putString(KEY_VOICE_NAME, settings.voiceName)
+            .putStringSet(KEY_VOICE_PHONE_MIC, settings.voicePhoneMicDevices.toSet())
+            .putBoolean(KEY_ANDROID_AUTO, settings.androidAuto)
             .apply()
     }
 
@@ -91,5 +99,7 @@ class ServerSettingsStore(
         const val KEY_VOICE_BARGE_IN = "voice_barge_in"
         const val KEY_VOICE_ENGINE = "voice_engine"
         const val KEY_VOICE_NAME = "voice_name"
+        const val KEY_VOICE_PHONE_MIC = "voice_phone_mic_devices"
+        const val KEY_ANDROID_AUTO = "android_auto"
     }
 }

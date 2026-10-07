@@ -28,6 +28,7 @@ class VoiceEngines(context: Context) {
                 ComputerVoiceClient(base, settings.searchApiKey.trim().ifEmpty { null }),
                 settings.voiceName,
                 bargeInEnabled = { latest.voiceBargeIn },
+                phoneMicDevices = { latest.voicePhoneMicDevices },
             ).also { computer = key to it }
         if (io.speaker.prepare()) return VoiceSelection(io)
         return VoiceSelection(phone, "${VoiceController.FALLBACK_PREFIX}: your computer's voice service isn't reachable.")

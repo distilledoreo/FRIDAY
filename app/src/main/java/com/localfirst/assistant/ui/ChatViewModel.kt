@@ -41,6 +41,9 @@ import com.localfirst.assistant.tools.WebSearchTool
 import com.localfirst.assistant.tools.phone.phoneTools
 import com.localfirst.assistant.voice.ScreenContextService
 import com.localfirst.assistant.voice.VoiceForegroundService
+import com.localfirst.assistant.car.CarMessaging
+import com.localfirst.assistant.voice.SpeechText
+import com.localfirst.assistant.voice.VoiceReplies
 import com.localfirst.assistant.voice.VoiceController
 import com.localfirst.assistant.voice.VoiceEngines
 import com.localfirst.assistant.voice.VoiceUiState
@@ -151,6 +154,7 @@ class ChatViewModel(
         val answer = CompletableDeferred<Boolean>()
         approval = answer
         _state.update { it.copy(pendingApproval = PendingApproval(request.toolName, request.prompt)) }
+        if (carTurn) app?.let { CarMessaging.showReply(it, SpeechText.fromMarkdown(request.prompt) + ". Should I go ahead? Reply yes or no.") }
         try {
             answer.await()
         } finally {
@@ -361,6 +365,45 @@ class ChatViewModel(
         }
     }
 
+    // ---- Android Auto -----------------------------------------------------------
+
+    /** The turn in progress was asked from Android Auto, so its answer goes back to the car. */
+    private var carTurn = false
+
+    /** A message dictated in Android Auto: answered in the current chat, with the answer sent back to the car. */
+    fun receiveCarMessage(text: String) {
+        val context = app ?: return
+        if (_state.value.pendingApproval != null) {
+            val answer = VoiceReplies.approval(text)
+            if (answer != null) answerApproval(answer) else CarMessaging.showReply(context, "Please reply yes or no.")
+            return
+        }
+        viewModelScope.launch {
+            if (_state.value.busy) {
+                turnJob?.cancel()
+                turnJob?.join()
+            }
+            carTurn = true
+            if (!submitSpoken(text)) {
+                carTurn = false
+                CarMessaging.showReply(context, "I couldn't send that. Check the app on your phone.")
+            }
+        }
+    }
+
+    /** The answer as Android Auto should read it: plain text, short enough to listen to. */
+    private fun carReply(state: ChatUiState): String {
+        val lastUser = state.messages.indexOfLast { it is Message.User }
+        val reply = SpeechText.fromMarkdown(
+            state.messages.drop(lastUser + 1).filterIsInstance<Message.Assistant>().joinToString("\n\n") { it.content },
+        ).trim()
+        return when {
+            reply.isEmpty() -> state.error?.let { "Sorry, that didn't work: $it" } ?: "Sorry, I didn't get an answer."
+            reply.length > CAR_REPLY_CHARS -> reply.take(CAR_REPLY_CHARS).substringBeforeLast(' ') + "… The rest is on your phone."
+            else -> reply
+        }
+    }
+
     private fun submitSpoken(text: String): Boolean {
         if (_state.value.busy || _state.value.workspaceBusy || text.isBlank() || _state.value.settings.validate() != null) return false
         if (_state.value.draftAttachments.any { it.status != DraftStatus.READY }) return false
@@ -443,6 +486,10 @@ class ChatViewModel(
                     )
                 }
                 turnJob = null
+                if (carTurn) {
+                    carTurn = false
+                    app?.let { CarMessaging.showReply(it, carReply(_state.value)) }
+                }
             }
             // Save even when the user pressed Stop; this job is cancelled at that point.
             val completedSnapshot = _state.value.copy(messages = session.snapshot())
@@ -927,6 +974,10 @@ class ChatViewModel(
         provider = providers(normalized)
         session.modelProvider = provider
         onSettingsSaved(normalized)
+        app?.let { context ->
+            if (!normalized.androidAuto) CarMessaging.clear(context)
+            else if (!_state.value.settings.androidAuto && CarMessaging.connected.value) CarMessaging.greet(context)
+        }
         _state.update { it.copy(settings = normalized, showSettings = false, settingsError = null, error = null) }
     }
 
@@ -947,6 +998,7 @@ class ChatViewModel(
         }
 
         private const val CONNECT_TIMEOUT_MILLIS = 10_000
+        private const val CAR_REPLY_CHARS = 1_200
         const val MAX_ATTACHMENTS = 6
     }
 }

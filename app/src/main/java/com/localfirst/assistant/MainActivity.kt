@@ -7,11 +7,9 @@ import androidx.core.content.IntentCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.lifecycle.ViewModelProvider
 import com.localfirst.assistant.phone.PermissionBroker
 import com.localfirst.assistant.ui.ChatScreen
 import com.localfirst.assistant.ui.ChatViewModel
-import com.localfirst.assistant.ui.ChatViewModelFactory
 import com.localfirst.assistant.ui.theme.AssistantTheme
 
 class MainActivity : ComponentActivity() {
@@ -21,7 +19,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         PermissionBroker.attach(this)
-        viewModel = ViewModelProvider(this, ChatViewModelFactory(application))[ChatViewModel::class.java]
+        viewModel = (application as AssistantApp).chat()
         if (savedInstanceState == null) handleLaunch(intent)
         setContent {
             AssistantTheme {

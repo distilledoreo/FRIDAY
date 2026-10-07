@@ -18,6 +18,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.RadioButton
@@ -42,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.localfirst.assistant.phone.MediaListenerService
 import com.localfirst.assistant.settings.ServerSettings
+import com.localfirst.assistant.voice.connectedBluetoothAudio
 
 @Composable
 internal fun SettingsPage(
@@ -59,6 +61,8 @@ internal fun SettingsPage(
     var bargeIn by remember(initial) { mutableStateOf(initial.voiceBargeIn) }
     var voiceEngine by remember(initial) { mutableStateOf(initial.voiceEngine) }
     var voiceName by remember(initial) { mutableStateOf(initial.voiceName) }
+    var phoneMic by remember(initial) { mutableStateOf(initial.voicePhoneMicDevices) }
+    var androidAuto by remember(initial) { mutableStateOf(initial.androidAuto) }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(modifier = Modifier.fillMaxSize()) {
@@ -139,6 +143,7 @@ internal fun SettingsPage(
                     bargeIn = bargeIn,
                     onBargeInChange = { bargeIn = it },
                 )
+                CarSection(phoneMic, { phoneMic = it }, androidAuto, { androidAuto = it })
                 PhoneAccessSection()
                 if (error != null) {
                     Text(text = error, color = MaterialTheme.colorScheme.error)
@@ -157,6 +162,8 @@ internal fun SettingsPage(
                                     voiceBargeIn = bargeIn,
                                     voiceEngine = voiceEngine,
                                     voiceName = voiceName,
+                                    voicePhoneMicDevices = phoneMic,
+                                    androidAuto = androidAuto,
                                 ),
                             )
                         },
@@ -268,6 +275,66 @@ private fun VoiceSection(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+@Composable
+private fun CarSection(
+    phoneMic: Set<String>,
+    onPhoneMicChange: (Set<String>) -> Unit,
+    androidAuto: Boolean,
+    onAndroidAutoChange: (Boolean) -> Unit,
+) {
+    val context = LocalContext.current
+    var connected by remember { mutableStateOf(connectedBluetoothAudio(context)) }
+    LifecycleResumeEffect(Unit) {
+        connected = connectedBluetoothAudio(context)
+        onPauseOrDispose { }
+    }
+    Text("In the car", style = MaterialTheme.typography.titleMedium)
+    Text("Use the phone's microphone with", style = MaterialTheme.typography.bodyLarge)
+    Text(
+        text = "For car radios or speakers whose microphone doesn't work. The voice still plays through them; the phone listens. " +
+            "Applies to your computer's voice.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    val names = (connected + phoneMic).distinct().sorted()
+    if (names.isEmpty()) {
+        Text(
+            text = "Connect a Bluetooth audio device to choose it here.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    for (name in names) {
+        val checked = name in phoneMic
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().clickable { onPhoneMicChange(if (checked) phoneMic - name else phoneMic + name) },
+        ) {
+            Checkbox(checked = checked, onCheckedChange = { onPhoneMicChange(if (it) phoneMic + name else phoneMic - name) })
+            Text(if (name in connected) name else "$name (not connected)")
+        }
+    }
+    Text(
+        text = "Over aux or a phone-mic Bluetooth device, the assistant checks whether it's hearing its own voice before stopping, " +
+            "so interrupting takes about a second.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Android Auto", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                text = "While connected, the assistant appears as a conversation in Android Auto. Reply from the car to ask something; " +
+                    "the answer is read aloud. Android Auto uses the car's microphone for replies. Because this app isn't from the " +
+                    "Play Store, turn on Unknown sources in Android Auto's developer settings first.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(checked = androidAuto, onCheckedChange = onAndroidAutoChange)
     }
 }
 
