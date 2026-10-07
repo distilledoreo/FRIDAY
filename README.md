@@ -7,6 +7,7 @@ Milestones implemented:
 1. Text chat from the phone to a remote model, with the same conversation kept across turns.
 2. A tool registry and `set_media_volume`, so the model can ask the phone to change media volume and then keep talking.
 3. `web_search` on that same registry. The phone calls a separate PC search service. SearXNG is the default search backend. Crawl4AI is an optional page fetch.
+4. A ChatGPT-style chat experience: streamed replies, Markdown, Stop, copy/regenerate/edit, saved chats in a drawer with generated titles, and web searches shown as cards with their sources.
 
 ## Layout
 
@@ -18,11 +19,12 @@ desktop/search_service/  PC search HTTP service (SearchProvider + optional PageF
 
 | Package | Responsibility |
 | --- | --- |
-| `com.localfirst.assistant.conversation` | `Message`, `ConversationSession`, `ConversationEngine` |
-| `com.localfirst.assistant.model` | `ModelProvider`, `ModelResponse`, OpenAI-compatible HTTP client |
+| `com.localfirst.assistant.conversation` | `Message`, `ConversationSession`, `ConversationEngine`, `FileConversationStore`, `ConversationTitles` |
+| `com.localfirst.assistant.model` | `ModelProvider`, `ModelResponse`, OpenAI-compatible HTTP client with SSE streaming |
 | `com.localfirst.assistant.search` | Phone client for the PC search service. Not a model provider. |
 | `com.localfirst.assistant.tools` | `Tool`, `ToolRegistry`, `set_media_volume`, `web_search` |
-| `com.localfirst.assistant.ui` | Transcript, text field, Send, settings |
+| `com.localfirst.assistant.presentation` | `Transcript`: messages → what the chat shows (tool cards, labels, thinking state). Plain Kotlin, unit-tested |
+| `com.localfirst.assistant.ui` | Compose chat screen, chats drawer, composer, message views, settings |
 | `com.localfirst.assistant.settings` | Model URL and search URL, stored separately |
 | `desktop/search_service` | `SearchProvider` (SearXNG) and `PageFetcher` (Crawl4AI) |
 
@@ -114,7 +116,15 @@ To try web search after the desktop service is up, ask something the model shoul
 
 Other phrases that should select the same tool: "Turn the volume down" or "Set media volume to 70". The model chooses the level. Smaller models sometimes answer in text instead of calling the tool; that is a model limitation, not a second code path.
 
-**Clear conversation** drops the in-memory transcript only. Settings are kept. The transcript is not written to disk, so Android may discard it if the process is killed.
+## Chat features
+
+- **Streaming.** Replies appear as they're generated (`stream: true`, server-sent events). Tool calls stream too and run as soon as the model finishes them. A server that ignores `stream` and returns plain JSON still works.
+- **Stop.** The send button becomes Stop while a reply is in progress. Text received so far is kept. Tool calls that were still running get a "stopped" result, so the next request is valid.
+- **Markdown.** Assistant replies render Markdown: lists, tables, code blocks, and links. Links open in the browser.
+- **Copy, regenerate, edit.** Copy and Regenerate sit under the latest answer. Long-press a message to copy it, or edit one of your own; editing drops everything after it and asks again.
+- **Saved chats.** Chats are saved on the phone as JSON in the app's private storage (`files/conversations/`). The drawer lists them by Today, Yesterday, Previous 7 days, and so on. Long-press or ⋮ to rename or delete. After a new chat's first reply, the model is asked for a short title; if that fails, the first message is the title.
+- **Tool cards.** Tool calls show as compact cards ("Searched the web for “…”", "Set media volume to 30%") instead of raw JSON. Web searches list their sources; tap one to open it. The source links are display-only and are not sent back to the model.
+- **Theme.** Follows the system light/dark setting, with Material You colors on Android 12+.
 
 ## Build
 

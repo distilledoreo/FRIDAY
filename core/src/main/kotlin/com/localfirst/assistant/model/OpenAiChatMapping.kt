@@ -33,9 +33,10 @@ internal fun buildChatCompletionRequest(
     model: String,
     messages: List<Message>,
     tools: List<ToolDefinition>,
+    stream: Boolean = false,
 ): JsonObject = buildJsonObject {
     put("model", model)
-    put("stream", false)
+    put("stream", stream)
     put("messages", messagesToOpenAi(messages))
     if (tools.isNotEmpty()) {
         put("tools", toolsToOpenAi(tools))
@@ -227,7 +228,7 @@ private fun messageText(content: JsonElement?): String? {
     return text?.ifEmpty { null }
 }
 
-private fun errorMessage(error: JsonElement?): String? {
+internal fun errorMessage(error: JsonElement?): String? {
     val objectMessage = (error as? JsonObject)?.get("message")
     val text = primitiveContent(objectMessage) ?: primitiveContent(error)
     return text?.trim()?.ifEmpty { null }

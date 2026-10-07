@@ -45,6 +45,7 @@ class WebSearchToolTest {
         assertTrue(result.content.contains("searxng"))
         assertTrue(result.content.contains("A snippet"))
         assertFalse(result.content.contains("Page text:"))
+        assertEquals(listOf("https://example.com/a"), result.sources.map { it.url })
     }
 
     @Test

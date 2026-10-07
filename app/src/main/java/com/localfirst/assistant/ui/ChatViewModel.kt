@@ -1,11 +1,17 @@
 package com.localfirst.assistant.ui
 
+import android.app.Application
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.localfirst.assistant.AssistantPrompts
 import com.localfirst.assistant.conversation.ConversationSession
+import com.localfirst.assistant.conversation.ConversationStore
+import com.localfirst.assistant.conversation.ConversationSummary
+import com.localfirst.assistant.conversation.ConversationTitles
+import com.localfirst.assistant.conversation.FileConversationStore
 import com.localfirst.assistant.conversation.Message
+import com.localfirst.assistant.conversation.StoredConversation
 import com.localfirst.assistant.conversation.TurnOutcome
 import com.localfirst.assistant.model.ModelProvider
 import com.localfirst.assistant.model.OpenAiCompatibleConfig
@@ -18,20 +24,30 @@ import com.localfirst.assistant.tools.AndroidMediaVolume
 import com.localfirst.assistant.tools.SetMediaVolumeTool
 import com.localfirst.assistant.tools.ToolRegistry
 import com.localfirst.assistant.tools.WebSearchTool
-import android.app.Application
+import java.io.File
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class ChatUiState(
+    /** Null until the first message of a new chat is saved. */
+    val conversationId: String? = null,
+    val title: String = ConversationTitles.NEW_CHAT,
     val messages: List<Message> = emptyList(),
     val draft: String = "",
+    /** Index of the user message being edited, if any. */
+    val editingIndex: Int? = null,
     val busy: Boolean = false,
-    val status: String = "Set the server address",
     val error: String? = null,
+    val conversations: List<ConversationSummary> = emptyList(),
     val settings: ServerSettings = ServerSettings(),
     val showSettings: Boolean = false,
     val settingsError: String? = null,
@@ -39,31 +55,232 @@ data class ChatUiState(
 
 class ChatViewModel(
     private val settingsStore: ServerSettingsStore,
-    toolRegistry: ToolRegistry,
+    private val conversationStore: ConversationStore,
+    private val toolRegistry: ToolRegistry,
     private val providers: (ServerSettings) -> ModelProvider,
     private val onSettingsSaved: (ServerSettings) -> Unit = {},
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
-    private val session = ConversationSession(
-        modelProvider = providers(settingsStore.load()),
-        toolRegistry = toolRegistry,
-        systemPrompt = AssistantPrompts.SYSTEM,
-    )
+    private var provider: ModelProvider = providers(settingsStore.load())
+    private var session = newSession(emptyList())
+    private var turnJob: Job? = null
+    private var createdAt: Long = 0
 
-    private val _state = MutableStateFlow(initialState())
+    private val _state = MutableStateFlow(ChatUiState(settings = settingsStore.load()))
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
+
+    init {
+        refreshConversationList()
+    }
 
     fun onDraftChange(value: String) {
         _state.update { it.copy(draft = value) }
     }
 
-    fun openSettings() {
+    // ---- sending -------------------------------------------------------------
+
+    fun send() {
+        val current = _state.value
+        val draft = current.draft
+        if (current.busy || draft.isBlank()) return
+        if (!settingsReady()) return
+        val editing = current.editingIndex
+        _state.update { it.copy(draft = "", editingIndex = null) }
+        if (editing != null) {
+            runTurn { onUpdate -> session.editUserMessage(editing, draft, onUpdate) }
+        } else {
+            runTurn { onUpdate -> session.submitUserMessage(draft, onUpdate) }
+        }
+    }
+
+    /** Sends [text] directly, for suggestion chips on an empty chat. */
+    fun sendSuggestion(text: String) {
+        if (_state.value.busy || !settingsReady()) return
+        runTurn { onUpdate -> session.submitUserMessage(text, onUpdate) }
+    }
+
+    fun retry() {
+        if (_state.value.busy || !settingsReady()) return
+        runTurn { onUpdate -> session.retry(onUpdate) }
+    }
+
+    fun regenerate() {
+        if (_state.value.busy || !settingsReady()) return
+        runTurn { onUpdate -> session.regenerate(onUpdate) }
+    }
+
+    /** Stops the reply in progress. Text received so far is kept. */
+    fun stop() {
+        turnJob?.cancel()
+    }
+
+    fun startEditing(index: Int) {
+        val message = _state.value.messages.getOrNull(index) as? Message.User ?: return
+        if (_state.value.busy) return
+        _state.update { it.copy(editingIndex = index, draft = message.content) }
+    }
+
+    fun cancelEditing() {
+        _state.update { it.copy(editingIndex = null, draft = "") }
+    }
+
+    private fun runTurn(block: suspend (onUpdate: (List<Message>) -> Unit) -> TurnOutcome) {
+        val isFirstExchange = session.snapshot().none { it is Message.Assistant }
+        _state.update { it.copy(busy = true, error = null) }
+        turnJob = viewModelScope.launch {
+            var outcome: TurnOutcome? = null
+            try {
+                outcome = block { messages ->
+                    _state.update { it.copy(messages = messages) }
+                }
+            } catch (e: CancellationException) {
+                // Stopped by the user; the session already kept the partial answer.
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Something went wrong.") }
+            } finally {
+                val messages = session.snapshot()
+                _state.update {
+                    it.copy(
+                        messages = messages,
+                        busy = false,
+                        error = (outcome as? TurnOutcome.Failed)?.error ?: it.error,
+                    )
+                }
+                turnJob = null
+            }
+            // Save even when the user pressed Stop; this job is cancelled at that point.
+            withContext(NonCancellable) { persist() }
+            if (isFirstExchange && outcome is TurnOutcome.Completed) generateTitle()
+        }
+    }
+
+    private fun settingsReady(): Boolean {
+        val error = _state.value.settings.validate() ?: return true
+        _state.update { it.copy(error = error, showSettings = true, settingsError = error) }
+        return false
+    }
+
+    // ---- conversations -------------------------------------------------------
+
+    fun newChat() {
+        switchTo(null)
+    }
+
+    fun openConversation(id: String) {
+        if (id == _state.value.conversationId) return
+        switchTo(id)
+    }
+
+    fun renameConversation(id: String, title: String) {
+        val clean = title.trim().take(ConversationTitles.MAX_LENGTH * 2)
+        if (clean.isEmpty()) return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { conversationStore.rename(id, clean) }
+            if (_state.value.conversationId == id) _state.update { it.copy(title = clean) }
+            refreshConversationList()
+        }
+    }
+
+    fun deleteConversation(id: String) {
+        viewModelScope.launch {
+            if (_state.value.conversationId == id) {
+                turnJob?.cancel()
+                turnJob?.join()
+                resetToNewChat()
+            }
+            withContext(Dispatchers.IO) { conversationStore.delete(id) }
+            refreshConversationList()
+        }
+    }
+
+    private fun switchTo(id: String?) {
+        viewModelScope.launch {
+            turnJob?.cancel()
+            turnJob?.join()
+            if (id == null) {
+                resetToNewChat()
+                return@launch
+            }
+            val stored = withContext(Dispatchers.IO) { conversationStore.load(id) }
+            if (stored == null) {
+                refreshConversationList()
+                return@launch
+            }
+            session = newSession(stored.messages)
+            createdAt = stored.summary.createdAt
+            _state.update {
+                it.copy(
+                    conversationId = id,
+                    title = stored.summary.title,
+                    messages = stored.messages,
+                    draft = "",
+                    editingIndex = null,
+                    error = null,
+                )
+            }
+        }
+    }
+
+    private fun resetToNewChat() {
+        session = newSession(emptyList())
         _state.update {
             it.copy(
-                showSettings = true,
-                settings = settingsStore.load(),
-                settingsError = null,
+                conversationId = null,
+                title = ConversationTitles.NEW_CHAT,
+                messages = emptyList(),
+                draft = "",
+                editingIndex = null,
+                error = null,
             )
         }
+    }
+
+    private suspend fun persist() {
+        val messages = session.snapshot()
+        if (messages.isEmpty()) return
+        val now = clock()
+        val current = _state.value
+        val id = current.conversationId ?: UUID.randomUUID().toString().also { createdAt = now }
+        val title = if (current.conversationId == null) {
+            ConversationTitles.fromFirstMessage((messages.first { it is Message.User } as Message.User).content)
+        } else {
+            current.title
+        }
+        val summary = ConversationSummary(id = id, title = title, createdAt = createdAt, updatedAt = now)
+        withContext(Dispatchers.IO) { conversationStore.save(StoredConversation(summary, messages)) }
+        _state.update { if (it.conversationId == null || it.conversationId == id) it.copy(conversationId = id, title = title) else it }
+        refreshConversationList()
+    }
+
+    private suspend fun generateTitle() {
+        val id = _state.value.conversationId ?: return
+        val messages = session.snapshot()
+        val firstUser = messages.firstOrNull { it is Message.User } as? Message.User ?: return
+        val firstAnswer = messages.firstOrNull { it is Message.Assistant && it.content.isNotBlank() } as? Message.Assistant
+        val title = ConversationTitles.generate(provider, firstUser.content, firstAnswer?.content.orEmpty()) ?: return
+        withContext(Dispatchers.IO) { conversationStore.rename(id, title) }
+        if (_state.value.conversationId == id) _state.update { it.copy(title = title) }
+        refreshConversationList()
+    }
+
+    private fun refreshConversationList() {
+        viewModelScope.launch {
+            val list = withContext(Dispatchers.IO) { conversationStore.list() }
+            _state.update { it.copy(conversations = list) }
+        }
+    }
+
+    private fun newSession(messages: List<Message>) = ConversationSession(
+        modelProvider = provider,
+        toolRegistry = toolRegistry,
+        systemPrompt = AssistantPrompts.SYSTEM,
+        initialMessages = messages,
+    )
+
+    // ---- settings ------------------------------------------------------------
+
+    fun openSettings() {
+        _state.update { it.copy(showSettings = true, settings = settingsStore.load(), settingsError = null) }
     }
 
     fun dismissSettings() {
@@ -84,139 +301,10 @@ class ChatViewModel(
             searchApiKey = settings.searchApiKey.trim(),
         )
         settingsStore.save(normalized)
-        session.modelProvider = providers(normalized)
+        provider = providers(normalized)
+        session.modelProvider = provider
         onSettingsSaved(normalized)
-        _state.update {
-            it.copy(
-                settings = normalized,
-                showSettings = false,
-                settingsError = null,
-                error = null,
-                status = statusFor(normalized, error = null, busy = it.busy),
-            )
-        }
-    }
-
-    fun send() {
-        val current = _state.value
-        val draft = current.draft
-        if (current.busy || draft.isBlank()) return
-        val settingsError = current.settings.validate()
-        if (settingsError != null) {
-            _state.update { it.copy(error = settingsError, showSettings = true, settingsError = settingsError) }
-            return
-        }
-        _state.update { it.copy(draft = "", busy = true, error = null, status = "Sending…") }
-        viewModelScope.launch {
-            try {
-                val outcome = session.submitUserMessage(draft) { messages ->
-                    _state.update { state ->
-                        state.copy(messages = messages, status = statusWhile(messages))
-                    }
-                }
-                applyOutcome(outcome)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                _state.update {
-                    it.copy(
-                        busy = false,
-                        error = e.message ?: "Something went wrong.",
-                        status = "Not connected",
-                    )
-                }
-            }
-        }
-    }
-
-    fun retry() {
-        if (_state.value.busy) return
-        _state.update { it.copy(busy = true, error = null, status = "Sending…") }
-        viewModelScope.launch {
-            try {
-                val outcome = session.retry { messages ->
-                    _state.update { state ->
-                        state.copy(messages = messages, status = statusWhile(messages))
-                    }
-                }
-                applyOutcome(outcome)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                _state.update {
-                    it.copy(
-                        busy = false,
-                        error = e.message ?: "Something went wrong.",
-                        status = "Not connected",
-                    )
-                }
-            }
-        }
-    }
-
-    fun clearConversation() {
-        viewModelScope.launch {
-            session.clear()
-            _state.update {
-                it.copy(
-                    messages = emptyList(),
-                    error = null,
-                    busy = false,
-                    status = statusFor(it.settings, error = null, busy = false),
-                )
-            }
-        }
-    }
-
-    private fun applyOutcome(outcome: TurnOutcome) {
-        when (outcome) {
-            is TurnOutcome.Completed -> _state.update {
-                it.copy(
-                    messages = outcome.messages,
-                    busy = false,
-                    error = null,
-                    status = "Connected",
-                )
-            }
-            is TurnOutcome.Failed -> _state.update {
-                it.copy(
-                    messages = outcome.messages,
-                    busy = false,
-                    error = outcome.error,
-                    status = "Not connected",
-                )
-            }
-            is TurnOutcome.EmptyInput -> _state.update {
-                it.copy(
-                    busy = false,
-                    status = statusFor(it.settings, it.error, busy = false),
-                )
-            }
-        }
-    }
-
-    private fun initialState(): ChatUiState {
-        val settings = settingsStore.load()
-        return ChatUiState(
-            messages = session.snapshot(),
-            settings = settings,
-            status = statusFor(settings, error = null, busy = false),
-        )
-    }
-
-    private fun statusWhile(messages: List<Message>): String {
-        return when (messages.lastOrNull()) {
-            is Message.ToolCall -> "Running tool…"
-            is Message.ToolResult -> "Waiting for the model…"
-            else -> "Waiting for the model…"
-        }
-    }
-
-    private fun statusFor(settings: ServerSettings, error: String?, busy: Boolean): String {
-        if (busy) return "Sending…"
-        if (error != null) return "Not connected"
-        if (settings.validate() != null) return "Set the server address"
-        return "Ready"
+        _state.update { it.copy(settings = normalized, showSettings = false, settingsError = null, error = null) }
     }
 
     companion object {
@@ -253,6 +341,7 @@ class ChatViewModelFactory(
         }
         return ChatViewModel(
             settingsStore = settingsStore,
+            conversationStore = FileConversationStore(File(app.filesDir, "conversations")),
             toolRegistry = registry,
             providers = ChatViewModel.Companion::openAiProvider,
             onSettingsSaved = { saved -> search.config = saved.toSearchConfig() },
