@@ -1,6 +1,10 @@
 package com.localfirst.assistant.ui
 
 import android.app.Application
+import android.net.Uri
+import com.localfirst.assistant.attachments.AttachmentImporter
+import com.localfirst.assistant.conversation.Attachment
+import com.localfirst.assistant.conversation.AttachmentKind
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -61,6 +65,25 @@ data class ChatUiState(
     val settingsError: String? = null,
     /** A tool call waiting for the user to approve or deny it. */
     val pendingApproval: PendingApproval? = null,
+    /** Files attached to the message being written. */
+    val draftAttachments: List<DraftAttachment> = emptyList(),
+) {
+    val canSend: Boolean get() {
+        val editingAttachments = (messages.getOrNull(editingIndex ?: -1) as? Message.User)?.attachments.orEmpty()
+        return !busy && draftAttachments.all { it.status == DraftStatus.READY && it.attachment != null } &&
+            (draft.isNotBlank() || draftAttachments.isNotEmpty() || editingAttachments.isNotEmpty())
+    }
+}
+
+enum class DraftStatus { READING, READY, FAILED }
+
+data class DraftAttachment(
+    val id: String,
+    val name: String,
+    val kind: AttachmentKind,
+    val status: DraftStatus,
+    val attachment: Attachment? = null,
+    val error: String? = null,
 )
 
 data class PendingApproval(val toolName: String, val prompt: String)
@@ -73,6 +96,7 @@ class ChatViewModel(
     private val onSettingsSaved: (ServerSettings) -> Unit = {},
     private val clock: () -> Long = System::currentTimeMillis,
     private val voiceEngines: VoiceEngines? = null,
+    private val attachments: AttachmentImporter? = null,
 ) : ViewModel() {
     private var approval: CompletableDeferred<Boolean>? = null
 
@@ -125,21 +149,98 @@ class ChatViewModel(
     fun send() {
         val current = _state.value
         val draft = current.draft
-        if (current.busy || draft.isBlank()) return
+        val ready = current.draftAttachments.mapNotNull { it.attachment }
+        if (!current.canSend) return
         if (!settingsReady()) return
         val editing = current.editingIndex
-        _state.update { it.copy(draft = "", editingIndex = null) }
+        _state.update { it.copy(draft = "", editingIndex = null, draftAttachments = emptyList()) }
         if (editing != null) {
             runTurn { onUpdate -> session.editUserMessage(editing, draft, onUpdate) }
         } else {
-            runTurn { onUpdate -> session.submitUserMessage(draft, onUpdate) }
+            runTurn { onUpdate -> session.submitUserMessage(draft, ready, onUpdate) }
+        }
+    }
+
+    // ---- attachments -----------------------------------------------------------
+
+    /** Adds picked or shared files: images are attached directly, documents are read on the computer. */
+    fun addAttachments(uris: List<Uri>, deleteSource: () -> Unit = {}) {
+        val importer = attachments
+        val current = _state.value
+        val remaining = (MAX_ATTACHMENTS - current.draftAttachments.size).coerceAtLeast(0)
+        if (importer == null || current.busy || current.editingIndex != null || remaining == 0 || uris.isEmpty()) {
+            deleteSource()
+            return
+        }
+        if (uris.size > remaining) _state.update { it.copy(error = "You can attach up to $MAX_ATTACHMENTS files per message.") }
+        for (uri in uris.take(remaining)) {
+            val image = importer.isImage(uri)
+            val draft = DraftAttachment(
+                id = UUID.randomUUID().toString(),
+                name = importer.displayName(uri),
+                kind = if (image) AttachmentKind.IMAGE else AttachmentKind.DOCUMENT,
+                status = DraftStatus.READING,
+            )
+            _state.update { it.copy(draftAttachments = it.draftAttachments + draft) }
+            viewModelScope.launch {
+                val settings = _state.value.settings
+                val result = try {
+                    runCatching {
+                        if (image) {
+                            importer.importImage(uri, draft.name)
+                        } else {
+                            importer.importDocument(uri, settings.searchBaseUrl, settings.searchApiKey.trim().ifEmpty { null })
+                        }
+                    }.also { result ->
+                        val error = result.exceptionOrNull()
+                        if (error is CancellationException) throw error
+                    }
+                } finally {
+                    deleteSource()
+                }
+                _state.update { state ->
+                    state.copy(
+                        draftAttachments = state.draftAttachments.map { d ->
+                            if (d.id != draft.id) {
+                                d
+                            } else {
+                                result.fold(
+                                    { d.copy(status = DraftStatus.READY, attachment = it) },
+                                    { e -> d.copy(status = DraftStatus.FAILED, error = e.message ?: "Couldn't attach ${d.name}.") },
+                                )
+                            }
+                        },
+                    )
+                }
+                // Removed while it was being read: drop the stored files.
+                if (_state.value.draftAttachments.none { it.id == draft.id }) result.getOrNull()?.let { importer.delete(listOf(it)) }
+            }
+        }
+    }
+
+    fun removeDraftAttachment(id: String) {
+        val removed = _state.value.draftAttachments.firstOrNull { it.id == id } ?: return
+        _state.update { s -> s.copy(draftAttachments = s.draftAttachments.filterNot { it.id == id }) }
+        removed.attachment?.let { attachments?.delete(listOf(it)) }
+    }
+
+    /** Content shared from another app: a new chat with it attached. */
+    fun receiveShared(uris: List<Uri>, text: String?) {
+        viewModelScope.launch {
+            voice?.close()
+            turnJob?.cancel()
+            turnJob?.join()
+            resetToNewChat()
+            text?.takeIf { it.isNotBlank() }?.let { shared -> _state.update { it.copy(draft = shared) } }
+            addAttachments(uris)
         }
     }
 
     /** Sends [text] directly, for suggestion chips on an empty chat. */
     fun sendSuggestion(text: String) {
-        if (_state.value.busy || !settingsReady()) return
-        runTurn { onUpdate -> session.submitUserMessage(text, onUpdate) }
+        if (_state.value.busy) return
+        onDraftChange(text)
+        send()
     }
 
     fun retry() {
@@ -190,7 +291,7 @@ class ChatViewModel(
 
     private fun submitSpoken(text: String): Boolean {
         if (_state.value.busy || text.isBlank() || _state.value.settings.validate() != null) return false
-        runTurn { onUpdate -> session.submitUserMessage(text, onUpdate) }
+        runTurn { onUpdate -> session.submitUserMessage(text, onUpdate = onUpdate) }
         return true
     }
 
@@ -209,6 +310,7 @@ class ChatViewModel(
     }
 
     override fun onCleared() {
+        clearDraftAttachments()
         voice?.shutdown()
         super.onCleared()
     }
@@ -216,6 +318,7 @@ class ChatViewModel(
     fun startEditing(index: Int) {
         val message = _state.value.messages.getOrNull(index) as? Message.User ?: return
         if (_state.value.busy) return
+        clearDraftAttachments()
         _state.update { it.copy(editingIndex = index, draft = message.content) }
     }
 
@@ -290,7 +393,12 @@ class ChatViewModel(
                 turnJob?.join()
                 resetToNewChat()
             }
-            withContext(Dispatchers.IO) { conversationStore.delete(id) }
+            withContext(Dispatchers.IO) {
+                val files = conversationStore.load(id)?.messages.orEmpty()
+                    .filterIsInstance<Message.User>().flatMap { it.attachments }
+                conversationStore.delete(id)
+                attachments?.delete(files)
+            }
             refreshConversationList()
         }
     }
@@ -308,6 +416,7 @@ class ChatViewModel(
                 refreshConversationList()
                 return@launch
             }
+            clearDraftAttachments()
             session = newSession(stored.messages)
             createdAt = stored.summary.createdAt
             _state.update {
@@ -323,7 +432,14 @@ class ChatViewModel(
         }
     }
 
+    private fun clearDraftAttachments() {
+        val old = _state.value.draftAttachments.mapNotNull { it.attachment }
+        _state.update { it.copy(draftAttachments = emptyList()) }
+        attachments?.delete(old)
+    }
+
     private fun resetToNewChat() {
+        clearDraftAttachments()
         session = newSession(emptyList())
         _state.update {
             it.copy(
@@ -333,6 +449,7 @@ class ChatViewModel(
                 draft = "",
                 editingIndex = null,
                 error = null,
+                draftAttachments = emptyList(),
             )
         }
     }
@@ -344,7 +461,7 @@ class ChatViewModel(
         val current = _state.value
         val id = current.conversationId ?: UUID.randomUUID().toString().also { createdAt = now }
         val title = if (current.conversationId == null) {
-            ConversationTitles.fromFirstMessage((messages.first { it is Message.User } as Message.User).content)
+            ConversationTitles.fromFirstMessage(messages.first { it is Message.User } as Message.User)
         } else {
             current.title
         }
@@ -427,6 +544,7 @@ class ChatViewModel(
         }
 
         private const val CONNECT_TIMEOUT_MILLIS = 10_000
+        const val MAX_ATTACHMENTS = 6
     }
 }
 
@@ -450,6 +568,7 @@ class ChatViewModelFactory(
             providers = ChatViewModel.Companion::openAiProvider,
             onSettingsSaved = { saved -> search.config = saved.toSearchConfig() },
             voiceEngines = VoiceEngines(app),
+            attachments = AttachmentImporter(app),
         ) as T
     }
 }

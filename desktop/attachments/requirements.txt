@@ -1,0 +1,5 @@
+fastapi
+pypdf>=6
+python-docx>=1.2
+pypdfium2>=5
+Pillow>=12

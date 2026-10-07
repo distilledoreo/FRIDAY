@@ -16,8 +16,7 @@ import android.media.audiofx.NoiseSuppressor
 import android.os.Build
 import com.localfirst.assistant.phone.PermissionBroker
 import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URI
+import com.localfirst.assistant.desktop.desktopRequest
 import kotlin.math.max
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -84,28 +83,8 @@ class ComputerVoiceClient(private val baseUrl: String, private val apiKey: Strin
         Wav.decode(body)
     }
 
-    private fun request(method: String, path: String, body: ByteArray? = null, type: String? = null, timeoutMs: Int): Pair<Int, ByteArray> {
-        val url = URI(baseUrl.trim().trimEnd('/') + path).toURL()
-        val connection = (url.openConnection() as HttpURLConnection).apply {
-            requestMethod = method
-            connectTimeout = 8_000
-            readTimeout = timeoutMs
-            apiKey?.takeIf { it.isNotBlank() }?.let { setRequestProperty("Authorization", "Bearer $it") }
-            if (body != null) {
-                doOutput = true
-                setRequestProperty("Content-Type", type)
-                setFixedLengthStreamingMode(body.size)
-            }
-        }
-        try {
-            body?.let { b -> connection.outputStream.use { it.write(b) } }
-            val code = connection.responseCode
-            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-            return code to (stream?.use { it.readBytes() } ?: ByteArray(0))
-        } finally {
-            connection.disconnect()
-        }
-    }
+    private fun request(method: String, path: String, body: ByteArray? = null, type: String? = null, timeoutMs: Int) =
+        desktopRequest(baseUrl, apiKey, method, path, body, type, timeoutMs = timeoutMs)
 }
 
 /**

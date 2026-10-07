@@ -1,5 +1,6 @@
 package com.localfirst.assistant.presentation
 
+import com.localfirst.assistant.conversation.Attachment
 import com.localfirst.assistant.conversation.Message
 import com.localfirst.assistant.json.JsonCodec
 import com.localfirst.assistant.tools.SourceLink
@@ -15,7 +16,11 @@ import kotlinx.serialization.json.intOrNull
 sealed interface TranscriptItem {
     val key: String
 
-    data class User(val index: Int, val text: String) : TranscriptItem {
+    data class User(
+        val index: Int,
+        val text: String,
+        val attachments: List<Attachment> = emptyList(),
+    ) : TranscriptItem {
         override val key = "u$index"
     }
 
@@ -72,7 +77,7 @@ object Transcript {
                 is Message.System -> Unit
                 is Message.User -> {
                     flushSteps()
-                    out += TranscriptItem.User(index, message.content)
+                    out += TranscriptItem.User(index, message.content, message.attachments)
                 }
                 is Message.Assistant -> {
                     if (message.content.isBlank()) return@forEachIndexed

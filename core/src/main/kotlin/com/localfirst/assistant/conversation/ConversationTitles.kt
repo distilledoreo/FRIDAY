@@ -9,6 +9,13 @@ object ConversationTitles {
     const val MAX_LENGTH = 48
     const val NEW_CHAT = "New chat"
 
+    /** Placeholder from the first user message; falls back to the first attachment's name. */
+    fun fromFirstMessage(message: Message.User): String {
+        if (message.content.isNotBlank() || message.attachments.isEmpty()) return fromFirstMessage(message.content)
+        val first = message.attachments.first()
+        return clip(if (first.kind == AttachmentKind.IMAGE) "Image" else first.name)
+    }
+
     /** Placeholder from the first user message, used until (or instead of) a model title. */
     fun fromFirstMessage(text: String): String {
         val line = text.trim().lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()

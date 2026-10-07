@@ -93,11 +93,14 @@ internal fun UserMessage(
                     .clip(RoundedCornerShape(22.dp))
                     .combinedClickable(onClick = {}, onLongClick = { menu = true }),
             ) {
-                Text(
-                    text = item.text,
-                    style = MaterialTheme.typography.bodyLarge,
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                )
+                ) {
+                    if (item.attachments.isNotEmpty()) MessageAttachments(item.attachments)
+                    if (item.text.isNotBlank()) Text(text = item.text, style = MaterialTheme.typography.bodyLarge)
+                }
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                 DropdownMenuItem(
