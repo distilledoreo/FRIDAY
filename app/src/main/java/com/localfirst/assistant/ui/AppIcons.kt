@@ -2,7 +2,10 @@ package com.localfirst.assistant.ui
 
 import androidx.compose.material.icons.materialIcon
 import androidx.compose.material.icons.materialPath
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.addPathNodes
 
 /**
  * The few Material icons the app needs that are not in material-icons-core.
@@ -108,6 +111,19 @@ internal object AppIcons {
                 lineToRelative(2.0f, -3.5f)
                 close()
             }
+        }
+    }
+
+    val Mic: ImageVector by lazy {
+        materialIcon(name = "Filled.Mic") {
+            addPath(
+                pathData = addPathNodes(
+                    "M12,14c1.66,0 2.99,-1.34 2.99,-3L15,5c0,-1.66 -1.34,-3 -3,-3S9,3.34 9,5v6c0,1.66 1.34,3 3,3z" +
+                        "M17.3,11c0,3 -2.54,5.1 -5.3,5.1S6.7,14 6.7,11L5,11c0,3.41 2.72,6.23 6,6.72L11,21h2v-3.28" +
+                        "c3.28,-0.48 6,-3.3 6,-6.72h-1.7z",
+                ),
+                fill = SolidColor(Color.Black),
+            )
         }
     }
 }

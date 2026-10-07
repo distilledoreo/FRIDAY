@@ -9,6 +9,7 @@ Milestones implemented:
 3. `web_search` on that same registry. The phone calls a separate PC search service. SearXNG is the default search backend. Crawl4AI is an optional page fetch.
 4. A ChatGPT-style chat experience: streamed replies, Markdown, Stop, copy/regenerate/edit, saved chats in a drawer with generated titles, and web searches shown as cards with their sources.
 5. Phone control: apps, web, maps, media and Spotify, alarms and timers, flashlight, battery, contacts, calls and texts (approved in the chat), and the calendar.
+6. Voice mode and assistant registration: a hands-free voice conversation with barge-in, and the app can be the phone's default digital assistant.
 
 ## Layout
 
@@ -144,6 +145,32 @@ Each tool is an explicit Android API or intent; the model never gets general con
 - **Spotify:** there's no Spotify account or developer app to register. Playback starts through Android's standard *play from search* intent, which Spotify handles, and `now_playing` reads Spotify's media session.
 
 The system prompt includes the current date, time, and time zone each turn, so "tomorrow at 3" and "in 20 minutes" resolve correctly.
+
+## Voice mode
+
+Tap the mic in the composer (shown while the message box is empty), or launch the app as the assistant. Voice mode is a loop:
+
+1. **Listen.** Android's speech recognizer, preferring the on-device one so audio stays on the phone. It falls back to the default recognition service, which is asked to work offline when it can. Your words show live.
+2. **Send** when you stop talking.
+3. **Speak the reply as it streams.** The reply is split into sentences (`SpeechChunker`) and Markdown is turned into speakable text (`SpeechText`), so speech starts before the answer is finished. Code blocks are summarized as "The code is on screen." Other audio, like Spotify, is ducked.
+4. **Listen again.** After two quiet turns it pauses ("Tap to talk").
+
+**Barge-in (quasi-full-duplex).** While the assistant is thinking or speaking, a second mic stream runs with Android's voice-communication source, echo canceller, and noise suppressor. A loudness-onset detector (`SpeechOnsetDetector`) watches it, and talking over the reply stops speech, cancels the reply (keeping what arrived), and listens to you. On the loudspeaker some of the assistant's own voice still reaches the mic, so the trigger is stricter there; headphones and Bluetooth work best. Tapping the orb always interrupts. Turn barge-in off in **Settings → Voice & assistant**.
+
+**Spoken approvals.** Calls and texts are read out ("Text Jordan Lee (mobile, …): “Running late”. Should I go ahead?"). Say yes or no; anything unclear is asked again, and "no" wins over "yes" in mixed answers. The Approve/Deny card works too.
+
+Voice pauses when the app goes to the background, because Android blocks the mic for background apps.
+
+## Default assistant
+
+The activity handles `android.intent.action.ASSIST` and `android.intent.action.VOICE_COMMAND`. To use it:
+
+1. Go to **Settings → Voice & assistant → Set as default assistant**. This opens **Default apps**.
+2. Choose **Digital assistant app → Assistant**.
+
+Then long-press the power button (or use your assistant gesture), or press a Bluetooth headset's voice button, and the app opens a new chat in voice mode.
+
+Not possible for a regular app: a wake word (hotword detection is reserved for privileged system apps), and opening over the lock screen without unlocking.
 
 ## Chat features
 

@@ -27,6 +27,10 @@ import com.localfirst.assistant.tools.ToolConfirmer
 import com.localfirst.assistant.tools.ToolRegistry
 import com.localfirst.assistant.tools.WebSearchTool
 import com.localfirst.assistant.tools.phone.phoneTools
+import com.localfirst.assistant.voice.VoiceController
+import com.localfirst.assistant.voice.VoiceIo
+import com.localfirst.assistant.voice.VoiceUiState
+import com.localfirst.assistant.voice.androidVoiceIo
 import java.io.File
 import java.time.ZonedDateTime
 import java.util.UUID
@@ -69,6 +73,7 @@ class ChatViewModel(
     private val providers: (ServerSettings) -> ModelProvider,
     private val onSettingsSaved: (ServerSettings) -> Unit = {},
     private val clock: () -> Long = System::currentTimeMillis,
+    voiceIo: VoiceIo? = null,
 ) : ViewModel() {
     private var approval: CompletableDeferred<Boolean>? = null
 
@@ -91,6 +96,21 @@ class ChatViewModel(
     private var createdAt: Long = 0
     private val _state = MutableStateFlow(ChatUiState(settings = settingsStore.load()))
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
+
+    private val voice = voiceIo?.let { io ->
+        VoiceController(
+            scope = viewModelScope,
+            io = io,
+            chat = state,
+            submit = ::submitSpoken,
+            stopTurn = ::stop,
+            answerApproval = ::answerApproval,
+            bargeInEnabled = { _state.value.settings.voiceBargeIn },
+        )
+    }
+
+    /** Null when voice mode is closed. */
+    val voiceState: StateFlow<VoiceUiState?> = voice?.state ?: MutableStateFlow(null)
 
     init {
         refreshConversationList()
@@ -139,6 +159,44 @@ class ChatViewModel(
 
     fun answerApproval(approved: Boolean) {
         approval?.complete(approved)
+    }
+
+    // ---- voice -----------------------------------------------------------------
+
+    fun startVoice() {
+        if (!settingsReady()) return
+        voice?.start()
+    }
+
+    fun closeVoice() = voice?.close()
+
+    /** Called when the app goes to the background, where Android blocks the mic. */
+    fun pauseVoice() {
+        if (voice?.active == true) voice.pause("Paused while the app was in the background. Tap to talk.")
+    }
+
+    fun interruptVoice() = voice?.interrupt()
+
+    /** Opened as the phone's assistant (long-press power, headset button): a fresh chat in voice mode. */
+    fun startAssistantSession() {
+        viewModelScope.launch {
+            voice?.close()
+            turnJob?.cancel()
+            turnJob?.join()
+            if (_state.value.messages.isNotEmpty()) resetToNewChat()
+            startVoice()
+        }
+    }
+
+    private fun submitSpoken(text: String): Boolean {
+        if (_state.value.busy || text.isBlank() || _state.value.settings.validate() != null) return false
+        runTurn { onUpdate -> session.submitUserMessage(text, onUpdate) }
+        return true
+    }
+
+    override fun onCleared() {
+        voice?.shutdown()
+        super.onCleared()
     }
 
     fun startEditing(index: Int) {
@@ -375,6 +433,7 @@ class ChatViewModelFactory(
             toolRegistry = registry,
             providers = ChatViewModel.Companion::openAiProvider,
             onSettingsSaved = { saved -> search.config = saved.toSearchConfig() },
+            voiceIo = androidVoiceIo(app),
         ) as T
     }
 }
