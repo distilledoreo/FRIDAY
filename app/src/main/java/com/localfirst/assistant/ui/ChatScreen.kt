@@ -133,6 +133,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     onProjects = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.PROJECTS) } },
                     onTasks = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.TASKS) } },
                     onFiles = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.FILES) } },
+                    onImages = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.IMAGES) } },
                     currentId = state.conversationId,
                     onNewChat = { closeDrawerThen(viewModel::newChat) },
                     onOpen = { id -> closeDrawerThen { viewModel.openConversation(id) } },
@@ -160,9 +161,9 @@ fun ChatScreen(viewModel: ChatViewModel) {
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
-                                if (sharingScreen) {
+                                if (sharingScreen || state.imageStatus != null) {
                                     Text(
-                                        text = "Screen shared",
+                                        text = state.imageStatus?.replaceFirstChar(Char::uppercase) ?: "Screen shared",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -268,7 +269,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                                     onCopy = ::copy,
                                     onRegenerate = viewModel::regenerate,
                                 )
-                                is TranscriptItem.ToolActivity -> ToolActivityCard(item)
+                                is TranscriptItem.ToolActivity -> ToolActivityCard(item, viewModel::loadImage, viewModel::openArtifact)
                                 TranscriptItem.Thinking -> ThinkingIndicator()
                             }
                         }

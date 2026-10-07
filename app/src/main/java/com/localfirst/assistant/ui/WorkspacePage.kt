@@ -31,7 +31,7 @@ import java.time.format.DateTimeFormatter
 enum class WorkspaceDestination(val title: String) {
     SETTINGS("Settings"), MEMORY("Memory"), PROJECTS("Projects"), PROJECT("Project"),
     EDIT_PROJECT("Project settings"), TASKS("Tasks"), TASK("Task"), NEW_TASK("New task"),
-    FILES("Library"), DATA("Data controls"), NEW_MEMORY("Add memory")
+    FILES("Library"), DATA("Data controls"), NEW_MEMORY("Add memory"), IMAGES("Images"), NEW_IMAGE("Image generation")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -63,6 +63,7 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
             WorkspaceDestination.PROJECTS -> { if (initial == WorkspaceDestination.PROJECT || initial == WorkspaceDestination.PROJECTS) { vm.dismissWorkspace(); return }; parent }
             WorkspaceDestination.NEW_TASK, WorkspaceDestination.TASK -> WorkspaceDestination.TASKS
             WorkspaceDestination.NEW_MEMORY -> WorkspaceDestination.MEMORY
+            WorkspaceDestination.NEW_IMAGE -> if (initial == WorkspaceDestination.SETTINGS) WorkspaceDestination.SETTINGS else WorkspaceDestination.IMAGES
             else -> { if (page == initial) { vm.dismissWorkspace(); return }; parent }
         }
     }
@@ -84,6 +85,7 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                     actions = {
                         when (page) {
                             WorkspaceDestination.PROJECTS -> IconButton(onClick = { editProject(null) }, enabled = !state.workspaceBusy) { Icon(Icons.Filled.Add, "New project") }
+                            WorkspaceDestination.IMAGES -> IconButton(onClick = { page = WorkspaceDestination.NEW_IMAGE }) { Icon(Icons.Filled.Add, "Generate image or change settings") }
                             WorkspaceDestination.MEMORY -> IconButton(onClick = { page = WorkspaceDestination.NEW_MEMORY }, enabled = !state.workspaceBusy) { Icon(Icons.Filled.Add, "Add memory") }
                             WorkspaceDestination.TASKS -> IconButton(onClick = { page = WorkspaceDestination.NEW_TASK }, enabled = !state.workspaceBusy) { Icon(Icons.Filled.Add, "New task") }
                             WorkspaceDestination.PROJECT -> MoreActions(listOf("Edit instructions" to { editProject(project) }, "Delete project" to { deletingProject = project }))
@@ -96,11 +98,14 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                     if (state.workspaceBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
                     state.workspaceStatus?.takeIf { !it.startsWith("Computer online") }?.let { Text(it, Modifier.padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall) }
                     when (page) {
+                        WorkspaceDestination.IMAGES -> ImageJobs(state, vm)
+                        WorkspaceDestination.NEW_IMAGE -> ImageEditor(state, vm)
                         WorkspaceDestination.SETTINGS -> ScreenList {
                             item { SectionLabel("Personalization") }
                             item { SettingsRow("Memory", "Manage what the assistant remembers") { parent = page; page = WorkspaceDestination.MEMORY } }
                             item { SettingsRow("Data controls", "Sync, export and backups") { parent = page; page = WorkspaceDestination.DATA } }
                             item { SectionLabel("Local assistant") }
+                            item { SettingsRow("Image generation", "Auto settings, size and reference images") { page = WorkspaceDestination.NEW_IMAGE } }
                             item { SettingsRow("Voice and server", "Connection, model and voice settings", vm::openSettings) }
                             item { SettingsRow("Computer status", state.workspaceStatus?.takeIf { it.startsWith("Computer online") } ?: "Check connection and tools", vm::refreshWorkspace) }
                             item { SettingsRow("App updates", "Check for a new version", vm::checkUpdate) }

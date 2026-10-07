@@ -28,6 +28,7 @@ fun workspaceTools(client: WorkspaceGateway, knowledge: KnowledgeStore, conversa
         """{"type":"object","properties":{$properties},"required":[$required],"additionalProperties":false}""", confirmation, action)
     fun JsonObject.string(key: String) = getValue(key).jsonPrimitive.content
     return listOf(
+        ImageGenerationTool(client),
         tool("remember", "Save a fact or preference across chats. Use only when the user explicitly asks to remember it. Do not save passwords or API keys.",
             """"text":{"type":"string"}""", "\"text\"", true) { knowledge.remember(it.string("text")).toString() },
         tool("forget_memory", "Delete a saved memory by id.", """"id":{"type":"string"}""", "\"id\"", true) { knowledge.forget(it.string("id")); "Forgot memory." },

@@ -76,6 +76,9 @@ data class ChatUiState(
     val tasks: List<BackgroundTask> = emptyList(),
     val workspaceFiles: List<WorkspaceFile> = emptyList(),
     val syncConflicts: List<SyncConflict> = emptyList(),
+    val imageSettings: com.localfirst.assistant.workspace.ImageSettings = com.localfirst.assistant.workspace.ImageSettings(),
+    val imageJobs: List<JSONObject> = emptyList(),
+    val imageStatus: String? = null,
     /** Index of the user message being edited, if any. */
     val editingIndex: Int? = null,
     val busy: Boolean = false,
@@ -165,6 +168,10 @@ class ChatViewModel(
     init {
         refreshConversationList()
         _state.update { it.copy(knowledge = runCatching { knowledgeStore?.load() }.getOrNull() ?: Knowledge()) }
+        workspace?.let { client ->
+            _state.update { it.copy(imageSettings = client.imageSettings.load(client.serverIdentity)) }
+            viewModelScope.launch { client.imageStatus.collect { status -> _state.update { it.copy(imageStatus = status) } } }
+        }
         if (app != null) viewModelScope.launch {
             voiceState.collect { if (it == null) VoiceForegroundService.stop(app) }
         }
@@ -558,6 +565,7 @@ class ChatViewModel(
         systemPrompt = AssistantPrompts.system(ZonedDateTime.now()),
         initialMessages = messages,
         confirmer = confirmer,
+        checkpoint = { persist() },
     )
 
     fun searchHistory(query: String) { _state.update { it.copy(historyQuery = query) }; refreshConversationList() }
@@ -615,6 +623,40 @@ class ChatViewModel(
         _state.update { it.copy(projectId = id) }
         viewModelScope.launch { persist() }
     }
+    fun saveImageSettings(settings: com.localfirst.assistant.workspace.ImageSettings) {
+        val client = workspace ?: return
+        client.imageSettings.save(settings, client.serverIdentity)
+        _state.update { it.copy(imageSettings = settings, workspaceStatus = "Image settings saved.") }
+    }
+    fun generateImage(prompt: String, settings: com.localfirst.assistant.workspace.ImageSettings) {
+        if (_state.value.busy || _state.value.workspaceBusy) return
+        saveImageSettings(settings)
+        dismissWorkspace()
+        onDraftChange("Generate an image: " + prompt)
+        send()
+    }
+    private var imageRefreshJob: Job? = null
+    fun refreshImages() {
+        if (imageRefreshJob?.isActive == true) return
+        imageRefreshJob = viewModelScope.launch {
+            runCatching {
+                val jobs = JSONArray(workspace?.request("/workspace/images") ?: return@launch)
+                val gpu = JSONObject(workspace?.request("/workspace/images/health") ?: "{}")
+                workspace?.imageStatus?.value = gpu.optString("phase").takeUnless { it == "chat_ready" || it.isBlank() }?.replace('_', ' ')
+                _state.update { it.copy(imageJobs = (0 until jobs.length()).map { n -> jobs.getJSONObject(n) }) }
+            }.onFailure { error -> _state.update { it.copy(workspaceStatus = "Could not load images: ${error.message}") } }
+        }
+    }
+    fun cancelImage(id: String) { viewModelScope.launch { runCatching { workspace?.request("/workspace/images/$id/cancel", "POST", JSONObject()) }.onFailure { _state.update { s -> s.copy(workspaceStatus = it.message) } }; refreshImages() } }
+    fun removeImageJob(id: String) = workspaceAction { workspace?.request("/workspace/images/$id", "DELETE"); refreshImages(); "Image history entry removed; file stays in Library." }
+    suspend fun loadImage(id: String): File {
+        require(id.matches(Regex("[a-f0-9]{32}"))) { "Invalid image id" }
+        val context = app ?: error("Image preview unavailable")
+        val file = File(context.cacheDir, "generated-images/$id.png")
+        if (!file.isFile) workspace?.download(id, file) ?: error("Image server unavailable")
+        return file
+    }
+
     fun projectDocumentText(): String = session.snapshot().filterIsInstance<Message.User>()
         .flatMap { it.attachments }.filter { !it.text.isNullOrBlank() }.distinctBy { it.id }
         .joinToString("\n\n") { "${it.name}\n${it.text}" }

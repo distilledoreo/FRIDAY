@@ -58,7 +58,7 @@ class OpenAiCompatibleModelProvider(
             }
             thread(isDaemon = true, name = "model-stream") {
                 val result = try {
-                    val opened = open(payload, stream = true)
+                    val opened = open(payload, stream = true, cancelled = cancelled)
                     connection.set(opened)
                     try {
                         if (cancelled.get()) throw CancellationException("Stopped.")
@@ -157,7 +157,19 @@ class OpenAiCompatibleModelProvider(
     }
 
     /** Opens the connection and sends [payload]. Connection failures are translated here. */
-    private fun open(payload: String, stream: Boolean): HttpURLConnection {
+    private fun open(payload: String, stream: Boolean, cancelled: AtomicBoolean = AtomicBoolean(false)): HttpURLConnection {
+        val deadline = System.nanoTime() + 600_000_000_000L
+        while (!cancelled.get()) {
+            val connection = openOnce(payload, stream)
+            if (connection.responseCode != 503 || connection.getHeaderField("X-Assistant-GPU-Busy") != "1") return connection
+            connection.disconnect()
+            if (System.nanoTime() > deadline) throw ModelProviderException("GPU handoff is taking too long. Your chat is saved; retry when the computer is ready.")
+            repeat(12) { if (cancelled.get()) throw CancellationException("Stopped while waiting for GPU"); Thread.sleep(250) }
+        }
+        throw CancellationException("Stopped while waiting for GPU")
+    }
+
+    private fun openOnce(payload: String, stream: Boolean): HttpURLConnection {
         val endpoint = resolveChatCompletionsUrl(config.baseUrl)
         val url = try {
             URI(endpoint).toURL()

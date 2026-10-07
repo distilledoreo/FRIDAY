@@ -17,8 +17,8 @@ import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class WorkspaceFile(val id: String, val name: String, val size: Long) {
-    companion object { fun from(j: JSONObject) = WorkspaceFile(j.getString("id"), j.getString("name"), j.getLong("size")) }
+data class WorkspaceFile(val id: String, val name: String, val size: Long, val mime: String = "application/octet-stream") {
+    companion object { fun from(j: JSONObject) = WorkspaceFile(j.getString("id"), j.getString("name"), j.getLong("size"), j.optString("mime", "application/octet-stream")) }
 }
 
 data class BackgroundTask(val id: String, val prompt: String, val status: String, val result: String, val error: String, val runAt: Long = 0, val intervalSeconds: Int = 0) {

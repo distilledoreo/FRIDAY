@@ -20,8 +20,19 @@ import org.json.JSONObject
 
 /** Uses the existing authenticated computer endpoint; no connected-service accounts. */
 class WorkspaceClient(private val context: Context, private val settings: () -> ServerSettings) : WorkspaceGateway {
-    override suspend fun toolRequest(path: String, method: String, body: String?): String =
-        request(path, method, body?.let(::JSONObject))
+    val imageSettings = ImageSettingsStore(context)
+    val imageStatus = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    override suspend fun toolRequest(path: String, method: String, body: String?): String {
+        val payload = body?.let(::JSONObject)
+        if (path == "/workspace/images" && method == "POST" && payload != null) imageSettings.apply(payload, serverIdentity)
+        val result = request(path, method, payload)
+        if (path.startsWith("/workspace/images/") && method == "GET") {
+            val job = JSONObject(result)
+            imageStatus.value = if (job.optString("status") in listOf("completed", "failed", "cancelled")) null else job.optString("phase").replace('_', ' ')
+        }
+        if (path.startsWith("/workspace/images/") && path.endsWith("/cancel")) imageStatus.value = null
+        return result
+    }
     val serverIdentity: String get() = settings().searchBaseUrl.trim().trimEnd('/')
     suspend fun request(path: String, method: String = "GET", body: JSONObject? = null): String = withContext(Dispatchers.IO) {
         val s = settings()

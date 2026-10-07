@@ -159,6 +159,26 @@ class OpenAiCompatibleModelProviderTest {
         }
     }
 
+    @Test
+    fun explicitGpuBusyRetriesWithoutDroppingHistory() = runBlocking {
+        val hits = AtomicInteger()
+        val server = localServer()
+        server.createContext("/v1/chat/completions") { exchange ->
+            exchange.requestBody.close()
+            if (hits.incrementAndGet() == 1) {
+                exchange.responseHeaders.add("X-Assistant-GPU-Busy", "1")
+                write(exchange, 503, "GPU busy")
+            } else write(exchange, 200, """{"choices":[{"message":{"content":"restored"}}]}""")
+        }
+        server.start()
+        try {
+            val session = ConversationSession(provider(server.address.port), ToolRegistry(), "")
+            assertTrue(session.submitUserMessage("Keep this conversation") is TurnOutcome.Completed)
+            assertEquals(2, hits.get())
+            assertEquals(Message.User("Keep this conversation"), session.snapshot().first())
+        } finally { server.stop(0) }
+    }
+
     private fun provider(port: Int, apiKey: String? = null): OpenAiCompatibleModelProvider {
         return OpenAiCompatibleModelProvider(
             OpenAiCompatibleConfig(

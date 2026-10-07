@@ -66,6 +66,7 @@ internal fun ChatDrawer(
     onProjects: () -> Unit,
     onTasks: () -> Unit,
     onFiles: () -> Unit,
+    onImages: () -> Unit,
 ) {
     var renaming by remember { mutableStateOf<ConversationSummary?>(null) }
     var deleting by remember { mutableStateOf<ConversationSummary?>(null) }
@@ -87,6 +88,7 @@ internal fun ChatDrawer(
                 if (query.isBlank()) {
                     item { NavigationDrawerItem(label = { Text("New chat") }, icon = { Icon(Icons.Filled.Create, null) }, selected = false, onClick = onNewChat) }
                     item { NavigationDrawerItem(label = { Text("Library") }, icon = { Icon(Icons.AutoMirrored.Filled.List, null) }, selected = false, onClick = onFiles) }
+                    item { NavigationDrawerItem(label = { Text("Images") }, icon = { Icon(Icons.Filled.Create, null) }, selected = false, onClick = onImages) }
                     item { NavigationDrawerItem(label = { Text("Tasks") }, icon = { Icon(Icons.Filled.DateRange, null) }, selected = false, onClick = onTasks) }
                     item { TextButton(onClick = onProjects, modifier = Modifier.padding(top = 12.dp)) { Text("Projects") } }
                     items(projects, key = { "project:${it.id}" }) { project ->

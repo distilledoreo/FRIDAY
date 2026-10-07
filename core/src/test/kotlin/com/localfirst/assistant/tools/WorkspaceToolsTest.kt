@@ -12,7 +12,7 @@ class WorkspaceToolsTest {
         val dir = Files.createTempDirectory("workspace-tools").toFile()
         try {
             val tools = workspaceTools(FakeGateway(), KnowledgeStore(dir.resolve("knowledge.json")), FileConversationStore(dir.resolve("chats")))
-            assertEquals(10, tools.size)
+            assertEquals(11, tools.size)
             tools.forEach { assertEquals("object", it.inputSchema["type"]?.jsonPrimitive?.content) }
             assertTrue(tools.first { it.name == "remember" }.requiresConfirmation)
             assertTrue(tools.first { it.name == "schedule_task" }.requiresConfirmation)

@@ -54,7 +54,7 @@ import kotlinx.coroutines.withContext
 
 /** Loads a stored JPEG scaled down to about [maxEdgePx], off the main thread. */
 @Composable
-private fun rememberImage(path: String?, maxEdgePx: Int): ImageBitmap? {
+internal fun rememberImage(path: String?, maxEdgePx: Int): ImageBitmap? {
     var image by remember(path, maxEdgePx) { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(path, maxEdgePx) {
         image = path?.let { p ->
@@ -198,7 +198,7 @@ private fun documentDetail(doc: Attachment): String {
 }
 
 @Composable
-private fun ImageViewer(path: String, onDismiss: () -> Unit) {
+internal fun ImageViewer(path: String, onDismiss: () -> Unit) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         val image = rememberImage(path, maxEdgePx = 2048)
         Box(

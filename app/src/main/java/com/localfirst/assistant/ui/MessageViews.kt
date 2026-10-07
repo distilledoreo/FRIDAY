@@ -149,7 +149,7 @@ internal fun AssistantMessage(
 }
 
 @Composable
-internal fun ToolActivityCard(item: TranscriptItem.ToolActivity) {
+internal fun ToolActivityCard(item: TranscriptItem.ToolActivity, imageLoader: suspend (String) -> java.io.File, openImage: (String) -> Unit) {
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
@@ -159,7 +159,7 @@ internal fun ToolActivityCard(item: TranscriptItem.ToolActivity) {
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            item.steps.forEach { ToolStepRow(it) }
+            item.steps.forEach { step -> ToolStepRow(step); step.imageResult?.let { GeneratedImage(it, imageLoader, openImage) } }
         }
     }
 }

@@ -32,6 +32,7 @@ class ConversationEngine(
         onUpdate: (List<Message>) -> Unit = {},
         confirmer: ToolConfirmer? = null,
         latestUserNote: String? = null,
+        checkpoint: suspend () -> Unit = {},
     ): TurnOutcome {
         var rounds = 0
         while (true) {
@@ -102,6 +103,7 @@ class ConversationEngine(
                         )
                     }
                     onUpdate(messages.toList())
+                    if (response.calls.any { it.name == "generate_image" }) checkpoint()
                     for ((index, call) in response.calls.withIndex()) {
                         val result = try {
                             toolRegistry.execute(call, confirmer)
@@ -125,6 +127,7 @@ class ConversationEngine(
                             sources = result.sources,
                         )
                         onUpdate(messages.toList())
+                        if (call.name == "generate_image") checkpoint()
                     }
                 }
             }

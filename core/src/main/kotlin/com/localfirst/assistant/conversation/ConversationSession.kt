@@ -21,6 +21,7 @@ class ConversationSession(
     initialMessages: List<Message> = emptyList(),
     /** Approves tools that require confirmation. Null refuses them. */
     var confirmer: ToolConfirmer? = null,
+    private val checkpoint: suspend () -> Unit = {},
 ) {
     var modelProvider: ModelProvider = modelProvider
 
@@ -115,6 +116,7 @@ class ConversationSession(
             onUpdate = onUpdate,
             confirmer = confirmer,
             latestUserNote = latestUserNote,
+            checkpoint = checkpoint,
         )
 
     private fun truncateAfter(index: Int) {

@@ -55,6 +55,7 @@ data class ToolStep(
     /** Failure reason when [state] is [ToolStepState.FAILED]. */
     val detail: String? = null,
     val sources: List<SourceLink> = emptyList(),
+    val imageResult: String? = null,
 )
 
 enum class ToolStepState { RUNNING, DONE, FAILED }
@@ -143,6 +144,7 @@ object Transcript {
             label = label,
             detail = result?.takeIf { !it.success }?.content,
             sources = result?.sources.orEmpty(),
+            imageResult = result?.takeIf { it.success && call.name == "generate_image" }?.content,
         )
     }
 }
@@ -184,6 +186,7 @@ internal object ToolLabels {
         }
 
         return when (name) {
+            "generate_image" -> when (state) { ToolStepState.RUNNING -> "Generating image · temporarily using the GPU"; ToolStepState.DONE -> "Generated image · chat model restored"; ToolStepState.FAILED -> "Image generation did not finish" }
             "web_search" -> {
                 val subject = quoted("query")?.let { " for $it" }.orEmpty()
                 pick("Searching the web$subject", "Searched the web$subject", "Web search failed$subject")
