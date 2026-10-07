@@ -46,6 +46,8 @@ class VoiceController(
     private val selectIo: suspend () -> VoiceSelection,
     private val chat: StateFlow<ChatUiState>,
     private val submit: (String) -> Boolean,
+    /** Replaces the last user message with [String] and asks again; false if that isn't safe. */
+    private val resubmit: (String) -> Boolean,
     private val stopTurn: () -> Unit,
     private val answerApproval: (Boolean) -> Unit,
     private val bargeInEnabled: () -> Boolean,
@@ -58,6 +60,12 @@ class VoiceController(
     private var loop: Job? = null
     private var interrupt: CompletableDeferred<Unit>? = null
     private var current: VoiceIo? = null
+
+    // A pause mid-thought can end an utterance early. When the user keeps
+    // talking right away, the next utterance continues the last one.
+    private var lastSent: String? = null
+    private var lastSentAt = 0L
+    private var continueLast = false
     private val io: VoiceIo get() = checkNotNull(current) { "voice mode isn't running" }
 
     val active: Boolean get() = _state.value != null
@@ -121,8 +129,17 @@ class VoiceController(
                     is ListenResult.Failed -> return pauseWith(result.message)
                 }
                 quiet = 0
-                _state.update { it?.copy(heard = text, level = 0f) }
-                if (!submit(text)) return pauseWith("Couldn't send that. Check the server settings.")
+                val previous = lastSent
+                val merged = if (continueLast && previous != null) "$previous $text" else null
+                continueLast = false
+                val sent = when {
+                    merged != null && resubmit(merged) -> merged
+                    submit(text) -> text
+                    else -> return pauseWith("Couldn't send that. Check the server settings.")
+                }
+                lastSent = sent
+                lastSentAt = System.currentTimeMillis()
+                _state.update { it?.copy(heard = sent, level = 0f) }
                 speakReply()
             }
         } catch (e: CancellationException) {
@@ -136,6 +153,7 @@ class VoiceController(
     private suspend fun speakReply() = coroutineScope {
         set(VoicePhase.THINKING)
         val chunker = SpeechChunker()
+        var spoke = false
         val interrupted = CompletableDeferred<Unit>()
         interrupt = interrupted
         var bargeIn: Job? = null
@@ -152,6 +170,7 @@ class VoiceController(
             chat.first { s ->
                 for (chunk in chunker.update(replyText(s.messages), final = !s.busy)) {
                     io.speaker.enqueue(chunk)
+                    spoke = true
                     set(VoicePhase.SPEAKING, speaking = chunk)
                 }
                 val approval = s.pendingApproval
@@ -180,6 +199,9 @@ class VoiceController(
             speaking.cancel()
             io.speaker.stop()
             if (chat.value.busy) stopTurn()
+            // Talking again before the assistant said anything, soon after sending, means "I wasn't done".
+            // Interrupting once it's speaking is a new instruction.
+            continueLast = !spoke && System.currentTimeMillis() - lastSentAt < CONTINUE_WINDOW_MS
         }
     }
 
@@ -237,5 +259,8 @@ class VoiceController(
     companion object {
         /** Notes starting with this stay on screen for the whole session. */
         const val FALLBACK_PREFIX = "Using the phone's voice"
+
+        /** Talking again within this long after sending, before any reply is spoken, continues the same message. */
+        const val CONTINUE_WINDOW_MS = 8_000L
     }
 }

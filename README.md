@@ -161,8 +161,9 @@ The computer engine uses the **search service address and key**; the desktop ass
 
 **Full duplex (computer engine).** While voice mode is open, the phone is in communication mode, like a speakerphone call: audio goes to the loudspeaker, or to a headset or Bluetooth device if one is connected, and the platform echo canceller removes the assistant's own voice from the mic.
 
-- **One continuous mic stream.** It's cut into utterances by `Endpointer` (core), which tracks the background level, needs about 200 ms of speech to trigger, ends after about 750 ms of silence, and keeps 800 ms of audio from before the trigger, so the first word of an interruption isn't lost.
+- **One continuous mic stream.** It's cut into utterances by `Endpointer` (core), which tracks the background level, needs about 200 ms of speech to trigger, ends after about 1 s of silence, and keeps 800 ms of audio from before the trigger, so the first word of an interruption isn't lost.
 - **Interrupting.** Start talking while it's speaking or thinking: speech stops, the reply is cancelled (keeping what arrived), and what you said is transcribed. The trigger is 6 dB stricter while the assistant is speaking.
+- **Pausing mid-thought.** If you start talking again before the assistant has said anything (within 8 s of sending), the new words are joined to your last message, which is sent again as one. If a tool already ran for the first half, it's sent as a separate message instead, so actions never repeat.
 - **Other controls.** Tapping the orb always interrupts. Turn **Interrupt by talking** off to ignore the mic while it speaks.
 - **Volume.** Because it's a communication-mode stream, the volume buttons control call volume while voice mode is open.
 

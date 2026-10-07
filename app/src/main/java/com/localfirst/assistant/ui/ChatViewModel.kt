@@ -102,6 +102,7 @@ class ChatViewModel(
             selectIo = { engines.select(_state.value.settings) },
             chat = state,
             submit = ::submitSpoken,
+            resubmit = ::resubmitSpoken,
             stopTurn = ::stop,
             answerApproval = ::answerApproval,
             bargeInEnabled = { _state.value.settings.voiceBargeIn },
@@ -190,6 +191,20 @@ class ChatViewModel(
     private fun submitSpoken(text: String): Boolean {
         if (_state.value.busy || text.isBlank() || _state.value.settings.validate() != null) return false
         runTurn { onUpdate -> session.submitUserMessage(text, onUpdate) }
+        return true
+    }
+
+    /**
+     * Replaces the last user message with [text] and asks again, for a spoken
+     * message that turned out to continue after a pause. Not when a tool already
+     * ran for it, so actions never repeat.
+     */
+    private fun resubmitSpoken(text: String): Boolean {
+        if (_state.value.busy || text.isBlank() || _state.value.settings.validate() != null) return false
+        val messages = session.snapshot()
+        val lastUser = messages.indexOfLast { it is Message.User }
+        if (lastUser < 0 || messages.drop(lastUser + 1).any { it is Message.ToolCall }) return false
+        runTurn { onUpdate -> session.editUserMessage(lastUser, text, onUpdate) }
         return true
     }
 

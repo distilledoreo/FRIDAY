@@ -29,6 +29,7 @@ class VoiceControllerTest {
     private var bargeIn = CompletableDeferred<Unit>()
     private var stopCalls = 0
     private val answers = mutableListOf<Boolean>()
+    private val resubmitted = mutableListOf<String>()
 
     /** What the "model" does when a message is submitted. */
     private var reply: suspend (String) -> Unit = { text -> stream(text, "You said $text. That is a nice thing to say.") }
@@ -39,6 +40,15 @@ class VoiceControllerTest {
         chat = chat,
         submit = { text ->
             chat.update { it.copy(messages = it.messages + Message.User(text), busy = true) }
+            scope.launch { reply(text) }
+            true
+        },
+        resubmit = { text ->
+            resubmitted += text
+            chat.update { s ->
+                val lastUser = s.messages.indexOfLast { it is Message.User }
+                s.copy(messages = s.messages.take(lastUser) + Message.User(text), busy = true)
+            }
             scope.launch { reply(text) }
             true
         },
@@ -66,7 +76,11 @@ class VoiceControllerTest {
             },
             speaker = speaker,
             bargeIn = object : BargeInListener {
-                override suspend fun awaitSpeech() = bargeIn.await()
+                override suspend fun awaitSpeech() {
+                    bargeIn.await()
+                    // One onset per utterance, like the real mic.
+                    bargeIn = CompletableDeferred()
+                }
             },
             focus = object : VoiceAudioFocus {
                 override fun acquire() = Unit
@@ -118,6 +132,30 @@ class VoiceControllerTest {
         assertTrue(speaker.stops >= 1)
         assertEquals(1, stopCalls)
         controller.close()
+    }
+
+    @Test
+    fun continuingAfterAPauseMergesWithTheLastMessage() = runBlocking {
+        heard += ListenResult.Heard("set a timer for")
+        var first = true
+        reply = { text ->
+            if (first) {
+                first = false
+                // Still thinking when the user carries on.
+                delay(10_000)
+            } else {
+                stream(text, "Timer set for ten minutes.")
+            }
+        }
+        controller.start()
+        withTimeout(5_000) { controller.state.first { it?.phase == VoicePhase.THINKING } }
+        heard += ListenResult.Heard("ten minutes")
+        bargeIn.complete(Unit)
+        withTimeout(5_000) { controller.state.first { it?.phase == VoicePhase.PAUSED } }
+
+        assertEquals(listOf("set a timer for ten minutes"), resubmitted)
+        assertEquals(1, chat.value.messages.count { it is Message.User })
+        assertTrue(speaker.spoken.contains("Timer set for ten minutes."))
     }
 
     @Test

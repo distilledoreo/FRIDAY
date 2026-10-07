@@ -63,7 +63,8 @@ class SpeechChunker(private val minChars: Int = 24) {
             out += speakable(fullText.substring(consumed))
             consumed = fullText.length
         }
-        return out.filter { it.isNotBlank() }
+        // Nothing to say for chunks without letters or digits, such as a stray "-".
+        return out.filter { chunk -> chunk.any { it.isLetterOrDigit() } }
     }
 
     fun reset() {

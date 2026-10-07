@@ -22,7 +22,7 @@ class Endpointer(
     private val minDbfs: Double = -45.0,
     private val playingExtraMargin: Double = 6.0,
     onsetMs: Int = 200,
-    endSilenceMs: Int = 750,
+    endSilenceMs: Int = 1_000,
     preRollMs: Int = 800,
     maxUtteranceMs: Int = 30_000,
     minUtteranceMs: Int = 300,

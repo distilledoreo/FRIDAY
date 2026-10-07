@@ -52,6 +52,12 @@ class SpeechTest {
     }
 
     @Test
+    fun chunksWithNothingToSayAreDropped() {
+        val chunker = SpeechChunker(minChars = 1)
+        assertEquals(listOf("Two options:", "First one."), chunker.update("Two options:\n-\n---\nFirst one.", final = true))
+    }
+
+    @Test
     fun spokenApprovalsFavorNo() {
         assertEquals(true, VoiceReplies.approval("Yes please"))
         assertEquals(true, VoiceReplies.approval("Yeah, go ahead."))
