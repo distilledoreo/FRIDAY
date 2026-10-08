@@ -37,7 +37,7 @@ class WorkspaceToolsTest {
         try {
             val gateway = FakeGateway()
             val tools = workspaceTools(gateway, KnowledgeStore(dir.resolve("knowledge.json")), FileConversationStore(dir.resolve("chats")))
-            val args = buildJsonObject { put("prompt", "Research batteries"); putJsonArray("plan") { add(JsonPrimitive("Read public sources")) } }
+            val args = buildJsonObject { put("prompt", "Research batteries"); putJsonArray("plan") { add(JsonPrimitive("Read public sources")) }; putJsonObject("schedule") { put("run_at", 2000000000); put("interval_seconds", 86400); put("max_runs", 7); put("timezone", "America/New_York") } }
             tools.first { it.name == "propose_agent_task" }.execute(args)
             assertEquals("/workspace/agent/tasks", gateway.path)
             assertEquals(args, Json.parseToJsonElement(gateway.body!!))

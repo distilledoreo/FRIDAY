@@ -78,7 +78,7 @@ class TaskPollService : JobService() {
                             Intent(this@TaskPollService, MainActivity::class.java).setAction("com.localfirst.assistant.ACTIVITY"),
                             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
                         val text = when (status) {
-                            "done" -> "FRIDAY's report is ready. Open Activity to read it."
+                            "done" -> if (task.getJSONObject("proposal").has("schedule")) "Scheduled plan finished. Open Activity for its run records." else "FRIDAY's report is ready. Open Activity to read it."
                             "awaiting_setup" -> "An action needs account setup. Review it in Activity."
                             "interrupted" -> "Task interrupted. Review before trying again."
                             else -> "Task failed. Open Activity for details."

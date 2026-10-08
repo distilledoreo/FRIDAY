@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import base64
+import time
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -76,6 +77,25 @@ class AgentApiTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(.01)
         self.assertEqual(self.store.task(task['id'])['status'], 'cancelled')
         self.assertNotIn('result', [e['kind'] for e in self.store.events(task['id'])])
+
+    async def test_approved_schedule_runs_without_granting_action_approval(self):
+        other = FastAPI()
+        calls = []
+        async def engine(task, report):
+            calls.append(task['id'])
+            return {'text': 'Scheduled synthetic result'}
+        store = install(other, [], Path(self.temp.name) / 'scheduled', engine, poll_seconds=.02)
+        async with other.router.lifespan_context(other):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=other), base_url='http://test') as client:
+                task = (await client.post('/workspace/agent/tasks', json={'prompt': 'Check', 'plan': ['Read'],
+                    'schedule': {'run_at': time.time() + .1, 'timezone': 'UTC'}})).json()
+                await client.post('/workspace/agent/tasks/' + task['id'] + '/approve', json={'fingerprint': task['fingerprint']})
+                self.assertEqual(calls, [])
+                await asyncio.sleep(.3)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(store.task(task['id'])['status'], 'done')
+                self.assertEqual(store.result(calls[0])['text'], 'Scheduled synthetic result')
+                self.assertEqual(store.actions(calls[0]), [])
 
     async def test_unconfigured_engine_never_records_approval(self):
         other = FastAPI()

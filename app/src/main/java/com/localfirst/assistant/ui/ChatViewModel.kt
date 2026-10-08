@@ -753,9 +753,9 @@ class ChatViewModel(
         }
         _state.update { it.copy(showWorkspace = false, draft = "Read the report for FRIDAY task $id using get_agent_report, then help me discuss its findings.") }
     }
-    fun proposeAgentTask(prompt: String, plan: List<String>) = workspaceAction {
+    fun proposeAgentTask(prompt: String, plan: List<String>, schedule: JSONObject? = null) = workspaceAction {
         val client = workspace ?: error("Computer unavailable.")
-        client.request("/workspace/agent/tasks", "POST", JSONObject().put("prompt", prompt).put("plan", JSONArray(plan)))
+        client.request("/workspace/agent/tasks", "POST", JSONObject().put("prompt", prompt).put("plan", JSONArray(plan)).apply { schedule?.let { put("schedule", it) } })
         loadAgentActivity(); "Plan saved for approval."
     }
     fun approveAgentTask(id: String, fingerprint: String) = workspaceAction {

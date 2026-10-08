@@ -18,6 +18,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import org.json.JSONObject
+import java.time.*
+import java.time.format.DateTimeFormatter
 
 /** Approval controls are UI-only. Model tools can propose, never approve. */
 @Composable
@@ -27,6 +29,8 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
     var plan by rememberSaveable { mutableStateOf("Read public sources\nPrepare a cited report") }
     var confirming by remember { mutableStateOf<JSONObject?>(null) }
     var action by remember { mutableStateOf<JSONObject?>(null) }
+    var scheduled by rememberSaveable { mutableStateOf(false) }
+    var schedule by remember { mutableStateOf<JSONObject?>(null) }
     var category by rememberSaveable { mutableStateOf("All") }
     var cursors by remember { mutableStateOf(listOf(0L)) }
     val task = state.agentTask?.takeIf { it.optString("id") == selected }
@@ -47,7 +51,9 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
             item {
                 OutlinedTextField(prompt, { prompt = it.take(8000) }, label = { Text("What should FRIDAY work on?") }, minLines = 2, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(plan, { plan = it.take(12000) }, label = { Text("Plan · one step per line") }, minLines = 3, modifier = Modifier.fillMaxWidth())
-                Button(onClick = { vm.proposeAgentTask(prompt.trim(), plan.lines().map(String::trim).filter(String::isNotBlank)); prompt = "" }, enabled = prompt.isNotBlank() && plan.isNotBlank() && !state.workspaceBusy) { Text("Save plan for review") }
+                Row { Text("Schedule", Modifier.weight(1f)); Switch(scheduled, { scheduled = it }) }
+                if (scheduled) AgentScheduleEditor { schedule = it }
+                Button(onClick = { vm.proposeAgentTask(prompt.trim(), plan.lines().map(String::trim).filter(String::isNotBlank), if (scheduled) schedule else null); prompt = "" }, enabled = prompt.isNotBlank() && plan.isNotBlank() && (!scheduled || schedule != null) && !state.workspaceBusy) { Text("Save plan for review") }
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("All", "In progress", "Scheduled", "Done").forEach { label ->
                         FilterChip(selected = category == label, onClick = { category = label }, label = { Text(label) })
@@ -68,6 +74,7 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                     Column(Modifier.padding(16.dp)) {
                         Text(entry.getJSONObject("proposal").optString("prompt"), style = MaterialTheme.typography.titleSmall)
                         Text(agentStatus(entry.optString("status")), style = MaterialTheme.typography.bodySmall)
+                        if (entry.getJSONObject("proposal").has("schedule_origin")) Text("Scheduled run · ${agentTime(entry.optDouble("created"))}", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
@@ -80,10 +87,19 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                     val steps = proposal.optJSONArray("plan")
                     steps?.let { for (i in 0 until it.length()) Text("${i + 1}. ${it.getString(i)}") }
                     Text(agentStatus(current.optString("status")))
+                    proposal.optJSONObject("schedule")?.let { Text(scheduleDescription(it), style = MaterialTheme.typography.bodySmall) }
+                    current.optJSONObject("schedule_state")?.let {
+                        if (it.optBoolean("blocked")) Text("Paused by an interrupted run or an action needing review. Cancel this schedule before creating a revised plan.", color = MaterialTheme.colorScheme.error)
+                        Text("${it.optInt("remaining")} runs left · " + if (it.optInt("remaining") > 0) "Next: ${agentTime(it.optDouble("next_run"))}" else "Waiting for the final run to finish", style = MaterialTheme.typography.bodySmall)
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (current.optString("status") == "proposed") Button(onClick = { confirming = current }, enabled = state.agentReady && !state.workspaceBusy) { Text("Review and approve") }
-                        if (current.optString("status") in listOf("proposed", "approved", "running", "awaiting_setup")) OutlinedButton(onClick = { vm.cancelAgentTask(current.getString("id")) }, enabled = !state.workspaceBusy) { Text("Cancel task") }
+                        if (current.optString("status") in listOf("proposed", "approved", "running", "awaiting_setup", "scheduled")) OutlinedButton(onClick = { vm.cancelAgentTask(current.getString("id")) }, enabled = !state.workspaceBusy) { Text(if (proposal.has("schedule")) "Cancel schedule and active runs" else "Cancel task") }
                     }
+                }
+                val runs = current.optJSONArray("runs")?.let { values -> (0 until values.length()).map { values.getJSONObject(it) } }.orEmpty()
+                items(runs, key = { "run-${it.getString("id")}" }) { run ->
+                    TextButton(onClick = { selected = run.getString("id") }) { Text("${agentTime(run.optDouble("created"))} · ${agentStatus(run.optString("status"))}") }
                 }
                 current.optJSONObject("result")?.optString("text")?.takeIf(String::isNotBlank)?.let { report ->
                     item {
@@ -126,7 +142,7 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
     }
     confirming?.let { exact ->
         AlertDialog(onDismissRequest = { confirming = null }, title = { Text("Approve this task?") },
-            text = { Text("${exact.getJSONObject("proposal").toString(2)}\n\nThis approved task and gathered public sources go to a free cloud model via OpenRouter. This permits public browsing and reading within the plan. Other actions require another approval.", Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) },
+            text = { Text("${exact.getJSONObject("proposal").optJSONObject("schedule")?.let(::scheduleDescription).orEmpty()}\n\n${exact.getJSONObject("proposal").toString(2)}\n\nThis approved task and gathered public sources go to a free cloud model via OpenRouter. This permits public browsing and reading within the plan. Other actions require another approval.", Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) },
             confirmButton = { TextButton(onClick = { vm.approveAgentTask(exact.getString("id"), exact.getString("fingerprint")); confirming = null }) { Text("Approve") } },
             dismissButton = { TextButton(onClick = { confirming = null }) { Text("Back") } })
     }
@@ -160,4 +176,54 @@ private fun AgentScreenshot(taskId: String, data: JSONObject, vm: ChatViewModel)
     }
     bitmap?.let { Image(it.asImageBitmap(), "Page preview: ${data.optString("url")}", Modifier.fillMaxWidth().heightIn(max = 350.dp)) }
         ?: Text("Page preview loading or unavailable", style = MaterialTheme.typography.bodySmall)
+}
+
+private fun agentTime(seconds: Double): String = Instant.ofEpochMilli((seconds * 1000).toLong()).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("EEE, MMM d · h:mm a z"))
+
+private fun scheduleDescription(schedule: JSONObject): String {
+    val interval = schedule.optInt("interval_seconds")
+    val cadence = if (interval == 0) "One run" else "Every ${interval / 3600} hours · ${schedule.optInt("max_runs")} runs"
+    return "$cadence · starts ${agentTime(schedule.optDouble("run_at"))}\nRepeats use elapsed time; daylight-saving changes can shift the local hour. Missed intervals do not run in a burst. Cancel the schedule to stop future and active runs."
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AgentScheduleEditor(changed: (JSONObject?) -> Unit) {
+    val future = remember { ZonedDateTime.now().plusMinutes(10) }
+    var date by rememberSaveable { mutableStateOf(future.toLocalDate().toString()) }
+    var hour by rememberSaveable { mutableIntStateOf(future.hour) }
+    var minute by rememberSaveable { mutableIntStateOf(future.minute) }
+    var interval by rememberSaveable { mutableIntStateOf(0) }
+    var count by rememberSaveable { mutableStateOf("7") }
+    var showDate by remember { mutableStateOf(false) }
+    var showTime by remember { mutableStateOf(false) }
+    val start = LocalDate.parse(date).atTime(hour, minute).atZone(ZoneId.systemDefault())
+    val valid = start.isAfter(ZonedDateTime.now()) && (interval == 0 || count.toIntOrNull() in 1..100)
+    LaunchedEffect(date, hour, minute, interval, count, valid) {
+        changed(if (valid) JSONObject().put("run_at", start.toEpochSecond()).put("interval_seconds", interval)
+            .put("max_runs", if (interval == 0) 1 else count.toInt()).put("timezone", ZoneId.systemDefault().id) else null)
+    }
+    Row {
+        TextButton(onClick = { showDate = true }) { Text(date) }
+        TextButton(onClick = { showTime = true }) { Text(start.format(DateTimeFormatter.ofPattern("h:mm a z"))) }
+    }
+    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        listOf("Once" to 0, "Hourly" to 3600, "Daily" to 86400, "Weekly" to 604800).forEach { (label, seconds) ->
+            FilterChip(selected = interval == seconds, onClick = { interval = seconds }, label = { Text(label) })
+        }
+    }
+    if (interval > 0) OutlinedTextField(count, { count = it.filter(Char::isDigit).take(3) }, label = { Text("Number of runs · 1–100") }, modifier = Modifier.fillMaxWidth())
+    if (!valid) Text("Choose a future time and 1–100 runs.", color = MaterialTheme.colorScheme.error)
+    Text("Plan and schedule both need approval. The PC must be online. Repeat intervals use elapsed time.", style = MaterialTheme.typography.bodySmall)
+    if (showDate) {
+        val picker = rememberDatePickerState(initialSelectedDateMillis = LocalDate.parse(date).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli())
+        DatePickerDialog(onDismissRequest = { showDate = false }, confirmButton = { TextButton(onClick = {
+            picker.selectedDateMillis?.let { date = Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate().toString() }; showDate = false
+        }) { Text("Done") } }, dismissButton = { TextButton(onClick = { showDate = false }) { Text("Cancel") } }) { DatePicker(picker) }
+    }
+    if (showTime) {
+        val picker = rememberTimePickerState(hour, minute)
+        AlertDialog(onDismissRequest = { showTime = false }, title = { Text("Start time") }, text = { TimeInput(picker) },
+            confirmButton = { TextButton(onClick = { hour = picker.hour; minute = picker.minute; showTime = false }) { Text("Done") } }, dismissButton = { TextButton(onClick = { showTime = false }) { Text("Cancel") } })
+    }
 }

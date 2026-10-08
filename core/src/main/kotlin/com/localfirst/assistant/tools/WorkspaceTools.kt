@@ -29,8 +29,8 @@ fun workspaceTools(client: WorkspaceGateway, knowledge: KnowledgeStore, conversa
     fun JsonObject.string(key: String) = getValue(key).jsonPrimitive.content
     return listOf(
         ImageGenerationTool(client),
-        tool("propose_agent_task", "Suggest a concrete plan for FRIDAY’s cloud agent. Saves a proposal only; the user must approve it in Activity before anything runs. Never say it has started.",
-            """"prompt":{"type":"string"},"plan":{"type":"array","items":{"type":"string"}}""", "\"prompt\",\"plan\"") {
+        tool("propose_agent_task", "Suggest a concrete plan for FRIDAY’s cloud agent, optionally with a future UTC Unix-second run_at, elapsed repeat interval (zero or at least 900 seconds), 1–100 max_runs and IANA timezone. Saves a proposal only; the user must approve it in Activity before anything runs. Never say it has started.",
+            """"prompt":{"type":"string"},"plan":{"type":"array","items":{"type":"string"}},"schedule":{"type":"object","properties":{"run_at":{"type":"number"},"interval_seconds":{"type":"integer"},"max_runs":{"type":"integer","minimum":1,"maximum":100},"timezone":{"type":"string"}},"required":["run_at"],"additionalProperties":false}""", "\"prompt\",\"plan\"") {
             client.toolRequest("/workspace/agent/tasks", "POST", it.toString())
         },
         tool("list_agent_activity", "Read FRIDAY cloud-agent proposals and task statuses. Does not start or approve tasks.", "", "") { client.toolRequest("/workspace/agent/tasks") },

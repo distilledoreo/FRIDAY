@@ -14,6 +14,8 @@ import base64
 import shutil
 import struct
 import re
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+import math
 
 ACTION_KINDS = frozenset({'submit', 'send', 'login', 'buy', 'delete'})
 
@@ -46,6 +48,11 @@ class Approvals:
                 CREATE TABLE IF NOT EXISTS events (
                     seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
                     kind TEXT NOT NULL, data TEXT NOT NULL, created REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS schedules (
+                    task_id TEXT PRIMARY KEY, next_run REAL NOT NULL,
+                    interval_seconds INTEGER NOT NULL, remaining INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS schedule_runs (
+                    task_id TEXT PRIMARY KEY, schedule_id TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS screenshots (
                     id TEXT PRIMARY KEY, task_id TEXT NOT NULL, url TEXT NOT NULL,
                     size INTEGER NOT NULL, created REAL NOT NULL);
@@ -100,10 +107,26 @@ class Approvals:
         db.execute('INSERT INTO events(task_id,kind,data,created) VALUES(?,?,?,?)',
                    (task_id, kind, encode(data), time.time()))
 
-    def propose_task(self, prompt, plan):
+    def propose_task(self, prompt, plan, schedule=None):
         if not isinstance(prompt, str) or not prompt.strip() or not isinstance(plan, list) or not plan:
             raise ValueError('Task requires a prompt and a nonempty plan')
-        proposal = encode({'prompt': prompt, 'plan': plan})
+        body = {'prompt': prompt, 'plan': plan}
+        if schedule is not None:
+            if not isinstance(schedule, dict): raise ValueError('Invalid schedule')
+            when = schedule.get('run_at')
+            interval = schedule.get('interval_seconds', 0)
+            count = schedule.get('max_runs', 1)
+            zone = schedule.get('timezone', 'UTC')
+            if isinstance(when, bool) or not isinstance(when, (int, float)) or not math.isfinite(when) or not time.time() <= when <= time.time() + 366 * 86400:
+                raise ValueError('First run must be in the future, within one year')
+            if type(interval) is not int or interval != 0 and not 900 <= interval <= 366 * 86400:
+                raise ValueError('Repeat interval must be zero or at least 15 minutes')
+            if type(count) is not int or not 1 <= count <= 100 or interval == 0 and count != 1:
+                raise ValueError('Use 1–100 runs; one-time schedules have one run')
+            try: ZoneInfo(zone)
+            except (ZoneInfoNotFoundError, TypeError, ValueError): raise ValueError('Invalid time zone')
+            body['schedule'] = {'run_at': when, 'interval_seconds': interval, 'max_runs': count, 'timezone': zone}
+        proposal = encode(body)
         task_id = uuid.uuid4().hex
         fingerprint = digest(proposal)
         with self.db() as db:
@@ -121,7 +144,16 @@ class Approvals:
             self.event(db, task_id, 'task_' + new, {'fingerprint': fingerprint})
 
     def approve_task(self, task_id, fingerprint):
-        self.transition(task_id, fingerprint, 'proposed', 'approved')
+        with self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute("SELECT proposal FROM tasks WHERE id=? AND fingerprint=? AND status='proposed'", (task_id, fingerprint)).fetchone()
+            if not row: raise ValueError('Task state or proposal has changed')
+            schedule = json.loads(row['proposal']).get('schedule')
+            status = 'scheduled' if schedule else 'approved'
+            db.execute('UPDATE tasks SET status=?, updated=? WHERE id=?', (status, time.time(), task_id))
+            if schedule:
+                db.execute('INSERT INTO schedules VALUES(?,?,?,?)', (task_id, schedule['run_at'], schedule['interval_seconds'], schedule['max_runs']))
+            self.event(db, task_id, 'task_' + status, {'fingerprint': fingerprint})
 
     def start_task(self, task_id, fingerprint):
         self.transition(task_id, fingerprint, 'approved', 'running')
@@ -135,11 +167,57 @@ class Approvals:
     def cancel_task(self, task_id):
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
-            changed = db.execute("UPDATE tasks SET status='cancelled', updated=? WHERE id=? AND status IN ('proposed','approved','running','awaiting_setup')",
+            changed = db.execute("UPDATE tasks SET status='cancelled', updated=? WHERE id=? AND status IN ('proposed','approved','running','awaiting_setup','scheduled')",
                                  (time.time(), task_id)).rowcount
             if changed != 1: raise ValueError('Task cannot be cancelled')
             db.execute("UPDATE actions SET status='cancelled' WHERE task_id=? AND status IN ('proposed','approved')", (task_id,))
+            db.execute('DELETE FROM schedules WHERE task_id=?', (task_id,))
+            children = db.execute("SELECT t.id FROM tasks t JOIN schedule_runs r ON r.task_id=t.id WHERE r.schedule_id=? AND t.status IN ('approved','running','awaiting_setup')", (task_id,)).fetchall()
+            for child in children:
+                db.execute("UPDATE tasks SET status='cancelled', updated=? WHERE id=?", (time.time(), child['id']))
+                db.execute("UPDATE actions SET status='cancelled' WHERE task_id=? AND status IN ('proposed','approved')", (child['id'],))
+                self.event(db, child['id'], 'task_cancelled', {'schedule_id': task_id})
             self.event(db, task_id, 'task_cancelled', {})
+        return [row['id'] for row in children]
+
+    def claim_due(self, now=None):
+        now = time.time() if now is None else now
+        claimed = []
+        with self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            completed = db.execute("SELECT task_id FROM schedules s WHERE remaining=0 AND NOT EXISTS (SELECT 1 FROM schedule_runs r JOIN tasks t ON t.id=r.task_id WHERE r.schedule_id=s.task_id AND t.status IN ('approved','running','awaiting_setup','interrupted'))").fetchall()
+            for row in completed:
+                db.execute('DELETE FROM schedules WHERE task_id=?', (row['task_id'],))
+                db.execute("UPDATE tasks SET status='done', updated=? WHERE id=?", (now, row['task_id']))
+                self.event(db, row['task_id'], 'schedule_completed', {})
+            rows = db.execute("SELECT s.*, t.proposal, t.fingerprint FROM schedules s JOIN tasks t ON t.id=s.task_id WHERE t.status='scheduled' AND s.remaining>0 AND s.next_run<=? ORDER BY s.next_run LIMIT 10", (now,)).fetchall()
+            for row in rows:
+                parent = row['task_id']
+                # Unresolved actions and uncertain interrupted runs pause future
+                # work until the user cancels/reviews the schedule.
+                active = db.execute("SELECT COUNT(*) FROM schedule_runs r JOIN tasks t ON t.id=r.task_id WHERE r.schedule_id=? AND t.status IN ('approved','running','awaiting_setup','interrupted')", (parent,)).fetchone()[0]
+                if active: continue
+                identifier = uuid.uuid4().hex
+                body = json.loads(row['proposal'])
+                body.pop('schedule', None)
+                body['schedule_origin'] = {'id': parent, 'approved_fingerprint': row['fingerprint'], 'due_at': row['next_run']}
+                proposal = encode(body)
+                fingerprint = digest(proposal)
+                db.execute('INSERT INTO tasks VALUES(?,?,?,?,?,?)', (identifier, proposal, fingerprint, 'approved', now, now))
+                db.execute('INSERT INTO schedule_runs VALUES(?,?)', (identifier, parent))
+                self.event(db, identifier, 'schedule_authorized', body['schedule_origin'])
+                remaining = row['remaining'] - 1
+                if remaining <= 0:
+                    db.execute('UPDATE schedules SET remaining=0 WHERE task_id=?', (parent,))
+                else:
+                    # Fixed elapsed intervals, no catch-up burst or DST ambiguity.
+                    skipped = max(0, int((now - row['next_run']) // row['interval_seconds']))
+                    next_run = row['next_run'] + (skipped + 1) * row['interval_seconds']
+                    db.execute('UPDATE schedules SET next_run=?, remaining=? WHERE task_id=?', (next_run, remaining, parent))
+                    db.execute('UPDATE tasks SET updated=? WHERE id=?', (now, parent))
+                self.event(db, parent, 'schedule_run', {'task_id': identifier, 'due_at': row['next_run'], 'remaining': remaining})
+                claimed.append({'id': identifier, 'fingerprint': fingerprint})
+        return claimed
 
     def propose_action(self, task_id, kind, destination, payload):
         if kind not in ACTION_KINDS or not isinstance(destination, str) or not destination.strip():
@@ -174,6 +252,10 @@ class Approvals:
             if changed != 1: raise ValueError('Action state or payload has changed')
             self.event(db, action['task_id'], 'action_' + new, {'id': action_id, 'fingerprint': fingerprint})
 
+    def runs(self, schedule_id):
+        with self.db() as db:
+            return [dict(row) for row in db.execute("SELECT t.id,t.status,t.created FROM tasks t JOIN schedule_runs r ON r.task_id=t.id WHERE r.schedule_id=? ORDER BY t.created DESC LIMIT 100", (schedule_id,))]
+
     def result(self, task_id):
         self.task(task_id)
         with self.db() as db:
@@ -190,7 +272,12 @@ class Approvals:
         with self.db() as db:
             row = db.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
             if row is None: raise ValueError('Unknown task')
-            return dict(row, proposal=json.loads(row['proposal']))
+            result = dict(row, proposal=json.loads(row['proposal']))
+            schedule = db.execute('SELECT next_run, remaining FROM schedules WHERE task_id=?', (task_id,)).fetchone()
+            if schedule:
+                result['schedule_state'] = dict(schedule)
+                result['schedule_state']['blocked'] = bool(db.execute("SELECT COUNT(*) FROM schedule_runs r JOIN tasks t ON t.id=r.task_id WHERE r.schedule_id=? AND t.status IN ('awaiting_setup','interrupted')", (task_id,)).fetchone()[0])
+            return result
 
     def actions(self, task_id):
         with self.db() as db:
