@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -71,6 +72,8 @@ import androidx.compose.ui.unit.dp
 import com.localfirst.assistant.presentation.ToolStep
 import com.localfirst.assistant.presentation.ToolStepState
 import com.localfirst.assistant.presentation.TranscriptItem
+import com.localfirst.assistant.presentation.ResponseLayout
+import com.localfirst.assistant.presentation.ResponsePattern
 import com.localfirst.assistant.tools.SourceLink
 import com.mikepenz.markdown.m3.Markdown
 import java.net.URI
@@ -87,11 +90,11 @@ internal fun UserMessage(
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
         Box {
             Surface(
-                shape = RoundedCornerShape(22.dp),
+                shape = RoundedCornerShape(8.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 modifier = Modifier
                     .widthIn(max = 320.dp)
-                    .clip(RoundedCornerShape(22.dp))
+                    .clip(RoundedCornerShape(8.dp))
                     .combinedClickable(onClick = {}, onLongClick = { menu = true }),
             ) {
                 Column(
@@ -133,8 +136,13 @@ internal fun AssistantMessage(
     onCopy: (String) -> Unit,
     onRegenerate: () -> Unit,
 ) {
+    val pattern=ResponseLayout.choose(item.text)
     Column(modifier = Modifier.fillMaxWidth()) {
-        Markdown(content = item.text, modifier = Modifier.fillMaxWidth())
+        Surface(shape=MaterialTheme.shapes.medium,color=MaterialTheme.colorScheme.surface,modifier=if(pattern==ResponsePattern.BUBBLE)Modifier.fillMaxWidth(.94f)else Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(horizontal=16.dp,vertical=12.dp)) {
+                ResponseRenderer(item.text,pattern) { onCopy(item.text) }
+            }
+        }
         if (item.streaming) {
             PulsingDot(modifier = Modifier.padding(top = 6.dp))
         } else {
@@ -156,7 +164,7 @@ internal fun ToolActivityCard(
     fridayCard: @Composable (String) -> Unit = {},
 ) {
     Surface(
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(8.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
         modifier = Modifier.fillMaxWidth(),
     ) {
@@ -167,6 +175,7 @@ internal fun ToolActivityCard(
             item.steps.forEach { step ->
                 step.agentTask?.let { fridayCard(it) } ?: ToolStepRow(step)
                 step.imageResult?.let { GeneratedImage(it, imageLoader, openImage) }
+                if(step.agentTask==null&&step.imageResult==null)step.resultContent?.let { ToolResultSurface(step.name,it,step.callId) }
             }
         }
     }
@@ -201,7 +210,7 @@ private fun ToolStepRow(step: ToolStep) {
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
                         .clickable { expanded = !expanded }
-                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                        .heightIn(min=48.dp).padding(horizontal = 8.dp, vertical = 4.dp),
                 ) {
                     Text(
                         text = "${step.sources.size} sources",
@@ -225,7 +234,7 @@ private fun ToolStepRow(step: ToolStep) {
                 modifier = Modifier.padding(start = 28.dp, top = 2.dp),
             )
         }
-        AnimatedVisibility(visible = expanded) {
+        AnimatedVisibility(visible = expanded,enter=if(com.localfirst.assistant.ui.theme.LocalFridayPalette.current.reducedMotion)androidx.compose.animation.EnterTransition.None else androidx.compose.animation.fadeIn(tween(180)),exit=if(com.localfirst.assistant.ui.theme.LocalFridayPalette.current.reducedMotion)androidx.compose.animation.ExitTransition.None else androidx.compose.animation.fadeOut(tween(150))) {
             Column(
                 modifier = Modifier.padding(start = 28.dp, top = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -294,7 +303,7 @@ internal fun toolIcon(name: String): ImageVector = when (name) {
 @Composable
 internal fun ApprovalCard(approval: PendingApproval, onAnswer: (Boolean) -> Unit) {
     Surface(
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(8.dp),
         color = MaterialTheme.colorScheme.secondaryContainer,
         modifier = Modifier.fillMaxWidth(),
     ) {
@@ -322,8 +331,8 @@ internal fun ApprovalCard(approval: PendingApproval, onAnswer: (Boolean) -> Unit
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                OutlinedButton(onClick = { onAnswer(false) }) { Text("Deny") }
-                Button(onClick = { onAnswer(true) }) { Text("Approve") }
+                OutlinedButton(shape = MaterialTheme.shapes.small, onClick = { onAnswer(false) }) { Text("Deny") }
+                Button(shape = MaterialTheme.shapes.small, onClick = { onAnswer(true) }) { Text("Approve") }
             }
         }
     }
@@ -341,6 +350,9 @@ internal fun ThinkingIndicator() {
 
 @Composable
 private fun PulsingDot(modifier: Modifier = Modifier, delayMillis: Int = 0) {
+    if(com.localfirst.assistant.ui.theme.LocalFridayPalette.current.reducedMotion) {
+        Box(modifier.size(6.dp).background(MaterialTheme.colorScheme.onSurfaceVariant,CircleShape));return
+    }
     val transition = rememberInfiniteTransition(label = "dot")
     val alpha by transition.animateFloat(
         initialValue = 0.25f,
@@ -359,7 +371,7 @@ private fun PulsingDot(modifier: Modifier = Modifier, delayMillis: Int = 0) {
 @Composable
 internal fun ErrorCard(message: String, retryEnabled: Boolean, onRetry: () -> Unit) {
     Surface(
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(8.dp),
         color = MaterialTheme.colorScheme.errorContainer,
         modifier = Modifier.fillMaxWidth(),
     ) {
@@ -369,29 +381,8 @@ internal fun ErrorCard(message: String, retryEnabled: Boolean, onRetry: () -> Un
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onErrorContainer,
             )
-            OutlinedButton(onClick = onRetry, enabled = retryEnabled) {
+            OutlinedButton(shape = MaterialTheme.shapes.small, onClick = onRetry, enabled = retryEnabled) {
                 Text("Retry")
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-internal fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text("What can I help with?", style = MaterialTheme.typography.headlineSmall)
-        Spacer(Modifier.height(24.dp))
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            SUGGESTIONS.forEach { suggestion ->
-                SuggestionChip(onClick = { onSuggestion(suggestion) }, label = { Text(suggestion) })
             }
         }
     }
@@ -404,7 +395,7 @@ private fun SmallIconButton(
     enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
-    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(36.dp)) {
+    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(48.dp)) {
         Icon(
             icon,
             contentDescription = description,
@@ -416,10 +407,3 @@ private fun SmallIconButton(
 
 internal fun domainOf(url: String): String =
     runCatching { URI(url).host?.removePrefix("www.") }.getOrNull() ?: url
-
-private val SUGGESTIONS = listOf(
-    "What's in the news today?",
-    "Set the volume to 30%",
-    "Explain speculative decoding simply",
-    "Write a short packing list for a weekend trip",
-)

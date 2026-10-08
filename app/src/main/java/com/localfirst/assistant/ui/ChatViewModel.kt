@@ -69,6 +69,8 @@ private const val MEMORY_PAGE = 50
 private const val MEMORY_PAGE_MAX = 200 // the PC caps one request at 200
 
 data class ChatUiState(
+    val dashboard: DashboardState = DashboardState(),
+    val voiceError: String? = null,
     /** Null until the first message of a new chat is saved. */
     val conversationId: String? = null,
     val privacy: ChatPrivacy = ChatPrivacy(),
@@ -217,6 +219,8 @@ class ChatViewModel(
     }
     private var createdAt: Long = 0
     private val _state = MutableStateFlow(ChatUiState(settings = settingsStore.load()))
+    private var dashboardJob: Job? = null
+    private var dashboardGeneration = 0L
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
     private val voice = voiceEngines?.let { engines ->
@@ -383,22 +387,27 @@ class ChatViewModel(
 
     fun startVoice() {
         if (_state.value.workspaceBusy || !settingsReady()) return
+        _state.update { it.copy(voiceError=null) }
         viewModelScope.launch {
             try {
                 if (app != null) {
-                    if (!com.localfirst.assistant.phone.PermissionBroker.ensure(app, android.Manifest.permission.RECORD_AUDIO)) return@launch
+                    if (!com.localfirst.assistant.phone.PermissionBroker.ensure(app, android.Manifest.permission.RECORD_AUDIO)) {
+                        _state.update { it.copy(voiceError="Microphone permission is needed for voice. Allow it in Android app permissions, then try again.") };return@launch
+                    }
                     VoiceForegroundService.start(app, ::closeVoice)
                 }
                 voice?.start()
                 holdForeground()
             } catch (e: Exception) {
                 app?.let(VoiceForegroundService::stop)
-                _state.update { it.copy(error = "Couldn't start background voice: ${e.message}") }
+                _state.update { it.copy(voiceError = "Voice could not start. Check microphone permission and the selected voice connection.") }
             }
         }
     }
 
-    fun closeVoice() { voice?.close(); app?.let(VoiceForegroundService::stop) }
+    fun closeVoice() { voice?.close(); app?.let(VoiceForegroundService::stop);_state.update { it.copy(voiceError=null) } }
+    fun pauseVoiceFromChat() { voice?.pause("Voice paused. Resume when you're ready.") }
+    fun toggleVoice() { if(voice?.active == true) closeVoice() else startVoice() }
 
     /** Called when the app goes to the background, where Android blocks the mic. */
     fun pauseVoice() {
@@ -711,6 +720,7 @@ class ChatViewModel(
                 draft = "",
                 editingIndex = null,
                 error = null,
+                voiceError = null,
                 draftAttachments = emptyList(),
             )
         }
@@ -810,10 +820,43 @@ class ChatViewModel(
         val scope = Uri.encode(_state.value.projectId.orEmpty())
         val followups = JSONArray(client.request("/workspace/agent/briefing/followups?scope=$scope"))
         val proposals = JSONObject(client.request("/workspace/agent/briefing/proposals?scope=$scope"))
-        val accounts = JSONArray(client.request("/workspace/agent/accounts"))
+        val accounts = JSONObject(client.request("/workspace/agent/accounts")).getJSONArray("accounts")
         _state.update { it.copy(dailyBrief = if (it.briefPreferences?.optString("revision") == prefs.optString("revision")) it.dailyBrief else null, briefPreferences = prefs, briefFollowups = jsonRows(followups), briefProposals = jsonRows(proposals.getJSONArray("items")), connectedAccounts = jsonRows(accounts)) }
     }
     fun refreshBrief() = workspaceAction { loadBrief(); "Brief sources and proposals refreshed." }
+    fun refreshDashboard() {
+        val current=_state.value
+        if(current.privacy.incognito||current.dashboard.loading&&current.dashboard.scope==current.projectId.orEmpty())return
+        val selectedScope=current.projectId.orEmpty()
+        dashboardJob?.cancel()
+        val generation=++dashboardGeneration
+        _state.update { it.copy(dashboard=DashboardState(scope=selectedScope,loading=true)) }
+        dashboardJob=viewModelScope.launch {
+            try {
+                val data=withContext(Dispatchers.IO) {
+                    val client=workspace?:error("Computer unavailable")
+                    val snapshot=JSONObject(client.request("/workspace/agent/briefing/build","POST",JSONObject().put("scope",selectedScope)))
+                    val scope=Uri.encode(selectedScope)
+                    val followups=jsonRows(JSONArray(client.request("/workspace/agent/briefing/followups?scope=$scope")))
+                    val proposals=jsonRows(JSONObject(client.request("/workspace/agent/briefing/proposals?scope=$scope")).getJSONArray("items"))
+                    val jobs=JSONArray(client.request("/workspace/jobs"))
+                    val agentTasks=jsonRows(JSONArray(client.request("/workspace/agent/tasks?limit=100")))
+                    DashboardState(scope=selectedScope,loaded=true,snapshot=snapshot,followups=followups,proposals=proposals,tasks=(0 until jobs.length()).map { BackgroundTask.from(jobs.getJSONObject(it)) },agentTasks=agentTasks)
+                }
+                if(generation==dashboardGeneration)_state.update { if(!it.privacy.incognito&&it.projectId.orEmpty()==selectedScope)it.copy(dashboard=data) else it.copy(dashboard=DashboardState(scope=it.projectId.orEmpty())) }
+            } catch(e:CancellationException) { throw e }
+            catch(e:Exception) { if(generation==dashboardGeneration)_state.update { if(!it.privacy.incognito&&it.projectId.orEmpty()==selectedScope)it.copy(dashboard=DashboardState(scope=selectedScope,error="Your sources could not be refreshed. Check the computer connection and selected account permissions."))else it.copy(dashboard=DashboardState(scope=it.projectId.orEmpty())) } }
+        }
+    }
+    fun clearDashboard() { ++dashboardGeneration;dashboardJob?.cancel();dashboardJob=null;_state.update { it.copy(dashboard=DashboardState(scope=it.projectId.orEmpty())) } }
+    fun completeDashboardFollowup(id:String) = workspaceAction {
+        workspace?.request("/workspace/agent/briefing/followups/$id","PATCH",JSONObject().put("status","done"))?:error("Computer unavailable")
+        _state.update { it.copy(dashboard=it.dashboard.copy(followups=it.dashboard.followups.filterNot { row->row.optString("id")==id })) };"Follow-up marked done."
+    }
+    fun dismissDashboardProposal(id:String) = workspaceAction {
+        workspace?.request("/workspace/agent/briefing/proposals/$id/dismiss","POST")?:error("Computer unavailable")
+        _state.update { it.copy(dashboard=it.dashboard.copy(proposals=it.dashboard.proposals.filterNot { row->row.optString("id")==id })) };"Suggestion dismissed."
+    }
     fun saveBriefPreferences(preferences: JSONObject) = workspaceAction {
         workspace?.request("/workspace/agent/briefing/settings", "PUT", preferences) ?: error("Computer unavailable.")
         _state.update { it.copy(dailyBrief = null) }

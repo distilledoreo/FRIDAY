@@ -1,6 +1,6 @@
 # FRIDAY implementation roadmap
 
-Goal: deliver the user's October 8 plan while preserving Claude's existing memory paging, 15-minute image limit, car microphone/echo/Android Auto support, and end-of-2024 cutoff guidance. Claude is experimenting with LLM TTFT concurrently. No live LLM or image inference, model restart, model configuration changes, or VRAM benchmarks are part of our current verification. Use fake models for inference behavior; keep background inference paused until experiments finish. CPU-only builds, SQLite backups, search and sandbox tests are allowed.
+Goal: deliver the user's October 8 plan while preserving Claude's existing memory paging, 15-minute image limit, car microphone/echo/Android Auto support, and end-of-2024 cutoff guidance. The earlier TTFT experiment and inference embargo are finished; Claude documented the user-approved lift. Preserve his model flags and prompt cache. The 0.16 redesign was verified with fake models and native CPU-only UI checks; it made no model service/configuration changes. Production outgoing remains disabled pending actual verification and explicit setup.
 
 ## Current delivery: 0.6
 
@@ -111,3 +111,7 @@ For eligible public research questions, Propose deeper research in Activity save
 Verification: all 142 Android tests (127 core, 15 app), build and lint pass. All 115 backend tests pass on the new image; a further four engine checks explicitly exercised offline OpenCode/Chromium screenshots with fake inference. Tests cover later passages, Unicode bounds, validation redaction, cancellation/capacity, provenance-only audit, exact private-to-public consent and enforced no-search. Live authenticated public IANA page/search reads returned bounded passages; private/unsupported URL rejection, unchanged fresh gateway, retained inference pause and same-signer authenticated/private APK checksums passed. API-only deployment changed no model services. No real phone, provider action, semantic grounded-answer quality or local/GPU inference was verified.
 
 APK SHA-256: `e7666f2eaaa7910f1459fc06a21492cf8bb981c4e15f60b0a40245f629e4d6b6`. Download: http://100.64.0.1:8081/local-assistant-0.14.0.apk. Sending remains disabled. Evaluated local wake word/car behavior, richer multi-step goal/quota reporting, calendars beyond primary, real OAuth/provider/device verification and authorized GPU image-quality comparison remain. The full goal stays active.
+
+## Mobile redesign checkpoint — 0.16.0
+
+The October 8 UI detour is implemented and validated: shared appearance system, minimal adaptive home, micro-menu/F/sidebar, collapsed real-data dashboard, inline voice, native table/tool/expand renderer and consistent remaining screens. Preserves Claude's 3b0f02e features and approved privacy decisions. 185 tests, native visual/interaction checks, release build and lint passed; physical device/provider/audio/performance verification remains. See FRIDAY-REDESIGN.md for the complete contract, evidence and limits. The original functional roadmap stays active.

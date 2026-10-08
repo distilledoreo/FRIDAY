@@ -7,6 +7,7 @@ import android.os.Build
 import android.provider.Settings
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,11 +41,20 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.ui.window.Dialog
 import com.localfirst.assistant.phone.MediaListenerService
 import com.localfirst.assistant.settings.ServerSettings
 import com.localfirst.assistant.voice.connectedBluetoothAudio
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun SettingsPage(
     initial: ServerSettings,
@@ -64,18 +74,20 @@ internal fun SettingsPage(
     var phoneMic by remember(initial) { mutableStateOf(initial.voicePhoneMicDevices) }
     var androidAuto by remember(initial) { mutableStateOf(initial.androidAuto) }
 
-    Dialog(onDismissRequest = onDismiss) {
-        Surface(modifier = Modifier.fillMaxSize()) {
+    Dialog(onDismissRequest=onDismiss,properties=DialogProperties(usePlatformDefaultWidth=false,decorFitsSystemWindows=false)) {
+        FridayDialogWindow()
+        Scaffold(containerColor=MaterialTheme.colorScheme.background,
+            topBar={ TopAppBar(title={Text("Voice and server")},navigationIcon={IconButton(onClick=onDismiss) { Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back") }}) }) { insets ->
             Column(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .fillMaxSize().padding(insets).imePadding()
                     .verticalScroll(rememberScrollState())
                     .padding(24.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text("Server", style = MaterialTheme.typography.headlineSmall)
+                Text("Connection", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    text = "OpenAI-compatible root, usually ending in /v1. The app calls /chat/completions on it.",
+                    text = "Connect to your assistant’s OpenAI-compatible server.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -149,7 +161,7 @@ internal fun SettingsPage(
                     Text(text = error, color = MaterialTheme.colorScheme.error)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
+                    Button(shape = MaterialTheme.shapes.small,
                         onClick = {
                             onSave(
                                 ServerSettings(
@@ -170,7 +182,7 @@ internal fun SettingsPage(
                     ) {
                         Text("Save")
                     }
-                    TextButton(onClick = onDismiss) {
+                    TextButton(shape = MaterialTheme.shapes.small, onClick = onDismiss) {
                         Text("Cancel")
                     }
                 }
@@ -201,7 +213,7 @@ private fun PhoneAccessSection() {
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
-    OutlinedButton(
+    OutlinedButton(shape = MaterialTheme.shapes.small,
         onClick = {
             val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
@@ -259,7 +271,7 @@ private fun VoiceSection(
         }
         Switch(checked = bargeIn, onCheckedChange = onBargeInChange)
     }
-    OutlinedButton(
+    OutlinedButton(shape = MaterialTheme.shapes.small,
         onClick = {
             // Android doesn't let apps make themselves the assistant; send the user to the chooser.
             runCatching { context.startActivity(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)) }
@@ -375,7 +387,7 @@ private fun VoicePicker(voiceName: String, onVoiceChange: (String) -> Unit) {
     var open by remember { mutableStateOf(false) }
     val label = KOKORO_VOICES.firstOrNull { it.first == voiceName }?.second ?: voiceName
     Box {
-        OutlinedButton(onClick = { open = true }) { Text("Voice: $label") }
+        OutlinedButton(shape = MaterialTheme.shapes.small, onClick = { open = true }) { Text("Voice: $label") }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             KOKORO_VOICES.forEach { (id, name) ->
                 DropdownMenuItem(

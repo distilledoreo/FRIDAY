@@ -77,8 +77,8 @@ internal fun AccountsPage(state: ChatUiState, vm: ChatViewModel) {
         item {
             Text("Accounts", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 16.dp))
             Text("Credentials live in your PC’s encrypted vault. Sign-in uses the provider’s screen. Nothing is sent without a separate draft approval.")
-            TextButton(onClick = vm::refreshAccounts, enabled = !state.workspaceBusy) { Text("Refresh") }
-            if (flow != null) TextButton(onClick = { vm.failAccountSignIn("Sign-in canceled.") }) { Text(if (state.oauthCompleting) "Cancel pending sign-in" else "Cancel sign-in") }
+            TextButton(shape = MaterialTheme.shapes.small, onClick = vm::refreshAccounts, enabled = !state.workspaceBusy) { Text("Refresh") }
+            if (flow != null) TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.failAccountSignIn("Sign-in canceled.") }) { Text(if (state.oauthCompleting) "Cancel pending sign-in" else "Cancel sign-in") }
             Row { Text("Read email", Modifier.weight(1f)); Switch(mailRead, { mailRead = it }) }
             Row { Text("Read calendar", Modifier.weight(1f)); Switch(calendarRead, { calendarRead = it }) }
             Row { Text("Allow approved sending", Modifier.weight(1f)); Switch(mailSend, { mailSend = it }) }
@@ -88,33 +88,33 @@ internal fun AccountsPage(state: ChatUiState, vm: ChatViewModel) {
         items(listOf("google", "microsoft")) { provider ->
             val configured = state.accountProviders.any { it.optString("provider") == provider && it.optBoolean("configured") }
             val title = if (provider == "google") "Google" else "Microsoft"
-            OutlinedCard(Modifier.fillMaxWidth()) {
+            FridayCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
                     Text(title, style = MaterialTheme.typography.titleMedium)
                     if (!configured) Text("OAuth app registration needed before sign-in.")
-                    Button(onClick = { vm.beginAccountSignIn(provider, listOfNotNull("mail_read".takeIf { mailRead }, "calendar_read".takeIf { calendarRead }, "mail_send".takeIf { mailSend }, "calendar_write".takeIf { calendarWrite })) }, enabled = configured && (mailRead || calendarRead || mailSend || calendarWrite) && flow == null && !state.workspaceBusy) { Text("Sign in with $title") }
-                    TextButton(onClick = { setup = provider; clientId = ""; secret = "" }, enabled = flow == null && !state.workspaceBusy) { Text("Configure OAuth application") }
+                    Button(shape = MaterialTheme.shapes.small, onClick = { vm.beginAccountSignIn(provider, listOfNotNull("mail_read".takeIf { mailRead }, "calendar_read".takeIf { calendarRead }, "mail_send".takeIf { mailSend }, "calendar_write".takeIf { calendarWrite })) }, enabled = configured && (mailRead || calendarRead || mailSend || calendarWrite) && flow == null && !state.workspaceBusy) { Text("Sign in with $title") }
+                    TextButton(shape = MaterialTheme.shapes.small, onClick = { setup = provider; clientId = ""; secret = "" }, enabled = flow == null && !state.workspaceBusy) { Text("Configure OAuth application") }
                 }
             }
         }
         item {
-            OutlinedCard(Modifier.fillMaxWidth()) {
+            FridayCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
                     Text("Other email provider", style = MaterialTheme.typography.titleMedium)
                     Text("Connect a public IMAP server with verified TLS on port 993. Use a provider app password if required. SMTP settings can be saved for future approved sending.")
-                    Button(onClick = { mailSetup = true }, enabled = flow == null && !state.workspaceBusy) { Text("Connect mail account") }
+                    Button(shape = MaterialTheme.shapes.small, onClick = { mailSetup = true }, enabled = flow == null && !state.workspaceBusy) { Text("Connect mail account") }
                 }
             }
         }
         if (state.connectedAccounts.isEmpty()) item { Text("No accounts connected.") }
         items(state.connectedAccounts, key = { it.getString("id") }) { account ->
-            OutlinedCard(Modifier.fillMaxWidth()) {
+            FridayCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
                     Text(account.optString("label"), style = MaterialTheme.typography.titleMedium)
                     Text(account.optString("provider"))
-                    Row { TextButton(onClick = { vm.readAccountMail(account.getString("id")) }, enabled = !state.workspaceBusy) { Text("Inbox") }
-                        if (account.optString("provider") != "imap") TextButton(onClick = { vm.readAccountCalendar(account.getString("id")) }, enabled = !state.workspaceBusy) { Text("Next 7 days") }
-                        TextButton(onClick = { remove = account }, enabled = !state.workspaceBusy) { Text("Remove") } }
+                    Row { TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.readAccountMail(account.getString("id")) }, enabled = !state.workspaceBusy) { Text("Inbox") }
+                        if (account.optString("provider") != "imap") TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.readAccountCalendar(account.getString("id")) }, enabled = !state.workspaceBusy) { Text("Next 7 days") }
+                        TextButton(shape = MaterialTheme.shapes.small, onClick = { remove = account }, enabled = !state.workspaceBusy) { Text("Remove") } }
                 }
             }
         }
@@ -126,7 +126,7 @@ internal fun AccountsPage(state: ChatUiState, vm: ChatViewModel) {
                 if (message.optBoolean("truncated")) Text("Message preview is truncated.")
             } }
             content.optJSONArray("messages")?.let { values -> items((0 until values.length()).map { values.getJSONObject(it) }, key = { it.getString("id") }) { message ->
-                OutlinedCard(onClick = { vm.readAccountMessage(content.getString("account_id"), message.getString("id")) }, modifier = Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) {
+                FridayCard(onClick = { vm.readAccountMessage(content.getString("account_id"), message.getString("id")) }, modifier = Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) {
                     Text(message.optString("subject"), style = MaterialTheme.typography.titleSmall); Text(message.optString("from")); Text(message.optString("preview"))
                 } }
             } }
@@ -143,18 +143,18 @@ internal fun AccountsPage(state: ChatUiState, vm: ChatViewModel) {
         vm.connectMailAccount(email, username, password, imap, smtp, port); mailSetup = false
     })
     setup?.let { provider ->
-        AlertDialog(onDismissRequest = { setup = null; secret = "" }, title = { Text("${provider.replaceFirstChar(Char::uppercase)} application setup") },
+        AlertDialog(onDismissRequest = { setup = null; secret = "" }, title = { FridayDialogWindow(); Text("${provider.replaceFirstChar(Char::uppercase)} application setup") },
             text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Use your registered FRIDAY application. Google also needs the Android package/signing registration and a backend web client; Microsoft needs its Android redirect registration.")
                 OutlinedTextField(clientId, { clientId = it.take(300) }, label = { Text(if (provider == "google") "Web client ID" else "Application client ID") })
                 if (provider == "google") OutlinedTextField(secret, { secret = it.take(500) }, label = { Text("Web client secret · saved only on PC") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
-            } }, confirmButton = { TextButton(onClick = { vm.configureAccountProvider(provider, clientId, secret.takeIf { provider == "google" }); secret = ""; setup = null }, enabled = clientId.isNotBlank() && (provider != "google" || secret.isNotBlank())) { Text("Save on PC") } },
-            dismissButton = { TextButton(onClick = { setup = null; secret = "" }) { Text("Cancel") } })
+            } }, confirmButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.configureAccountProvider(provider, clientId, secret.takeIf { provider == "google" }); secret = ""; setup = null }, enabled = clientId.isNotBlank() && (provider != "google" || secret.isNotBlank())) { Text("Save on PC") } },
+            dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { setup = null; secret = "" }) { Text("Cancel") } })
     }
-    remove?.let { account -> AlertDialog(onDismissRequest = { remove = null }, title = { Text("Remove this account?") },
+    remove?.let { account -> AlertDialog(onDismissRequest = { remove = null }, title = { FridayDialogWindow(); Text("Remove this account?") },
         text = { Text("Remove ${account.optString("label")} and its saved credential from FRIDAY. Provider grants can also be revoked in its account settings.") },
-        confirmButton = { TextButton(onClick = { vm.removeAccount(account.getString("id")); remove = null }) { Text("Remove") } },
-        dismissButton = { TextButton(onClick = { remove = null }) { Text("Cancel") } }) }
+        confirmButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.removeAccount(account.getString("id")); remove = null }) { Text("Remove") } },
+        dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { remove = null }) { Text("Cancel") } }) }
 }
 
 @Composable
@@ -165,7 +165,7 @@ private fun MailAccountDialog(onDismiss: () -> Unit, onConnect: (String, String,
     var imap by remember { mutableStateOf("") }
     var smtp by remember { mutableStateOf("") }
     var startTls by remember { mutableStateOf(false) }
-    AlertDialog(onDismissRequest = { password = ""; onDismiss() }, title = { Text("Connect mail account") },
+    AlertDialog(onDismissRequest = { password = ""; onDismiss() }, title = { FridayDialogWindow(); Text("Connect mail account") },
         text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("This checks your IMAP login and saves encrypted credentials on the PC. Messages remain unread. SMTP login and sending are not enabled. Use OAuth above for Google and Microsoft.")
             OutlinedTextField(email, { email = it.take(320) }, label = { Text("Email address") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email))
@@ -179,8 +179,8 @@ private fun MailAccountDialog(onDismiss: () -> Unit, onConnect: (String, String,
                 Text("Future SMTP use shares this username and password. Settings are saved without checking SMTP login.", style = MaterialTheme.typography.bodySmall)
             }
         } },
-        confirmButton = { TextButton(onClick = {
+        confirmButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = {
             onConnect(email, username.ifBlank { email }, password, imap, smtp, if (startTls) 587 else 465); password = ""
         }, enabled = email.isNotBlank() && password.isNotBlank() && imap.isNotBlank()) { Text("Check login and save on PC") } },
-        dismissButton = { TextButton(onClick = { password = ""; onDismiss() }) { Text("Cancel") } })
+        dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { password = ""; onDismiss() }) { Text("Cancel") } })
 }

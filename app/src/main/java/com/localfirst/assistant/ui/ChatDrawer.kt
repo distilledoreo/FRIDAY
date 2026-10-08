@@ -2,6 +2,9 @@ package com.localfirst.assistant.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -51,6 +54,7 @@ import java.util.Calendar
 
 @Composable
 internal fun ChatDrawer(
+    width: androidx.compose.ui.unit.Dp = 320.dp,
     conversations: List<ConversationSummary>,
     currentId: String?,
     onNewChat: () -> Unit,
@@ -80,27 +84,29 @@ internal fun ChatDrawer(
         visibleChats.groupBy { ConversationGroups.label(it.updatedAt, startOfToday) }
     }
 
-    ModalDrawerSheet(modifier = Modifier.fillMaxHeight()) {
+    ModalDrawerSheet(modifier = Modifier.fillMaxHeight().width(width)) {
         Column(modifier = Modifier.fillMaxHeight()) {
+            Spacer(Modifier.height(64.dp))
             OutlinedTextField(value = query, onValueChange = onQuery, placeholder = { Text("Search chats") },
                 leadingIcon = { Icon(Icons.Filled.Search, null) }, singleLine = true,
-                shape = RoundedCornerShape(24.dp),
+                shape = MaterialTheme.shapes.small,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp))
             LazyColumn(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
                 if (query.isBlank()) {
-                    item { NavigationDrawerItem(label = { Text("New chat") }, icon = { Icon(Icons.Filled.Create, null) }, selected = false, onClick = onNewChat) }
-                    item { NavigationDrawerItem(label = { Text("Incognito · won’t be saved") }, icon = { Icon(Icons.Filled.Create, null) }, selected = false, onClick = onIncognito) }
-                    item { NavigationDrawerItem(label = { Text("FRIDAY") }, icon = { Icon(AppIcons.Computer, null) }, selected = false, onClick = onActivity) }
-                    item { NavigationDrawerItem(label = { Text("Library") }, icon = { Icon(Icons.AutoMirrored.Filled.List, null) }, selected = false, onClick = onFiles) }
-                    item { NavigationDrawerItem(label = { Text("Images") }, icon = { Icon(Icons.Filled.Create, null) }, selected = false, onClick = onImages) }
+                    item { NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text("New chat") }, icon = { Icon(Icons.Filled.Create, null) }, selected = false, onClick = onNewChat) }
+                    item { NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text("Incognito · won’t be saved") }, icon = { Icon(Icons.Filled.Create, null) }, selected = false, onClick = onIncognito) }
+                    item { NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text("FRIDAY") }, icon = { Icon(AppIcons.Computer, null) }, selected = false, onClick = onActivity) }
+                    item { NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text("Library") }, icon = { Icon(Icons.AutoMirrored.Filled.List, null) }, selected = false, onClick = onFiles) }
+                    item { NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text("Images") }, icon = { Icon(Icons.Filled.Create, null) }, selected = false, onClick = onImages) }
 
-                    item { TextButton(onClick = onProjects, modifier = Modifier.padding(top = 12.dp)) { Text("Projects") } }
+
+                    item { TextButton(shape = MaterialTheme.shapes.small, onClick = onProjects, modifier = Modifier.padding(top = 12.dp)) { Text("Projects") } }
                     items(projects, key = { "project:${it.id}" }) { project ->
-                        NavigationDrawerItem(label = { Text(project.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text(project.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                             icon = { Icon(AppIcons.Folder, null) }, selected = activeProjectId == project.id,
                             onClick = { onProject(project.id) })
                     }
-                    if (projects.isEmpty()) item { TextButton(onClick = onProjects) { Text("Create a project") } }
+                    if (projects.isEmpty()) item { TextButton(shape = MaterialTheme.shapes.small, onClick = onProjects) { Text("Create a project") } }
                 }
                 if (visibleChats.isEmpty()) {
                     item {
@@ -133,8 +139,8 @@ internal fun ChatDrawer(
                 }
             }
             HorizontalDivider()
-            NavigationDrawerItem(
-                label = { Column { Text("Local Assistant"); Text("Settings", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } },
+            NavigationDrawerItem(shape = MaterialTheme.shapes.small,
+                label = { Text("Settings") },
                 icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
                 selected = false,
                 onClick = onOpenSettings,
@@ -147,12 +153,12 @@ internal fun ChatDrawer(
         var title by remember(summary.id) { mutableStateOf(summary.title) }
         AlertDialog(
             onDismissRequest = { renaming = null },
-            title = { Text("Rename chat") },
+            title = { FridayDialogWindow(); Text("Rename chat") },
             text = {
                 OutlinedTextField(value = title, onValueChange = { title = it }, singleLine = true)
             },
             confirmButton = {
-                TextButton(
+                TextButton(shape = MaterialTheme.shapes.small,
                     enabled = title.isNotBlank(),
                     onClick = {
                         onRename(summary.id, title)
@@ -160,24 +166,24 @@ internal fun ChatDrawer(
                     },
                 ) { Text("Rename") }
             },
-            dismissButton = { TextButton(onClick = { renaming = null }) { Text("Cancel") } },
+            dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { renaming = null }) { Text("Cancel") } },
         )
     }
 
     deleting?.let { summary ->
         AlertDialog(
             onDismissRequest = { deleting = null },
-            title = { Text("Delete chat?") },
+            title = { FridayDialogWindow(); Text("Delete chat?") },
             text = { Text("“${summary.title}” will be deleted from this phone. This can't be undone.") },
             confirmButton = {
-                TextButton(
+                TextButton(shape = MaterialTheme.shapes.small,
                     onClick = {
                         onDelete(summary.id)
                         deleting = null
                     },
                 ) { Text("Delete", color = MaterialTheme.colorScheme.error) }
             },
-            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
+            dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { deleting = null }) { Text("Cancel") } },
         )
     }
 }
@@ -193,11 +199,11 @@ internal fun ConversationRow(
 ) {
     var menu by remember { mutableStateOf(false) }
     Surface(
-        shape = RoundedCornerShape(12.dp),
+        shape = MaterialTheme.shapes.small,
         color = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(MaterialTheme.shapes.small)
             .combinedClickable(onClick = onOpen, onLongClick = { menu = true }),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 16.dp)) {

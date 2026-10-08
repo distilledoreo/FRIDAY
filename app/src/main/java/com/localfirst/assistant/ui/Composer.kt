@@ -40,6 +40,7 @@ internal fun Composer(
     onStop: () -> Unit,
     onCancelEdit: () -> Unit,
     onVoice: (() -> Unit)?,
+    voiceActive: Boolean = false,
     sendEnabled: Boolean,
     attachments: List<DraftAttachment> = emptyList(),
     editingHasAttachments: Boolean = false,
@@ -69,7 +70,7 @@ internal fun Composer(
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 6.dp).weight(1f),
                 )
-                IconButton(onClick = onCancelEdit, modifier = Modifier.size(32.dp)) {
+                IconButton(onClick = onCancelEdit, modifier = Modifier.size(48.dp)) {
                     Icon(Icons.Filled.Close, contentDescription = "Cancel editing", modifier = Modifier.size(18.dp))
                 }
             }
@@ -82,22 +83,22 @@ internal fun Composer(
         ) {
             Column {
                 if (imageMode && !editing) {
-                    InputChip(
+                    InputChip(shape = MaterialTheme.shapes.small,
                         selected = true, onClick = onImageSettings, enabled = !busy,
                         label = { Text("Create image · $imageSummary") },
-                        trailingIcon = { IconButton(onClick = onExitImageMode, enabled = !busy, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.Close, "Exit image mode", Modifier.size(16.dp)) } },
+                        trailingIcon = { IconButton(onClick = onExitImageMode, enabled = !busy, modifier = Modifier.size(48.dp)) { Icon(Icons.Filled.Close, "Exit image mode", Modifier.size(16.dp)) } },
                         modifier = Modifier.padding(start = 14.dp, top = 8.dp),
                     )
                 }
                 Row(
-                    verticalAlignment = Alignment.Bottom,
+                    verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    modifier = Modifier.padding(end = 6.dp, bottom = 6.dp),
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
                 ) {
                     IconButton(
                         onClick = onAttach,
                         enabled = !busy && !editing,
-                        modifier = Modifier.size(40.dp),
+                        modifier = Modifier.size(48.dp),
                     ) {
                         Icon(Icons.Filled.Add, contentDescription = "Attachments and tools")
                     }
@@ -105,7 +106,7 @@ internal fun Composer(
                         value = draft,
                         onValueChange = onDraftChange,
                         modifier = Modifier.weight(1f),
-                        placeholder = { Text(if (imageMode && !editing) "Describe an image" else "Message") },
+                        placeholder = { Text(if (imageMode && !editing) "Describe an image" else "Message FRIDAY…",style=MaterialTheme.typography.bodyMedium) },
                         maxLines = 6,
                         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                         colors = TextFieldDefaults.colors(
@@ -117,42 +118,30 @@ internal fun Composer(
                             disabledIndicatorColor = Color.Transparent,
                         ),
                     )
-                    if (!busy && !editing && attachments.isNotEmpty() && attachments.all { it.status == DraftStatus.READY } && onVoice != null) {
-                        IconButton(onClick = onVoice) { Icon(AppIcons.Mic, contentDescription = "Talk about attachments") }
+                    if(onVoice!=null) IconButton(onClick=onVoice,enabled=!busy||voiceActive,modifier=Modifier.size(48.dp)) {
+                        Icon(AppIcons.Mic,contentDescription=if(voiceActive)"End voice conversation"else"Start voice conversation",tint=if(voiceActive)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.size(20.dp))
                     }
                     if (busy) {
                         FilledIconButton(
                             onClick = onStop,
                             shape = CircleShape,
-                            modifier = Modifier.size(40.dp),
+                            modifier = Modifier.size(48.dp),
                             colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = MaterialTheme.colorScheme.onSurface,
-                                contentColor = MaterialTheme.colorScheme.surface,
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary,
                             ),
                         ) {
                             Icon(AppIcons.Stop, contentDescription = "Stop", modifier = Modifier.size(18.dp))
                         }
-                    } else if (draft.isBlank() && attachments.isEmpty() && onVoice != null && !editing && !imageMode) {
-                        FilledIconButton(
-                            onClick = onVoice,
-                            shape = CircleShape,
-                            modifier = Modifier.size(40.dp),
-                            colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = MaterialTheme.colorScheme.onSurface,
-                                contentColor = MaterialTheme.colorScheme.surface,
-                            ),
-                        ) {
-                            Icon(AppIcons.Mic, contentDescription = "Voice mode", modifier = Modifier.size(20.dp))
-                        }
-                    } else {
+                    } else if(draft.isNotBlank()||attachments.isNotEmpty()||editing) {
                         FilledIconButton(
                             onClick = onSend,
                             enabled = sendEnabled,
                             shape = CircleShape,
-                            modifier = Modifier.size(40.dp),
+                            modifier = Modifier.size(48.dp),
                             colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = MaterialTheme.colorScheme.onSurface,
-                                contentColor = MaterialTheme.colorScheme.surface,
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary,
                             ),
                         ) {
                             Icon(AppIcons.ArrowUpward, contentDescription = "Send", modifier = Modifier.size(20.dp))

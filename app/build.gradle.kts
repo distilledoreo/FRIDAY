@@ -12,8 +12,8 @@ android {
         applicationId = "com.localfirst.assistant"
         minSdk = 26
         targetSdk = 35
-        versionCode = 22
-        versionName = "0.15.0"
+        versionCode = 23
+        versionName = "0.16.0"
     }
 
     buildTypes {
@@ -38,6 +38,10 @@ android {
     buildFeatures {
         compose = true
     }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all { it.systemProperty("roborazzi.test.record", "true") }
+    }
 }
 
 dependencies {
@@ -58,4 +62,9 @@ dependencies {
     implementation(libs.markdown.renderer.m3)
 
     testImplementation(libs.junit)
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi:1.40.0")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.40.0")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

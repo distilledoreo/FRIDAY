@@ -22,7 +22,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -48,27 +47,16 @@ internal val FRIDAY_NEEDS_YOU = setOf("proposed", "awaiting_setup", "interrupted
 private const val COMPUTER_SPEC = "4 cores · 8 GB · no access to your files"
 private const val ASKS_AGAIN = "She asks again before sending, submitting, logging in, buying or deleting anything."
 
-/** Top-bar presence: FRIDAY's name, or what she's doing when it matters. */
+/** Quiet entry point preserves computer status, with attention only when backed by task data. */
 @Composable
-internal fun FridayPill(state: ChatUiState, onClick: () -> Unit) {
-    val needsYou = state.agentTasks.any { it.optString("status") in FRIDAY_NEEDS_YOU }
-    val working = state.agentTasks.any { it.optString("status") in FRIDAY_WORKING }
-    val colors = MaterialTheme.colorScheme
-    val (label, container, content) = when {
-        needsYou -> Triple("FRIDAY · needs you", colors.tertiaryContainer, colors.onTertiaryContainer)
-        working -> Triple("FRIDAY · working", colors.primaryContainer, colors.onPrimaryContainer)
-        else -> Triple("FRIDAY", Color.Transparent, colors.onSurface)
-    }
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(50),
-        color = container,
-        contentColor = content,
-        border = if (needsYou || working) null else BorderStroke(1.dp, colors.outlineVariant),
-    ) {
-        Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Icon(AppIcons.Computer, contentDescription = null, modifier = Modifier.size(16.dp))
-            Text(label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+internal fun FridayStatusButton(state: ChatUiState, onClick: () -> Unit) {
+    val needsYou=state.agentTasks.any { it.optString("status") in FRIDAY_NEEDS_YOU }
+    val working=state.agentTasks.any { it.optString("status") in FRIDAY_WORKING }
+    val status=when { needsYou -> "Needs your attention"; working -> "Working"; else -> "Computer and activity" }
+    IconButton(onClick=onClick,modifier=Modifier.size(48.dp)) {
+        Box {
+            Icon(AppIcons.Computer,"FRIDAY. $status",tint=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.size(20.dp))
+            if(needsYou||working)Box(Modifier.align(Alignment.TopEnd).size(5.dp).clip(CircleShape).background(if(needsYou)com.localfirst.assistant.ui.theme.LocalFridayPalette.current.warning else MaterialTheme.colorScheme.primary))
         }
     }
 }
@@ -83,7 +71,7 @@ internal fun FridayTaskCard(json: String, state: ChatUiState, vm: ChatViewModel)
     val status = task.optString("status")
     val sharesAccountData = (proposal.optJSONArray("data_scopes")?.length() ?: 0) > 0
     var reviewing by remember(id) { mutableStateOf(false) }
-    OutlinedCard(Modifier.fillMaxWidth()) {
+    FridayCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(AppIcons.Computer, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
@@ -104,19 +92,19 @@ internal fun FridayTaskCard(json: String, state: ChatUiState, vm: ChatViewModel)
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 when (status) {
                     "proposed" -> {
-                        Button(
+                        Button(shape = MaterialTheme.shapes.small,
                             onClick = { if (sharesAccountData) reviewing = true else vm.approveAgentTask(id, task.optString("fingerprint")) },
                             enabled = state.agentReady && !state.workspaceBusy,
                         ) { Text(if (proposal.has("schedule")) "Schedule it" else "Start") }
-                        TextButton(onClick = { vm.openFriday(id) }) { Text("Details") }
-                        TextButton(onClick = { vm.cancelAgentTask(id) }, enabled = !state.workspaceBusy) { Text("Dismiss") }
+                        TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.openFriday(id) }) { Text("Details") }
+                        TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.cancelAgentTask(id) }, enabled = !state.workspaceBusy) { Text("Dismiss") }
                     }
-                    "approved", "running" -> TextButton(onClick = { vm.openFriday(id) }) { Text("Watch") }
+                    "approved", "running" -> TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.openFriday(id) }) { Text("Watch") }
                     "done" -> {
-                        TextButton(onClick = { vm.openFriday(id) }) { Text("See report") }
-                        TextButton(onClick = { vm.discussAgentReport(id) }, enabled = !state.busy) { Text("Discuss") }
+                        TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.openFriday(id) }) { Text("See report") }
+                        TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.discussAgentReport(id) }, enabled = !state.busy) { Text("Discuss") }
                     }
-                    else -> TextButton(onClick = { vm.openFriday(id) }) { Text("Details") }
+                    else -> TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.openFriday(id) }) { Text("Details") }
                 }
             }
             if (status == "proposed") {
@@ -127,10 +115,10 @@ internal fun FridayTaskCard(json: String, state: ChatUiState, vm: ChatViewModel)
     if (reviewing) {
         AlertDialog(
             onDismissRequest = { reviewing = false },
-            title = { Text("Start this task?") },
+            title = { FridayDialogWindow(); Text("Start this task?") },
             text = { Text(plainApproval(proposal), Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) },
-            confirmButton = { TextButton(onClick = { vm.approveAgentTask(id, task.optString("fingerprint")); reviewing = false }) { Text("Start") } },
-            dismissButton = { TextButton(onClick = { reviewing = false }) { Text("Back") } },
+            confirmButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.approveAgentTask(id, task.optString("fingerprint")); reviewing = false }) { Text("Start") } },
+            dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { reviewing = false }) { Text("Back") } },
         )
     }
 }
@@ -140,22 +128,11 @@ internal fun FridayTaskCard(json: String, state: ChatUiState, vm: ChatViewModel)
 internal fun FridayComputerCard(state: ChatUiState, vm: ChatViewModel, taskId: String? = null) {
     val live = state.fridayLive?.takeIf { taskId == null || it.taskId == taskId }
     val working = live != null || state.agentTasks.any { it.optString("status") in FRIDAY_WORKING && (taskId == null || it.optString("id") == taskId) }
-    OutlinedCard(Modifier.fillMaxWidth()) {
+    FridayCard(Modifier.fillMaxWidth()) {
         Column {
             val shot = live?.screenshotId?.takeIf(String::isNotBlank)
             if (shot != null) {
                 AgentScreenshot(live.taskId, JSONObject().put("id", shot).put("url", live.screenshotUrl), vm)
-            } else {
-                Box(
-                    Modifier.fillMaxWidth().height(110.dp).background(MaterialTheme.colorScheme.surfaceContainer),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        if (working) "Her screen appears here when she opens a page" else "Idle · ready for something to do",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
             }
             Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 val ready = state.agentReady
@@ -192,6 +169,7 @@ internal fun FridayAskBox(state: ChatUiState, vm: ChatViewModel) {
             }
         },
         modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.small,
     )
 }
 
@@ -200,7 +178,7 @@ internal fun FridayAskBox(state: ChatUiState, vm: ChatViewModel) {
 internal fun FridayTaskRow(task: JSONObject, state: ChatUiState, onClick: () -> Unit) {
     val id = task.optString("id")
     val live = state.fridayLive?.takeIf { it.taskId == id }
-    OutlinedCard(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+    FridayCard(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
             Text(task.optJSONObject("proposal")?.optString("prompt").orEmpty(), style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(

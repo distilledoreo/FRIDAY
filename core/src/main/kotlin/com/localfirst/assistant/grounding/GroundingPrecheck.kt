@@ -17,7 +17,8 @@ object GroundingPrecheck {
     fun blocksWeb(query: String) = optOut.containsMatchIn(query)
     fun privateRequest(query: String) = privateData.containsMatchIn(query)
     fun largerResearch(query: String) = research.containsMatchIn(query) && !blocksWeb(query) && !privateRequest(query)
-    fun needsSearch(query: String): Boolean = !blocksWeb(query) && !privateRequest(query) && (!transformation.containsMatchIn(query) || reference.containsMatchIn(query)) && (current.containsMatchIn(query) || dated.containsMatchIn(query) || reference.containsMatchIn(query))
+    private fun explicitSearch(query:String)=query.trimStart().startsWith("Search the web for:",ignoreCase=true)&&query.substringAfter(':').isNotBlank()
+    fun needsSearch(query: String): Boolean = !blocksWeb(query) && !privateRequest(query) && (!transformation.containsMatchIn(query) || reference.containsMatchIn(query)) && (explicitSearch(query) || current.containsMatchIn(query) || dated.containsMatchIn(query) || reference.containsMatchIn(query))
     suspend fun run(query: String, search: Tool): ToolExecutionResult? {
         if (!needsSearch(query)) return null
         return search.execute(buildJsonObject { put("query", query.take(500)); put("limit", 5); put("fetch_pages", true) })

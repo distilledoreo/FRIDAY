@@ -11,6 +11,11 @@ import com.localfirst.assistant.phone.PermissionBroker
 import com.localfirst.assistant.ui.ChatScreen
 import com.localfirst.assistant.ui.ChatViewModel
 import com.localfirst.assistant.ui.theme.AssistantTheme
+import com.localfirst.assistant.settings.AppearanceSettingsStore
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 
 class MainActivity : ComponentActivity() {
     private lateinit var viewModel: ChatViewModel
@@ -22,7 +27,10 @@ class MainActivity : ComponentActivity() {
         viewModel = (application as AssistantApp).chat()
         if (savedInstanceState == null) handleLaunch(intent)
         setContent {
-            AssistantTheme {
+            val appearanceStore=remember { AppearanceSettingsStore(applicationContext) }
+            val appearance by appearanceStore.state.collectAsState()
+            DisposableEffect(appearanceStore) { onDispose { appearanceStore.close() } }
+            AssistantTheme(preferences=appearance,onPreferencesChange=appearanceStore::save) {
                 ChatScreen(viewModel)
             }
         }

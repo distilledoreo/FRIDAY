@@ -7,6 +7,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class GroundingPrecheckTest {
+    @Test fun composerSearchIntentTriggersRetrievalWithoutBypassingOptOutOrPrivateReads() {
+        assertTrue(GroundingPrecheck.needsSearch("Search the web for: how rainbows form"))
+        assertFalse(GroundingPrecheck.needsSearch("Search the web for: "))
+        assertFalse(GroundingPrecheck.needsSearch("Search the web for: my inbox"))
+        assertFalse(GroundingPrecheck.needsSearch("Search the web for: without search explain rainbows"))
+    }
+
     @Test fun boundedEnvelopeKeepsAllPassagesAndLabelsOversizeFallback() {
         val bounded = "x".repeat(25000) + "final supporting passage"
         assertTrue(GroundingPrecheck.note(ToolExecutionResult(true, bounded)).endsWith("final supporting passage"))

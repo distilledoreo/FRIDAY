@@ -29,7 +29,8 @@ import java.time.*
 import java.time.format.DateTimeFormatter
 
 enum class WorkspaceDestination(val title: String) {
-    SETTINGS("Settings"), BRIEF("Daily brief"), ACCOUNTS("Accounts"), MEMORY("Memory"), ACTIVITY("FRIDAY"), PROJECTS("Projects"), PROJECT("Project"),
+    SETTINGS("Settings"), APPEARANCE("Appearance"), BRIEF("Daily brief"), ACCOUNTS("Accounts"), MEMORY("Memory"), ACTIVITY("FRIDAY"), PROJECTS("Projects"), PROJECT("Project"),
+
     EDIT_PROJECT("Project settings"), TASKS("Tasks"), TASK("Task"), NEW_TASK("New task"),
     FILES("Library"), DATA("Data controls"), NEW_MEMORY("Add memory"), IMAGES("Images"), IMPORT_CHATGPT("Import ChatGPT"), MEMORY_REVIEW("Review memories"), MEMORY_ARCHIVE("PC archive"), MEMORY_SOURCE("Source chat"), MEMORY_CONTEXT("Recall context")
 }
@@ -77,10 +78,11 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
         if (state.workspaceStatus == "Memory saved." && page == WorkspaceDestination.NEW_MEMORY) { memory = ""; page = WorkspaceDestination.MEMORY }
         if ((state.workspaceStatus == "Task scheduled." && page == WorkspaceDestination.NEW_TASK) || (state.workspaceStatus == "Task removed." && page == WorkspaceDestination.TASK)) page = WorkspaceDestination.TASKS
     }
-    Dialog(onDismissRequest = ::goBack, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.fillMaxSize()) {
-            Scaffold(modifier = Modifier.statusBarsPadding().navigationBarsPadding(), topBar = {
-                TopAppBar(title = { Text(if (page == WorkspaceDestination.PROJECT) project?.name ?: "Project" else page.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+    Dialog(onDismissRequest = ::goBack, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        FridayDialogWindow()
+        Surface(Modifier.fillMaxSize(),color=MaterialTheme.colorScheme.background) {
+            Scaffold(containerColor=MaterialTheme.colorScheme.background, modifier = Modifier.imePadding(), topBar = {
+                TopAppBar(title = { FridayDialogWindow(); Text(if (page == WorkspaceDestination.PROJECT) project?.name ?: "Project" else page.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     navigationIcon = { IconButton(onClick = ::goBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                     actions = {
                         when (page) {
@@ -89,7 +91,7 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                             WorkspaceDestination.MEMORY -> IconButton(onClick = { memory = ""; vm.editMemory(null); page = WorkspaceDestination.NEW_MEMORY }, enabled = !state.workspaceBusy) { Icon(Icons.Filled.Add, "Add memory") }
                             WorkspaceDestination.TASKS -> IconButton(onClick = { page = WorkspaceDestination.NEW_TASK }, enabled = !state.workspaceBusy) { Icon(Icons.Filled.Add, "New task") }
                             WorkspaceDestination.PROJECT -> MoreActions(listOf("Edit instructions" to { editProject(project) }, "Delete project" to { deletingProject = project }))
-                            WorkspaceDestination.FILES, WorkspaceDestination.TASK -> TextButton(onClick = vm::refreshWorkspace, enabled = !state.workspaceBusy) { Text("Refresh") }
+                            WorkspaceDestination.FILES, WorkspaceDestination.TASK -> TextButton(shape = MaterialTheme.shapes.small, onClick = vm::refreshWorkspace, enabled = !state.workspaceBusy) { Text("Refresh") }
                             else -> Unit
                         }
                     })
@@ -98,17 +100,20 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                     if (state.workspaceBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
                     state.workspaceStatus?.takeIf { !it.startsWith("Computer online") }?.let { Text(it, Modifier.padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall) }
                     when (page) {
+                        WorkspaceDestination.APPEARANCE -> AppearancePage()
                         WorkspaceDestination.BRIEF -> DailyBriefPage(state, vm)
                         WorkspaceDestination.ACCOUNTS -> AccountsPage(state, vm)
                         WorkspaceDestination.ACTIVITY -> AgentActivity(state, vm)
                         WorkspaceDestination.IMAGES -> ImageJobs(state, vm)
                         WorkspaceDestination.SETTINGS -> ScreenList {
                             item { SectionLabel("Personalization") }
+                            item { SettingsRow("Appearance", "Theme, accent, proactivity and motion") { parent = page; page = WorkspaceDestination.APPEARANCE } }
+                            item { SectionLabel("Your information") }
                             item { SettingsRow("Daily brief", "Calendar, weather and follow-up proposals") { parent = page; page = WorkspaceDestination.BRIEF } }
                             item { SettingsRow("Accounts", "Email and calendar sign-in") { parent = page; page = WorkspaceDestination.ACCOUNTS } }
                             item { SettingsRow("Memory", "Manage what the assistant remembers") { parent = page; page = WorkspaceDestination.MEMORY } }
                             item { SettingsRow("Data controls", "Sync, export and backups") { parent = page; page = WorkspaceDestination.DATA } }
-                            item { SectionLabel("Local assistant") }
+                            item { SectionLabel("Assistant and connections") }
                             item { SettingsRow("Voice and server", "Connection, model and voice settings", vm::openSettings) }
                             item { SettingsRow("Computer status", state.workspaceStatus?.takeIf { it.startsWith("Computer online") } ?: "Check connection and tools", vm::refreshWorkspace) }
                             item { SettingsRow("App updates", "Check for a new version", vm::checkUpdate) }
@@ -127,19 +132,19 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                         WorkspaceDestination.MEMORY_CONTEXT -> MemoryContext(state)
                         WorkspaceDestination.NEW_MEMORY -> FormScreen {
                             OutlinedTextField(memory, { memory = it.take(2000) }, label = { Text("What should I remember?") }, minLines = 4, modifier = Modifier.fillMaxWidth())
-                            Button(onClick = { vm.saveMemory(memory) }, enabled = memory.isNotBlank() && !state.workspaceBusy, modifier = Modifier.fillMaxWidth()) { Text("Save") }
+                            Button(shape = MaterialTheme.shapes.small, onClick = { vm.saveMemory(memory) }, enabled = memory.isNotBlank() && !state.workspaceBusy, modifier = Modifier.fillMaxWidth()) { Text("Save") }
                         }
                         WorkspaceDestination.PROJECTS -> ScreenList {
                             if (state.knowledge.projects.isEmpty()) item { EmptyList("Keep related chats together", "Create a project to share instructions and reference material across chats.") }
                             items(state.knowledge.projects, key = { it.id }) { p ->
                                 SettingsRow(p.name, "${state.conversations.count { it.projectId == p.id }} chats") { projectId = p.id; page = WorkspaceDestination.PROJECT }
                             }
-                            item { TextButton(onClick = { editProject(null) }, modifier = Modifier.padding(12.dp)) { Text("New project") } }
+                            item { TextButton(shape = MaterialTheme.shapes.small, onClick = { editProject(null) }, modifier = Modifier.padding(12.dp)) { Text("New project") } }
                         }
                         WorkspaceDestination.PROJECT -> ScreenList {
                             item { Row(Modifier.fillMaxWidth().padding(20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(onClick = { projectId?.let(vm::newProjectChat) }, enabled = !state.busy && !state.workspaceBusy) { Text("New chat") }
-                                OutlinedButton(onClick = { vm.selectProject(projectId); vm.dismissWorkspace() }, enabled = !state.busy && !state.workspaceBusy) { Text("Use in this chat") }
+                                Button(shape = MaterialTheme.shapes.small, onClick = { projectId?.let(vm::newProjectChat) }, enabled = !state.busy && !state.workspaceBusy) { Text("New chat") }
+                                OutlinedButton(shape = MaterialTheme.shapes.small, onClick = { vm.selectProject(projectId); vm.dismissWorkspace() }, enabled = !state.busy && !state.workspaceBusy) { Text("Use in this chat") }
                             } }
                             item { SettingsRow("Instructions", project?.instructions?.take(180)?.ifBlank { "Add guidance for this project" }) { editProject(project) } }
                             item { SettingsRow("Sources", if (project?.context.isNullOrBlank()) "Add reference text or documents from a chat" else "Reference text saved") { editProject(project) } }
@@ -154,17 +159,17 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                             OutlinedTextField(name, { name = it.take(100) }, label = { Text("Project name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                             OutlinedTextField(instructions, { instructions = it.take(8000) }, label = { Text("Instructions") }, placeholder = { Text("How should the assistant respond in this project?") }, minLines = 3, modifier = Modifier.fillMaxWidth())
                             OutlinedTextField(reference, { reference = it.take(60000) }, label = { Text("Reference text") }, minLines = 4, modifier = Modifier.fillMaxWidth())
-                            TextButton(onClick = {
+                            TextButton(shape = MaterialTheme.shapes.small, onClick = {
                                 val source = vm.projectDocumentText()
                                 if (source.isBlank()) projectError = "Attach a readable document to this chat first."
                                 else { reference = (reference + "\n\n" + source).trim().take(60000); projectError = null }
                             }, enabled = !state.workspaceBusy) { Text("Add documents from current chat") }
                             projectError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                            Button(onClick = { vm.saveProject(projectId, name, instructions, reference) }, enabled = name.isNotBlank() && !state.workspaceBusy, modifier = Modifier.fillMaxWidth()) { Text("Save") }
+                            Button(shape = MaterialTheme.shapes.small, onClick = { vm.saveProject(projectId, name, instructions, reference) }, enabled = name.isNotBlank() && !state.workspaceBusy, modifier = Modifier.fillMaxWidth()) { Text("Save") }
                         }
                         WorkspaceDestination.TASKS -> ScreenList {
                             item { ScreenHint("Tasks run on your computer, including when this app is closed.") }
-                            item { TextButton(onClick = vm::refreshWorkspace, enabled = !state.workspaceBusy, modifier = Modifier.padding(horizontal = 12.dp)) { Text("Refresh") } }
+                            item { TextButton(shape = MaterialTheme.shapes.small, onClick = vm::refreshWorkspace, enabled = !state.workspaceBusy, modifier = Modifier.padding(horizontal = 12.dp)) { Text("Refresh") } }
                             if (state.tasks.isEmpty()) item { EmptyList("No tasks yet", "Schedule research, reminders or file work.") }
                             items(state.tasks, key = { it.id }) { t -> SettingsRow(t.prompt, taskSummary(t)) { taskId = t.id; page = WorkspaceDestination.TASK } }
                         }
@@ -174,19 +179,24 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                                 Text(taskSummary(task), color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 if (task.result.isNotBlank()) Markdown(task.result)
                                 if (task.error.isNotBlank()) Text(task.error, color = MaterialTheme.colorScheme.error)
-                                if (task.status in listOf("scheduled", "running")) Button(onClick = { vm.manageTask(task.id, "pause") }, enabled = !state.workspaceBusy) { Text("Pause") }
-                                if (task.status in listOf("paused", "failed")) Button(onClick = { vm.manageTask(task.id, "resume") }, enabled = !state.workspaceBusy) { Text("Resume") }
-                                if (task.status !in listOf("cancelled", "completed")) TextButton(onClick = { vm.manageTask(task.id, "cancel") }, enabled = !state.workspaceBusy) { Text("Cancel task") }
-                                else TextButton(onClick = { vm.removeTask(task.id) }, enabled = !state.workspaceBusy) { Text("Remove task") }
+                                if (task.status in listOf("scheduled", "running")) Button(shape = MaterialTheme.shapes.small, onClick = { vm.manageTask(task.id, "pause") }, enabled = !state.workspaceBusy) { Text("Pause") }
+                                if (task.status in listOf("paused", "failed")) Button(shape = MaterialTheme.shapes.small, onClick = { vm.manageTask(task.id, "resume") }, enabled = !state.workspaceBusy) { Text("Resume") }
+                                if (task.status !in listOf("cancelled", "completed")) TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.manageTask(task.id, "cancel") }, enabled = !state.workspaceBusy) { Text("Cancel task") }
+                                else TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.removeTask(task.id) }, enabled = !state.workspaceBusy) { Text("Remove task") }
                             }
                         }
                         WorkspaceDestination.NEW_TASK -> TaskEditor(state.workspaceBusy, vm::scheduleTaskAt)
                         WorkspaceDestination.FILES -> ScreenList {
                             if (state.workspaceFiles.isEmpty()) item { EmptyList("Your files live here", "Uploaded files and files created by the assistant will appear here.") }
                             items(state.workspaceFiles, key = { it.id }) { f ->
-                                ListItem(headlineContent = { Text(f.name, maxLines = 2, overflow = TextOverflow.Ellipsis) }, supportingContent = { Text("${f.size / 1024} KB") },
-                                    modifier = Modifier.clickable(enabled = !state.workspaceBusy) { vm.openArtifact("assistant://artifact/${f.id}") },
-                                    trailingContent = { MoreActions(listOf("Delete" to { deletingFile = f })) })
+                                FridayCard(Modifier.fillMaxWidth()) {
+                                    ListItem(headlineContent={Text(f.name,maxLines=2,overflow=TextOverflow.Ellipsis)},
+                                        supportingContent={Text("${if(f.size<1024) "${f.size} B" else "${f.size/1024} KB"} · ${f.mime}",style=MaterialTheme.typography.bodySmall)},
+                                        leadingContent={Icon(AppIcons.Folder,null,Modifier.size(20.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant)},
+                                        colors=ListItemDefaults.colors(containerColor=MaterialTheme.colorScheme.surface),
+                                        modifier=Modifier.heightIn(min=72.dp).clickable(enabled=!state.workspaceBusy) { vm.openArtifact("assistant://artifact/${f.id}") },
+                                        trailingContent={MoreActions(listOf("Delete" to { deletingFile=f }))})
+                                }
                             }
                         }
                         WorkspaceDestination.DATA -> ScreenList {
@@ -211,39 +221,41 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
     } }
     renamingChat?.let { chat ->
         var title by remember(chat.id) { mutableStateOf(chat.title) }
-        AlertDialog(onDismissRequest = { renamingChat = null }, title = { Text("Rename chat") },
+        AlertDialog(onDismissRequest = { renamingChat = null }, title = { FridayDialogWindow(); Text("Rename chat") },
             text = { OutlinedTextField(title, { title = it }, singleLine = true) },
-            confirmButton = { TextButton(onClick = { vm.renameConversation(chat.id, title); renamingChat = null }, enabled = title.isNotBlank()) { Text("Rename") } },
-            dismissButton = { TextButton(onClick = { renamingChat = null }) { Text("Cancel") } })
+            confirmButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.renameConversation(chat.id, title); renamingChat = null }, enabled = title.isNotBlank()) { Text("Rename") } },
+            dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { renamingChat = null }) { Text("Cancel") } })
     }
     deletingChat?.let { chat -> ConfirmDelete("Delete chat?", "“${chat.title}” will be deleted from this phone. This can't be undone.", { deletingChat = null }) { vm.deleteConversation(chat.id); deletingChat = null } }
 
 }
 
 @Composable private fun ScreenList(content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit) {
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp), content = content)
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal=20.dp,vertical=16.dp),verticalArrangement=Arrangement.spacedBy(8.dp), content = content)
 }
 @Composable private fun FormScreen(content: @Composable ColumnScope.() -> Unit) {
     Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp), content = content)
 }
-@Composable private fun SectionLabel(text: String) { Text(text, Modifier.padding(start = 20.dp, top = 24.dp, bottom = 8.dp), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+@Composable private fun SectionLabel(text: String) { Text(text, Modifier.padding(top = 16.dp, bottom = 4.dp), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant) }
 @Composable private fun ScreenHint(text: String) { Text(text, Modifier.padding(20.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
 @Composable private fun EmptyList(title: String, detail: String) { Column(Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 56.dp), horizontalAlignment = Alignment.CenterHorizontally) {
     Text(title, style = MaterialTheme.typography.titleLarge); Spacer(Modifier.height(12.dp)); Text(detail, color = MaterialTheme.colorScheme.onSurfaceVariant)
 } }
-@Composable private fun SettingsRow(title: String, detail: String?, action: () -> Unit) { ListItem(
-    headlineContent = { Text(title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
-    supportingContent = detail?.let { { Text(it, maxLines = 3, overflow = TextOverflow.Ellipsis) } },
-    trailingContent = { Text("›", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) },
-    modifier = Modifier.clickable(onClick = action)) }
-@Composable internal fun MoreActions(actions: List<Pair<String, () -> Unit>>) {
+@Composable private fun SettingsRow(title: String, detail: String?, action: () -> Unit) {
+    FridayCard(Modifier.fillMaxWidth(),onClick=action) {
+        ListItem(headlineContent={Text(title)},supportingContent=detail?.let { { Text(it) } },
+            trailingContent={Text("›",style=MaterialTheme.typography.titleLarge,color=MaterialTheme.colorScheme.onSurfaceVariant)},
+            colors=ListItemDefaults.colors(containerColor=MaterialTheme.colorScheme.surface),modifier=Modifier.heightIn(min=64.dp))
+    }
+}
+@Composable internal fun MoreActions(actions: List<Pair<String, () -> Unit>>,contentColor:androidx.compose.ui.graphics.Color=MaterialTheme.colorScheme.onSurfaceVariant) {
     var expanded by remember { mutableStateOf(false) }
-    Box { IconButton(onClick = { expanded = true }) { Icon(Icons.Filled.MoreVert, "More options") }
+    Box { IconButton(onClick = { expanded = true }) { Icon(Icons.Filled.MoreVert, "More options",tint=contentColor) }
         DropdownMenu(expanded, onDismissRequest = { expanded = false }) { actions.forEach { (label, action) -> DropdownMenuItem(text = { Text(label) }, onClick = { expanded = false; action() }) } }
     }
 }
 @Composable private fun ConfirmDelete(title: String, detail: String, dismiss: () -> Unit, confirm: () -> Unit) { AlertDialog(onDismissRequest = dismiss,
-    title = { Text(title) }, text = { Text(detail) }, confirmButton = { TextButton(onClick = confirm) { Text("Delete", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton(onClick = dismiss) { Text("Cancel") } }) }
+    title = { FridayDialogWindow(); Text(title) }, text = { Text(detail) }, confirmButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = confirm) { Text("Delete", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = dismiss) { Text("Cancel") } }) }
 
 private fun taskSummary(t: BackgroundTask): String {
     val status = t.status.replaceFirstChar(Char::uppercase)
@@ -259,8 +271,8 @@ private fun taskSummary(t: BackgroundTask): String {
         Text("This phone", style = MaterialTheme.typography.labelLarge); Text(c.phonePreview)
         Text("Computer", style = MaterialTheme.typography.labelLarge); Text(c.computerPreview)
         Text("Keeping a version replaces the other copy of this item.", style = MaterialTheme.typography.bodySmall)
-        Column { OutlinedButton(onClick = { vm.resolveSync(c, true) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Keep this phone’s version") }
-            TextButton(onClick = { vm.resolveSync(c, false) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Keep computer’s version") } }
+        Column { OutlinedButton(shape = MaterialTheme.shapes.small, onClick = { vm.resolveSync(c, true) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Keep this phone’s version") }
+            TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.resolveSync(c, false) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Keep computer’s version") } }
     }
 }
 
@@ -278,14 +290,14 @@ private fun taskSummary(t: BackgroundTask): String {
     var error by remember { mutableStateOf<String?>(null) }
     if (showDate) {
         val picker = rememberDatePickerState(initialSelectedDateMillis = LocalDate.parse(date).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli())
-        DatePickerDialog(onDismissRequest = { showDate = false }, confirmButton = { TextButton(onClick = {
+        DatePickerDialog(onDismissRequest = { showDate = false }, confirmButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = {
             picker.selectedDateMillis?.let { date = Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate().toString() }; showDate = false
-        }) { Text("Done") } }, dismissButton = { TextButton(onClick = { showDate = false }) { Text("Cancel") } }) { DatePicker(picker) }
+        }) { Text("Done") } }, dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { showDate = false }) { Text("Cancel") } }) { DatePicker(picker) }
     }
     if (showTime) {
         val picker = rememberTimePickerState(hour, minute)
-        AlertDialog(onDismissRequest = { showTime = false }, title = { Text("Start time") }, text = { TimeInput(picker) },
-            confirmButton = { TextButton(onClick = { hour = picker.hour; minute = picker.minute; showTime = false }) { Text("Done") } }, dismissButton = { TextButton(onClick = { showTime = false }) { Text("Cancel") } })
+        AlertDialog(onDismissRequest = { showTime = false }, title = { FridayDialogWindow(); Text("Start time") }, text = { TimeInput(picker) },
+            confirmButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { hour = picker.hour; minute = picker.minute; showTime = false }) { Text("Done") } }, dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { showTime = false }) { Text("Cancel") } })
     }
     FormScreen {
         OutlinedTextField(prompt, { prompt = it }, label = { Text("What would you like me to do?") }, minLines = 4, modifier = Modifier.fillMaxWidth())
@@ -299,7 +311,7 @@ private fun taskSummary(t: BackgroundTask): String {
             listOf("Once" to 0, "Hourly" to 3600, "Daily" to 86400, "Weekly" to 604800).forEach { (label, seconds) -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { repeat = seconds }) { RadioButton(selected = repeat == seconds, onClick = { repeat = seconds }); Text(label) } }
         }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        Button(onClick = {
+        Button(shape = MaterialTheme.shapes.small, onClick = {
             runCatching {
                 val now = System.currentTimeMillis()
                 val runAt = if (later) com.localfirst.assistant.presentation.TaskSchedule.resolve(LocalDate.parse(date), hour, minute, ZoneId.systemDefault(), now) else now

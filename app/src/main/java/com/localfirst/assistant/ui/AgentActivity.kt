@@ -39,7 +39,7 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
     var calendarScopes by remember { mutableStateOf(setOf<String>()) }
     val task = state.agentTask?.takeIf { it.optString("id") == selected }
     LaunchedEffect(selected) { cursors = listOf(0L); vm.refreshAgentActivity(selected, 0) }
-    LaunchedEffect(selected, state.agentOutgoingBusy, state.agentTasks.any { it.optString("status") in listOf("running", "approved") }) {
+    FridayVisibleEffect(selected, state.agentOutgoingBusy, state.agentTasks.any { it.optString("status") in listOf("running", "approved") }) {
         while (state.agentOutgoingBusy || state.agentTasks.any { it.optString("status") in listOf("running", "approved") }) {
             delay(3000)
             vm.refreshAgentActivity(selected)
@@ -50,6 +50,7 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
             item {
                 Column(Modifier.padding(top = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     FridayComputerCard(state, vm)
+                    TextButton(shape = MaterialTheme.shapes.small, onClick={vm.openWorkspace(WorkspaceDestination.TASKS)}) { Text("Scheduled tasks") }
                     if (state.privacy.incognito) Text("FRIDAY isn’t available in incognito.", style = MaterialTheme.typography.bodySmall)
                     else FridayAskBox(state, vm)
                 }
@@ -69,8 +70,8 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
             }
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = { vm.openWorkspace(WorkspaceDestination.TASKS) }) { Text("Scheduled chats") }
-                    TextButton(onClick = { writingPlan = !writingPlan }) { Text(if (writingPlan) "Hide plan editor" else "Write a plan yourself") }
+                    TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.openWorkspace(WorkspaceDestination.TASKS) }) { Text("Scheduled chats") }
+                    TextButton(shape = MaterialTheme.shapes.small, onClick = { writingPlan = !writingPlan }) { Text(if (writingPlan) "Hide plan editor" else "Write a plan yourself") }
                 }
             }
             if (writingPlan) item {
@@ -89,7 +90,7 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                     }
                     if (scheduled && calendarScopes.isNotEmpty()) Text("Calendar dates are fixed when this plan is saved; repeated runs keep that same window.", style = MaterialTheme.typography.bodySmall)
                 }
-                Button(onClick = {
+                Button(shape = MaterialTheme.shapes.small, onClick = {
                     val reads = JSONArray()
                     val now = OffsetDateTime.now()
                     state.connectedAccounts.forEach { account ->
@@ -102,7 +103,7 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                 }, enabled = prompt.isNotBlank() && plan.isNotBlank() && (!scheduled || schedule != null) && mailScopes.size + calendarScopes.size <= 5 && !state.workspaceBusy) { Text("Save plan for review") }
             }
         } else {
-            item { TextButton(onClick = { selected = null }, modifier = Modifier.padding(top = 8.dp)) { Text("All of FRIDAY’s work") } }
+            item { TextButton(shape = MaterialTheme.shapes.small, onClick = { selected = null }, modifier = Modifier.padding(top = 8.dp)) { Text("All of FRIDAY’s work") } }
             task?.takeIf { it.optString("status") in FRIDAY_WORKING }?.let { item { FridayComputerCard(state, vm, it.getString("id")) } }
             task?.let { current ->
                 item {
@@ -118,27 +119,27 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                         Text("${it.optInt("remaining")} runs left · " + if (it.optInt("remaining") > 0) "Next: ${agentTime(it.optDouble("next_run"))}" else "Waiting for the final run to finish", style = MaterialTheme.typography.bodySmall)
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (current.optString("status") == "proposed") Button(onClick = { confirming = current }, enabled = state.agentReady && !state.workspaceBusy) { Text("Review and start") }
-                        if (current.optString("status") in listOf("proposed", "approved", "running", "awaiting_setup", "scheduled")) OutlinedButton(onClick = { vm.cancelAgentTask(current.getString("id")) }, enabled = !state.workspaceBusy) { Text(if (proposal.has("schedule")) "Cancel schedule and active runs" else "Cancel task") }
+                        if (current.optString("status") == "proposed") Button(shape = MaterialTheme.shapes.small, onClick = { confirming = current }, enabled = state.agentReady && !state.workspaceBusy) { Text("Review and start") }
+                        if (current.optString("status") in listOf("proposed", "approved", "running", "awaiting_setup", "scheduled")) OutlinedButton(shape = MaterialTheme.shapes.small, onClick = { vm.cancelAgentTask(current.getString("id")) }, enabled = !state.workspaceBusy) { Text(if (proposal.has("schedule")) "Cancel schedule and active runs" else "Cancel task") }
                     }
                 }
                 val runs = current.optJSONArray("runs")?.let { values -> (0 until values.length()).map { values.getJSONObject(it) } }.orEmpty()
                 items(runs, key = { "run-${it.getString("id")}" }) { run ->
-                    TextButton(onClick = { selected = run.getString("id") }) { Text("${agentTime(run.optDouble("created"))} · ${agentStatus(run.optString("status"))}") }
+                    TextButton(shape = MaterialTheme.shapes.small, onClick = { selected = run.getString("id") }) { Text("${agentTime(run.optDouble("created"))} · ${agentStatus(run.optString("status"))}") }
                 }
                 current.optJSONObject("result")?.optString("text")?.takeIf(String::isNotBlank)?.let { report ->
                     item {
                         Text("Report", style = MaterialTheme.typography.titleMedium)
                         Text(report, style = MaterialTheme.typography.bodyMedium)
-                        TextButton(onClick = { vm.discussAgentReport(current.getString("id")) }, enabled = !state.busy) { Text("Discuss in chat") }
+                        TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.discussAgentReport(current.getString("id")) }, enabled = !state.busy) { Text("Discuss in chat") }
                     }
                 }
                 val outgoing = current.optJSONArray("actions")?.let { values -> (0 until values.length()).map { values.getJSONObject(it) } }.orEmpty()
                 items(outgoing, key = { it.getString("id") }) { pendingAction ->
-                    OutlinedCard(Modifier.fillMaxWidth()) {
+                    FridayCard(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp)) {
                             Text("${pendingAction.getJSONObject("payload").optString("kind")} · ${outgoingStatus(pendingAction.optString("status"))}")
-                            if (pendingAction.optString("status") == "proposed") TextButton(onClick = { action = pendingAction }, enabled = !state.workspaceBusy) { Text("Review exact action") }
+                            if (pendingAction.optString("status") == "proposed") TextButton(shape = MaterialTheme.shapes.small, onClick = { action = pendingAction }, enabled = !state.workspaceBusy) { Text("Review exact action") }
                         }
                     }
                 }
@@ -149,7 +150,7 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                         val summary = agentEventSummary(event)
                         Text(summary, style = MaterialTheme.typography.bodySmall)
                         var expanded by remember(event.getLong("seq")) { mutableStateOf(false) }
-                        TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "Hide details" else "Show details") }
+                        TextButton(shape = MaterialTheme.shapes.small, onClick = { expanded = !expanded }) { Text(if (expanded) "Hide details" else "Show details") }
                         if (expanded) Text(data.toString(2), style = MaterialTheme.typography.bodySmall)
                         if (event.optString("kind") == "screenshot") AgentScreenshot(current.getString("id"), event.getJSONObject("data"), vm)
                         HorizontalDivider(Modifier.padding(top = 8.dp))
@@ -157,8 +158,8 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                 }
                 item {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (cursors.size > 1) TextButton(onClick = { cursors = cursors.dropLast(1); vm.refreshAgentActivity(selected, cursors.last()) }, enabled = !state.workspaceBusy) { Text("Earlier activity") }
-                        if (state.agentEvents.size == 200) TextButton(onClick = { val next = state.agentEvents.last().getLong("seq"); cursors = cursors + next; vm.refreshAgentActivity(selected, next) }, enabled = !state.workspaceBusy) { Text("More activity") }
+                        if (cursors.size > 1) TextButton(shape = MaterialTheme.shapes.small, onClick = { cursors = cursors.dropLast(1); vm.refreshAgentActivity(selected, cursors.last()) }, enabled = !state.workspaceBusy) { Text("Earlier activity") }
+                        if (state.agentEvents.size == 200) TextButton(shape = MaterialTheme.shapes.small, onClick = { val next = state.agentEvents.last().getLong("seq"); cursors = cursors + next; vm.refreshAgentActivity(selected, next) }, enabled = !state.workspaceBusy) { Text("More activity") }
                     }
                 }
             }
@@ -166,13 +167,13 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
         item { Spacer(Modifier.height(24.dp)) }
     }
     confirming?.let { exact ->
-        AlertDialog(onDismissRequest = { confirming = null }, title = { Text("Start this task?") },
+        AlertDialog(onDismissRequest = { confirming = null }, title = { FridayDialogWindow(); Text("Start this task?") },
             text = { Text(plainApproval(exact.getJSONObject("proposal")), Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) },
-            confirmButton = { TextButton(onClick = { vm.approveAgentTask(exact.getString("id"), exact.getString("fingerprint")); confirming = null }) { Text("Start") } },
-            dismissButton = { TextButton(onClick = { confirming = null }) { Text("Back") } })
+            confirmButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.approveAgentTask(exact.getString("id"), exact.getString("fingerprint")); confirming = null }) { Text("Start") } },
+            dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { confirming = null }) { Text("Back") } })
     }
     action?.let { exact ->
-        AlertDialog(onDismissRequest = { action = null }, title = { Text("Approve this exact action?") },
+        AlertDialog(onDismissRequest = { action = null }, title = { FridayDialogWindow(); Text("Approve this exact action?") },
             text = { Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
                 exact.optJSONObject("review")?.let { review ->
                     Text(review.optString("reviewer"), style = MaterialTheme.typography.labelLarge)
@@ -188,8 +189,8 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                 Text(exact.getJSONObject("payload").toString(2))
                 Text("Submit once. Cancellation cannot recall an action already submitted. A timeout or interrupted receipt requires checking provider records before another proposal.", style = MaterialTheme.typography.bodySmall)
             } },
-            confirmButton = { if (state.agentOutgoingReady && exact.optJSONObject("review")?.optBoolean("executable") == true) TextButton(onClick = { task?.let { vm.approveAgentAction(it.getString("id"), exact.getString("id"), exact.getString("fingerprint"), exact.getJSONObject("review").getString("review_fingerprint")) }; action = null }) { Text("Approve exact action once") } else Text("Outgoing activation or account permission is unavailable.", style = MaterialTheme.typography.bodySmall) },
-            dismissButton = { TextButton(onClick = { action = null }) { Text("Back") } })
+            confirmButton = { if (state.agentOutgoingReady && exact.optJSONObject("review")?.optBoolean("executable") == true) TextButton(shape = MaterialTheme.shapes.small, onClick = { task?.let { vm.approveAgentAction(it.getString("id"), exact.getString("id"), exact.getString("fingerprint"), exact.getJSONObject("review").getString("review_fingerprint")) }; action = null }) { Text("Approve exact action once") } else Text("Outgoing activation or account permission is unavailable.", style = MaterialTheme.typography.bodySmall) },
+            dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { action = null }) { Text("Back") } })
     }
 }
 
@@ -253,12 +254,12 @@ private fun AgentScheduleEditor(changed: (JSONObject?) -> Unit) {
             .put("max_runs", if (interval == 0) 1 else count.toInt()).put("timezone", ZoneId.systemDefault().id) else null)
     }
     Row {
-        TextButton(onClick = { showDate = true }) { Text(date) }
-        TextButton(onClick = { showTime = true }) { Text(start.format(DateTimeFormatter.ofPattern("h:mm a z"))) }
+        TextButton(shape = MaterialTheme.shapes.small, onClick = { showDate = true }) { Text(date) }
+        TextButton(shape = MaterialTheme.shapes.small, onClick = { showTime = true }) { Text(start.format(DateTimeFormatter.ofPattern("h:mm a z"))) }
     }
     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         listOf("Once" to 0, "Hourly" to 3600, "Daily" to 86400, "Weekly" to 604800).forEach { (label, seconds) ->
-            FilterChip(selected = interval == seconds, onClick = { interval = seconds }, label = { Text(label) })
+            FilterChip(shape = MaterialTheme.shapes.small, selected = interval == seconds, onClick = { interval = seconds }, label = { Text(label) })
         }
     }
     if (interval > 0) OutlinedTextField(count, { count = it.filter(Char::isDigit).take(3) }, label = { Text("Number of runs · 1–100") }, modifier = Modifier.fillMaxWidth())
@@ -266,14 +267,14 @@ private fun AgentScheduleEditor(changed: (JSONObject?) -> Unit) {
     Text("Plan and schedule both need approval. The PC must be online. Repeat intervals use elapsed time.", style = MaterialTheme.typography.bodySmall)
     if (showDate) {
         val picker = rememberDatePickerState(initialSelectedDateMillis = LocalDate.parse(date).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli())
-        DatePickerDialog(onDismissRequest = { showDate = false }, confirmButton = { TextButton(onClick = {
+        DatePickerDialog(onDismissRequest = { showDate = false }, confirmButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = {
             picker.selectedDateMillis?.let { date = Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate().toString() }; showDate = false
-        }) { Text("Done") } }, dismissButton = { TextButton(onClick = { showDate = false }) { Text("Cancel") } }) { DatePicker(picker) }
+        }) { Text("Done") } }, dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { showDate = false }) { Text("Cancel") } }) { DatePicker(picker) }
     }
     if (showTime) {
         val picker = rememberTimePickerState(hour, minute)
-        AlertDialog(onDismissRequest = { showTime = false }, title = { Text("Start time") }, text = { TimeInput(picker) },
-            confirmButton = { TextButton(onClick = { hour = picker.hour; minute = picker.minute; showTime = false }) { Text("Done") } }, dismissButton = { TextButton(onClick = { showTime = false }) { Text("Cancel") } })
+        AlertDialog(onDismissRequest = { showTime = false }, title = { FridayDialogWindow(); Text("Start time") }, text = { TimeInput(picker) },
+            confirmButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { hour = picker.hour; minute = picker.minute; showTime = false }) { Text("Done") } }, dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { showTime = false }) { Text("Cancel") } })
     }
 }
 

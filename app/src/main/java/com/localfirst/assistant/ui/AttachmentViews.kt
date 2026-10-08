@@ -79,7 +79,7 @@ private fun Thumbnail(path: String?, size: Int, onClick: (() -> Unit)? = null) {
         contentAlignment = Alignment.Center,
         modifier = Modifier
             .size(size.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(MaterialTheme.shapes.medium)
             .background(MaterialTheme.colorScheme.surfaceContainerHighest)
             .let { if (onClick != null) it.clickable(onClick = onClick) else it },
     ) {
@@ -161,7 +161,7 @@ private fun FileChip(
     onClick: (() -> Unit)? = null,
 ) {
     Surface(
-        shape = RoundedCornerShape(12.dp),
+        shape = MaterialTheme.shapes.medium,
         color = if (failed) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
         modifier = Modifier.widthIn(max = 260.dp).let { if (onClick != null) it.clickable(onClick = onClick) else it },
     ) {
@@ -200,6 +200,7 @@ private fun documentDetail(doc: Attachment): String {
 @Composable
 internal fun ImageViewer(path: String, onDismiss: () -> Unit) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        FridayDialogWindow()
         val image = rememberImage(path, maxEdgePx = 2048)
         Box(
             contentAlignment = Alignment.Center,

@@ -35,29 +35,30 @@ internal fun GeneratedImage(result: String, loader: suspend (String) -> File, op
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (image != null) Image(image, "Generated image", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().heightIn(max = 480.dp).clickable { full = true })
         else if (error == null) LinearProgressIndicator(Modifier.fillMaxWidth())
-        error?.let { Text("Preview unavailable: $it", style = MaterialTheme.typography.bodySmall); TextButton(onClick = { attempt++ }) { Text("Retry preview") } }
-        TextButton(onClick = { open("assistant://artifact/$id") }) { Text("Open or save image") }
+        error?.let { Text("Preview unavailable: $it", style = MaterialTheme.typography.bodySmall); TextButton(shape = MaterialTheme.shapes.small, onClick = { attempt++ }) { Text("Retry preview") } }
+        TextButton(shape = MaterialTheme.shapes.small, onClick = { open("assistant://artifact/$id") }) { Text("Open or save image") }
     }
     if (full && path != null) ImageViewer(path!!) { full = false }
 }
 
 @Composable
 internal fun ImageJobs(state: ChatUiState, vm: ChatViewModel) {
-    LaunchedEffect(Unit) {
+    FridayVisibleEffect(Unit) {
         while (true) { vm.refreshImages(); delay(2000) }
     }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
-        item { Text("Images run on your computer. The chat model is restored before each result is marked complete.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        item { Text("Your generated images and their status appear here.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         if (state.imageJobs.isEmpty()) item { Text("No generated images yet.") }
         items(state.imageJobs, key = { it.optString("id") }) { job ->
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(job.optString("prompt"), maxLines = 3, overflow = TextOverflow.Ellipsis)
-                Text(job.optString("phase").replace('_', ' '), style = MaterialTheme.typography.labelMedium)
+            FridayCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp),verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(job.optString("prompt"), style=MaterialTheme.typography.titleSmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                Text(job.optString("phase").replace('_', ' '), style = MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
                 if (job.optString("status") == "completed") GeneratedImage(job.toString(), vm::loadImage, vm::openArtifact)
                 job.optString("error").takeIf { it.isNotBlank() && it != "null" }?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                if (job.optString("status") !in listOf("completed", "failed", "cancelled")) TextButton(onClick = { vm.cancelImage(job.optString("id")) }) { Text("Cancel") }
-                else TextButton(onClick = { vm.removeImageJob(job.optString("id")) }) { Text("Remove from image history") }
+                if (job.optString("status") !in listOf("completed", "failed", "cancelled")) TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.cancelImage(job.optString("id")) }) { Text("Cancel") }
+                else TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.removeImageJob(job.optString("id")) }) { Text("Remove from image history") }
                 HorizontalDivider()
+            }
             }
         }
     }
@@ -87,7 +88,7 @@ internal fun ImageOptions(state: ChatUiState, vm: ChatViewModel, onDone: () -> U
         Text("Aspect ratio", style = MaterialTheme.typography.labelLarge)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("1:1" to (768 to 768), "16:9" to (1024 to 576), "9:16" to (576 to 1024)).forEach { (label, size) ->
-                FilterChip(selected = !automatic && width == size.first.toString() && height == size.second.toString(), onClick = { automatic = false; width = size.first.toString(); height = size.second.toString() }, label = { Text(label) })
+                FilterChip(shape = MaterialTheme.shapes.small, selected = !automatic && width == size.first.toString() && height == size.second.toString(), onClick = { automatic = false; width = size.first.toString(); height = size.second.toString() }, label = { Text(label) })
             }
         }
         if (!automatic) {
@@ -110,7 +111,7 @@ internal fun ImageOptions(state: ChatUiState, vm: ChatViewModel, onDone: () -> U
             }
         }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        Button(onClick = { options()?.let { vm.saveImageSettings(it); onDone() } }, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) { Text("Done") }
+        Button(shape = MaterialTheme.shapes.small, onClick = { options()?.let { vm.saveImageSettings(it); onDone() } }, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) { Text("Done") }
         Text("Default: 768×768, 8 steps. Rendering stops after 15 minutes and the chat model reloads. No image request can exceed the server limits.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
