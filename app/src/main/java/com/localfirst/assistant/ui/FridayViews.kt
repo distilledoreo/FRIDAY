@@ -50,8 +50,8 @@ private const val ASKS_AGAIN = "She asks again before sending, submitting, loggi
 /** Quiet entry point preserves computer status, with attention only when backed by task data. */
 @Composable
 internal fun FridayStatusButton(state: ChatUiState, onClick: () -> Unit) {
-    val needsYou=state.agentTasks.any { it.optString("status") in FRIDAY_NEEDS_YOU }
-    val working=state.agentTasks.any { it.optString("status") in FRIDAY_WORKING }
+    val needsYou=(state.pcStatus?.optInt("pending_count") ?: 0)>0||state.agentTasks.any { it.optString("status") in FRIDAY_NEEDS_YOU }
+    val working=(state.pcStatus?.optInt("active_count") ?: 0)>0||state.agentTasks.any { it.optString("status") in FRIDAY_WORKING }
     val status=when { needsYou -> "Needs your attention"; working -> "Working"; else -> "Computer and activity" }
     IconButton(onClick=onClick,modifier=Modifier.size(48.dp)) {
         Box {
@@ -177,10 +177,10 @@ internal fun FridayAskBox(state: ChatUiState, vm: ChatViewModel) {
     OutlinedTextField(
         value = request,
         onValueChange = { request = it.take(4000) },
-        placeholder = { Text("Give FRIDAY something to do") },
-        supportingText = { Text("She’ll reply in chat with a plan for you to start.") },
+        placeholder = { Text("Give FRIDAY a task on your PC") },
+        supportingText = { Text("Starts on your computer. Free cloud models may see relevant PC output; action approvals follow your access settings.") },
         trailingIcon = {
-            IconButton(onClick = { vm.askFriday(request); request = "" }, enabled = request.isNotBlank() && !state.busy && !state.workspaceBusy) {
+            IconButton(onClick = { vm.askFriday(request); request = "" }, enabled = request.isNotBlank() && !state.busy && !state.workspaceBusy && !state.pcBusy && state.pcStatus?.optBoolean("enabled")==true) {
                 Icon(AppIcons.ArrowUpward, contentDescription = "Ask FRIDAY")
             }
         },

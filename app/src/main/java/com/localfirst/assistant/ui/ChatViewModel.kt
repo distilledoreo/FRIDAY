@@ -98,6 +98,14 @@ data class ChatUiState(
     val oauthCompleting: Boolean = false,
     val oauthResolutionFlow: String? = null,
     val accountContent: JSONObject? = null,
+    val pcStatus: JSONObject? = null,
+    val pcSessions: List<JSONObject> = emptyList(),
+    val pcSessionId: String? = null,
+    val pcSession: JSONObject? = null,
+    val pcScreen: String? = null,
+    val pcScreenAt: Long = 0,
+    val pcBusy: Boolean = false,
+    val pcError: String? = null,
     val agentTasks: List<JSONObject> = emptyList(),
     val agentTask: JSONObject? = null,
     val agentEvents: List<JSONObject> = emptyList(),
@@ -593,6 +601,7 @@ class ChatViewModel(
                 if (outcome is TurnOutcome.Completed) {
                     val userAt = messages.indexOfLast { it is Message.User }
                     val turn = messages.drop(userAt + 1)
+                    if (turn.filterIsInstance<Message.ToolResult>().any { it.name == "run_on_pc" && it.success }) refreshPc(null)
                     val webResults = turn.filterIsInstance<Message.ToolResult>().filter { it.name in com.localfirst.assistant.conversation.ConversationEngine.WEB_TOOLS && it.success }
                     val sources = com.localfirst.assistant.grounding.GroundingPrecheck.mergeSources(_state.value.groundingSources + webResults.flatMap { it.sources })
                     if (groundingAttempted || webResults.isNotEmpty()) {
@@ -738,6 +747,8 @@ class ChatViewModel(
     }
 
     private fun resetToNewChat() {
+        closePcScreen()
+        _state.update { it.copy(pcSessionId=null,pcSession=null) }
         clearDraftAttachments()
         session = newSession(emptyList())
         _state.update {
@@ -835,7 +846,7 @@ class ChatViewModel(
         when (destination) { WorkspaceDestination.ACTIVITY -> refreshAgentActivity(); WorkspaceDestination.ACCOUNTS -> refreshAccounts(); else -> refreshWorkspace() }
         if (destination in listOf(WorkspaceDestination.MEMORY, WorkspaceDestination.IMPORT_CHATGPT, WorkspaceDestination.MEMORY_REVIEW, WorkspaceDestination.MEMORY_ARCHIVE)) refreshMemory()
     }
-    fun dismissWorkspace() { _state.update { it.copy(showWorkspace = false) } }
+    fun dismissWorkspace() { closePcScreen();_state.update { it.copy(showWorkspace = false) } }
 
     private suspend fun loadAgentActivity(taskId: String? = null, after: Long? = null) {
         val client = workspace ?: error("Computer unavailable.")
@@ -1110,24 +1121,111 @@ class ChatViewModel(
         loadAgentActivity(id); "Task approved."
     }
     /** Opens FRIDAY's screen, at [taskId] when given. */
+    private var pcRefreshJob: Job? = null
+
+    fun refreshPc(sessionId: String? = _state.value.pcSessionId) {
+        if (_state.value.privacy.incognito || pcRefreshJob?.isActive == true) return
+        pcRefreshJob = viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    val client = workspace ?: error("Computer unavailable")
+                    Triple(JSONObject(client.request("/workspace/pc/status")),
+                        jsonRows(JSONArray(client.request("/workspace/pc/sessions"))),
+                        sessionId?.let { JSONObject(client.request("/workspace/pc/sessions/$it")) })
+                }
+                _state.update { current ->
+                    if (current.privacy.incognito) current
+                    else current.copy(pcStatus=result.first, pcSessions=result.second,
+                        pcSession=if (current.pcSessionId == sessionId) result.third else current.pcSession, pcError=null)
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _state.update { if(it.privacy.incognito)it else it.copy(pcError="The PC agent could not be reached. Check the computer connection and native OpenCode setup.") } }
+        }
+    }
+
+    private fun pcAction(action: suspend () -> Unit) {
+        if (_state.value.privacy.incognito || _state.value.pcBusy) return
+        viewModelScope.launch {
+            _state.update { it.copy(pcBusy=true, pcError=null) }
+            try { action() }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _state.update { it.copy(pcError="The PC request could not be confirmed. Check its current task state before trying again.") } }
+            finally { _state.update { it.copy(pcBusy=false) }; refreshPc() }
+        }
+    }
+
+    private var pcStartRequest: Pair<String,String>? = null
+    fun startPcTask(request: String) {
+        val text=request.trim().take(20000)
+        if(text.isEmpty())return
+        val requestId=pcStartRequest?.takeIf { it.first==text }?.second ?: java.util.UUID.randomUUID().toString().also { pcStartRequest=text to it }
+        pcAction {
+            val result=withContext(Dispatchers.IO) {
+                JSONObject(workspace?.request("/workspace/pc/sessions","POST",JSONObject().put("prompt",text).put("source","phone").put("request_id",requestId)) ?: error("Computer unavailable"))
+            }
+            pcStartRequest=null
+            openPcTask(result.getString("id"))
+        }
+    }
+    fun openPcTask(id: String) {
+        if(_state.value.privacy.incognito)return
+        _state.update { it.copy(pcSessionId=id,pcSession=null,showWorkspace=true,workspaceDestination=WorkspaceDestination.ACTIVITY) }
+        refreshPc(id)
+    }
+    fun closePcTask() { _state.update { it.copy(pcSessionId=null,pcSession=null) };refreshPc(null) }
+    fun sendPcMessage(text: String) = pcAction {
+        val id=_state.value.pcSessionId ?: return@pcAction
+        withContext(Dispatchers.IO) { workspace?.request("/workspace/pc/sessions/$id/messages","POST",JSONObject().put("prompt",text.trim())) ?: error("Computer unavailable") }
+    }
+    fun cancelPcTask() = pcAction {
+        val id=_state.value.pcSessionId ?: return@pcAction
+        withContext(Dispatchers.IO) { workspace?.request("/workspace/pc/sessions/$id/abort","POST") ?: error("Computer unavailable") }
+    }
+    fun replyPcPermission(id: String, reply: String, remember: Boolean = false) = pcAction {
+        withContext(Dispatchers.IO) { workspace?.request("/workspace/pc/permissions/$id","POST",JSONObject().put("reply",reply).put("remember",remember)) ?: error("Computer unavailable") }
+    }
+    fun answerPcQuestion(id: String, answers: JSONArray?) = pcAction {
+        withContext(Dispatchers.IO) {
+            val route=if(answers==null)"reject" else "reply"
+            // The public API uses POST /questions/id for answers, /reject for dismissal.
+            val path="/workspace/pc/questions/$id" + if(route=="reject")"/reject" else ""
+            workspace?.request(path,"POST",answers?.let { JSONObject().put("answers",it) }) ?: error("Computer unavailable")
+        }
+    }
+    private var pcScreenGeneration = 0
+    fun capturePcScreen() = pcAction {
+        val context=app ?: return@pcAction
+        val generation=++pcScreenGeneration
+        val target=java.io.File(context.cacheDir,"pc-screen-${java.util.UUID.randomUUID()}.png")
+        try {
+            withContext(Dispatchers.IO) { workspace?.downloadPcScreenshot(target) ?: error("Computer unavailable") }
+            if(generation!=pcScreenGeneration || _state.value.privacy.incognito || !_state.value.showWorkspace)return@pcAction
+            val old=_state.value.pcScreen
+            _state.update { it.copy(pcScreen=target.absolutePath,pcScreenAt=System.currentTimeMillis()) }
+            old?.let { java.io.File(it).delete() }
+        } finally { if(_state.value.pcScreen!=target.absolutePath)target.delete() }
+    }
+    fun closePcScreen() {
+        pcScreenGeneration++
+        val old=_state.value.pcScreen
+        _state.update { it.copy(pcScreen=null) }
+        old?.let { java.io.File(it).delete() }
+    }
+
+    fun savePcSettings(settings: JSONObject) = pcAction {
+        val allowed=listOf("enabled","mode","computer_use","allow","deny")
+        val body=JSONObject().apply { allowed.forEach { key -> if(settings.has(key))put(key,settings.get(key)) } }
+        val result=withContext(Dispatchers.IO) { JSONObject(workspace?.request("/workspace/pc/settings","PUT",body) ?: error("Computer unavailable")) }
+        _state.update { it.copy(pcStatus=result) };if(!result.optBoolean("enabled")||!result.optBoolean("computer_use"))closePcScreen()
+    }
+
     fun openFriday(taskId: String? = null) {
-        _state.update { it.copy(fridayTaskId = taskId) }
+        _state.update { it.copy(fridayTaskId = taskId, pcSessionId=null, pcSession=null) }
         openWorkspace(WorkspaceDestination.ACTIVITY)
     }
 
-    /** Starts a chat asking FRIDAY to take [request] on; she answers with a plan card to start. */
-    fun askFriday(request: String) {
-        val text = request.trim().take(4000)
-        if (text.isEmpty() || _state.value.busy || _state.value.workspaceBusy) return
-        viewModelScope.launch {
-            turnJob?.cancel()
-            turnJob?.join()
-            clearIncognito()
-            resetToNewChat()
-            _state.update { it.copy(projectId = null, showWorkspace = false, imageMode = false, draft = "Take this on with your computer: $text") }
-            send()
-        }
-    }
+    /** A concrete human request from FRIDAY's ask box starts native PC work. */
+    fun askFriday(request: String) = startPcTask(request)
 
     private var fridayPoll: Job? = null
 
@@ -1135,6 +1233,7 @@ class ChatViewModel(
     fun pollFriday() {
         val client = workspace ?: return
         if (fridayPoll?.isActive == true || _state.value.privacy.incognito) return
+        if (_state.value.pcStatus != null) refreshPc()
         fridayPoll = viewModelScope.launch {
             try {
                 val health = JSONObject(client.request("/workspace/agent/health"))

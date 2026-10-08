@@ -236,7 +236,7 @@ class ConversationEngine(
         } catch (e: Exception) {
             json
         }
-        private val PRIVATE_TOOLS = setOf("read_account_inbox", "read_account_message", "read_account_calendar", "read_account_calendar_event", "read_daily_brief", "list_followups", "search_memory", "search_history", "get_agent_report")
+        private val PRIVATE_TOOLS = setOf("get_pc_task", "read_account_inbox", "read_account_message", "read_account_calendar", "read_account_calendar_event", "read_daily_brief", "list_followups", "search_memory", "search_history", "get_agent_report")
         /**
          * Hides reasoning markup some models emit even with reasoning off:
          * text before a closing `</think>` (often a draft the model then repeats)

@@ -1,13 +1,14 @@
-"""Optional gateway extension. No local model, GPU or shared profile access."""
+"""FRIDAY's isolated research agent and permission-controlled native PC agent."""
 import json
 from pathlib import Path
 
 from .api import install
 from .cloud import FreeCloud
 from .engine import OpenCodeEngine
+from .pc import PcAgent, routes as pc_routes
 
 
-def enable(app, auth, root, search):
+def enable(app, auth, root, search, gate=None):
     root = Path(root)
     config = root / 'runtime.json'
     engine = None
@@ -34,4 +35,9 @@ def enable(app, auth, root, search):
             outgoing=json.loads(outgoing_config.read_text())
             outgoing_enabled=set(outgoing)=={'enabled','phone_and_provider_verified'} and outgoing['enabled'] is True and outgoing['phone_and_provider_verified'] is True
         except (OSError,ValueError,TypeError):pass
+    # FRIDAY on the PC itself: OpenCode with the phone's permission settings.
+    pc = PcAgent(root)
+    pc_routes(app, auth, pc)
+    from .local_proxy import install as install_local_proxy
+    install_local_proxy(app, pc, gate)
     return install(app, auth, root, engine, unavailable_detail=detail,outgoing_enabled=outgoing_enabled,grounding_search=grounded_search)

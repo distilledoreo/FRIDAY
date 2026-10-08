@@ -29,7 +29,7 @@ import java.time.*
 import java.time.format.DateTimeFormatter
 
 enum class WorkspaceDestination(val title: String) {
-    SETTINGS("Settings"), APPEARANCE("Appearance"), BRIEF("Dashboard"), ACCOUNTS("Accounts"), MEMORY("Memory"), ACTIVITY("FRIDAY"), PROJECTS("Projects"), PROJECT("Project"),
+    SETTINGS("Settings"), COMPUTER_ACCESS("Computer access"), APPEARANCE("Appearance"), BRIEF("Dashboard"), ACCOUNTS("Accounts"), MEMORY("Memory"), ACTIVITY("FRIDAY"), PROJECTS("Projects"), PROJECT("Project"),
 
     EDIT_PROJECT("Project settings"), TASKS("Tasks"), TASK("Task"), NEW_TASK("New task"),
     FILES("Library"), DATA("Data controls"), NEW_MEMORY("Add memory"), IMAGES("Images"), IMPORT_CHATGPT("Import ChatGPT"), MEMORY_REVIEW("Review memories"), MEMORY_ARCHIVE("PC archive"), MEMORY_SOURCE("Source chat"), MEMORY_CONTEXT("Recall context")
@@ -100,6 +100,7 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                     if (state.workspaceBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
                     state.workspaceStatus?.takeIf { it.isNotBlank() && !it.startsWith("Computer online") }?.let { Text(it, Modifier.padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall) }
                     when (page) {
+                        WorkspaceDestination.COMPUTER_ACCESS -> PcSettingsPage(state,vm)
                         WorkspaceDestination.APPEARANCE -> AppearancePage()
                         WorkspaceDestination.BRIEF -> DailyBriefPage(state, vm) { parent = page; page = it }
                         WorkspaceDestination.ACCOUNTS -> AccountsPage(state, vm)
@@ -114,6 +115,7 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                             item { SettingsRow("Memory", "Manage what the assistant remembers") { parent = page; page = WorkspaceDestination.MEMORY } }
                             item { SettingsRow("Data controls", "Sync, export and backups") { parent = page; page = WorkspaceDestination.DATA } }
                             item { SectionLabel("Assistant and connections") }
+                            item { SettingsRow("Computer access", "Shell, desktop and permission rules") { parent = page; page = WorkspaceDestination.COMPUTER_ACCESS } }
                             item { SettingsRow("Voice and server", "Connection, model and voice settings", vm::openSettings) }
                             item { SettingsRow("Computer status", state.workspaceStatus?.takeIf { it.startsWith("Computer online") } ?: "Check connection and tools", vm::refreshWorkspace) }
                             item { SettingsRow("App updates", "Check for a new version", vm::checkUpdate) }

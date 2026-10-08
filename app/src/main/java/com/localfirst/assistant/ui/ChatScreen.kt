@@ -224,7 +224,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
             LaunchedEffect(state.messages.isEmpty(), state.projectId, state.privacy.incognito, state.settings) {
                 if (state.messages.isEmpty() && !state.privacy.incognito) viewModel.primeOpening()
             }
-            val fridayBusy = state.agentTasks.any { it.optString("status") in FRIDAY_WORKING || it.optString("status") in FRIDAY_NEEDS_YOU }
+            val fridayBusy = (state.pcStatus?.optInt("active_count") ?: 0)>0 || (state.pcStatus?.optInt("pending_count") ?: 0)>0 || state.agentTasks.any { it.optString("status") in FRIDAY_WORKING || it.optString("status") in FRIDAY_NEEDS_YOU }
             FridayVisibleEffect(fridayBusy, state.privacy.incognito) {
                 if (!state.privacy.incognito) while (true) {
                     viewModel.pollFriday()

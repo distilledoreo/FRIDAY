@@ -154,6 +154,13 @@ class WorkspaceClient(private val context: Context, private val settings: () -> 
         target
     }
 
+    suspend fun downloadPcScreenshot(target: File): File = withContext(Dispatchers.IO) {
+        val s=settings()
+        val (code,bytes)=desktopRequest(s.searchBaseUrl,s.searchApiKey,"GET",privatePath("/workspace/pc/screenshot"),timeoutMs=30000)
+        require(code==200&&bytes.size<=8*1024*1024&&bytes.take(8).toByteArray().contentEquals(byteArrayOf(-119,80,78,71,13,10,26,10))) { "PC screenshot unavailable." }
+        target.parentFile?.mkdirs();target.writeBytes(bytes);target
+    }
+
     suspend fun installUpdate(): String = withContext(Dispatchers.IO) {
         val manifest = JSONObject(request("/workspace/release"))
         val pm = context.packageManager

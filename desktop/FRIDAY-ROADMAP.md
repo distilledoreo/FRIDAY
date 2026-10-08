@@ -2,7 +2,11 @@
 
 Goal: deliver the user's October 8 plan while preserving Claude's existing memory paging, 15-minute image limit, car microphone/echo/Android Auto support, and end-of-2024 cutoff guidance. The earlier TTFT experiment and inference embargo are finished; Claude documented the user-approved lift. Preserve his model flags and prompt cache. The 0.16 redesign was verified with fake models and native CPU-only UI checks; it made no model service/configuration changes. Production outgoing remains disabled pending actual verification and explicit setup.
 
-## Current delivery: 0.6
+## Computer-use continuation: 0.18.0
+
+Claude’s native OpenCode draft is completed with real user-shell/X11 capabilities, persistent configurable permissions and human phone approvals. Free cloud vision/tool models precede text-only Qwen fallback; local inference waits for foreground/image work and uses background slot 1. Current-task and remembered approvals are distinct; incognito blocks PC chat tools. Existing isolated research, accounts, data and scheduled work remain available. Details and test limits: [Computer access](FRIDAY-COMPUTER.md). This completes the clarified computer-use continuation; broader roadmap/provider/device validation is still unfinished.
+
+## Earlier delivery: 0.6
 
 - Incognito threads remain in app memory; persistence checkpoints, title calls, archive, sync, fact suggestions, situation writes, and persistent workspace tools are blocked. Default memory retrieval uses approved facts only and does not update check-in counters. Fresh slate excludes memory retrieval/tools and starts a new blank private session. The app visibly labels the mode.
 - Incognito uploads, generated files/images and image prompt/job records use a separate authenticated tmpfs namespace, not the ordinary Library or archive. Leaving cancels image work, restores chat if necessary, and deletes artifacts. Abandoned namespaces expire after 30 idle minutes; restart removes old namespaces. Phone cache is cleared on exit or next process start. File pickers/camera temporarily suspend background-exit cleanup; user originals are retained. Only anonymous GPU-recovery metadata remains in the ordinary recovery journal. Python analysis and persistent scheduling are unavailable inside incognito until they can preserve that boundary.

@@ -63,8 +63,10 @@ def main():
 from agent.integration import enable as enable_friday_agent
 from pathlib import Path as FridayAgentPath
 friday_agent_store = enable_friday_agent(app, auth,
-    FridayAgentPath(__file__).resolve().parent.parent / "workspace-data" / "agent", search)
+    FridayAgentPath(__file__).resolve().parent.parent / "workspace-data" / "agent", search, gpu_gate)
 '''
+        else:
+            source = source.replace('/ "workspace-data" / "agent", search)', '/ "workspace-data" / "agent", search, gpu_gate)')
         ast.parse(source)
         # Quiet/cadence controls share one narrowly owned memory helper. Refuse
         # replacing a concurrent edit instead of overwriting the memory module.

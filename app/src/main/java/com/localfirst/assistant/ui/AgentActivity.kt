@@ -25,6 +25,7 @@ import java.time.format.DateTimeFormatter
 /** Approval controls are UI-only. Model tools can propose, never approve. */
 @Composable
 internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
+    if (state.pcSessionId != null && !state.privacy.incognito) { PcTaskPage(state,vm);return }
     var selected by rememberSaveable(state.fridayTaskId) { mutableStateOf(state.fridayTaskId) }
     var writingPlan by rememberSaveable { mutableStateOf(false) }
     var prompt by rememberSaveable { mutableStateOf("") }
@@ -49,7 +50,7 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
         if (selected == null) {
             item {
                 Column(Modifier.padding(top = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    FridayComputerCard(state, vm)
+                    if (!state.privacy.incognito) PcHomePanel(state,vm)
                     if (state.privacy.incognito) Text("FRIDAY isn’t available in incognito.", style = MaterialTheme.typography.bodySmall)
                     else FridayAskBox(state, vm)
                 }
@@ -61,8 +62,9 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                 "Done" to state.agentTasks.filter { it.optString("status") in listOf("done", "failed", "cancelled") }.take(10),
             )
             if (groups.all { it.second.isEmpty() }) item {
-                Text("Nothing yet. Ask FRIDAY to look something up, compare prices, or keep an eye on something for you.", style = MaterialTheme.typography.bodyMedium)
+                Text("No isolated research tasks yet.", style = MaterialTheme.typography.bodySmall)
             }
+            if (groups.any { it.second.isNotEmpty() }) item { Text("Isolated research history",style=MaterialTheme.typography.titleMedium) }
             groups.filter { it.second.isNotEmpty() }.forEach { (title, tasks) ->
                 item(key = "group-$title") { Text(title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp)) }
                 items(tasks, key = { "$title-${it.getString("id")}" }) { entry -> FridayTaskRow(entry, state) { selected = entry.getString("id") } }

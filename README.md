@@ -1,7 +1,9 @@
 # Local Android Assistant
 
 
-Current Android interface: **FRIDAY 0.16.0** uses a minimal adaptive home, sidebar, optional real-data dashboard, inline voice and native rich-response foundation. Dark/light/accent/motion controls live in Appearance. See [redesign contract and validation](desktop/FRIDAY-REDESIGN.md). The existing data, integrations and assistant task controls remain in place.
+Current Android interface: **FRIDAY 0.18.0** uses a minimal adaptive home, sidebar, optional real-data dashboard, inline voice and native rich-response foundation. Dark/light/accent/motion controls live in Appearance. See [redesign contract and validation](desktop/FRIDAY-REDESIGN.md). The existing data, integrations and assistant task controls remain in place.
+
+Version **0.18.0** completes Claude’s native computer-use draft: real PC shell and desktop tools through OpenCode, phone approvals and configurable access, free cloud models with text-only local fallback. See [Computer access](desktop/FRIDAY-COMPUTER.md).
 
 The Android assistant supports persistent chat, voice, attachments, phone tools, a PC workspace, local image generation, and PC-hosted memory. A computer on your private network serves the chat model and authenticated workspace APIs. Version 0.5 adds ChatGPT export import, source-linked semantic recall and recent-situation continuity. See [PC memory](desktop/memory/README.md) and [continuity plan](desktop/memory/PLAN.md).
 

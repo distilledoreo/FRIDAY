@@ -1,3 +1,9 @@
+## Native PC access — 0.18.0
+
+FRIDAY also runs OpenCode directly as the PC user, with shell and X11 screenshot/input tools. Phone Settings → Computer access offers Ask every time, Ask before changes (default), and Full access, plus explicit shell allow/deny patterns and a desktop switch. Tasks, exact permissions, questions, cancellation, results and explicit screen preview live in FRIDAY on the phone. Chat PC tools require confirmation and are unavailable in incognito. Free cloud models can receive relevant PC outputs; local fallback is text-only, fixed to background slot 1, and uses the existing GPU/foreground gate. Existing sudo authorization applies; no password is stored or sudo policy changed. Changing access settings stops active work; later human follow-ups refresh the session rules. See [implementation and validation](../FRIDAY-COMPUTER.md).
+
+The older isolated research agent described below remains available for explicit research jobs and existing schedules. Its restrictions describe that subsystem.
+
 # FRIDAY isolated cloud agent
 
 The PC gateway runs approved tasks through OpenCode 1.18.35 and the free-only OpenRouter broker. Android Activity lets the user review a plan, approve it, follow paged events and page previews, and cancel work. Models can propose tasks/actions but cannot approve them.
