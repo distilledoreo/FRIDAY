@@ -193,7 +193,7 @@ class WeatherTests(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(200,json={'daily':{'time':['2026-10-08'],'weather_code':[1],'temperature_2m_max':[23],'temperature_2m_min':[12],'precipitation_probability_max':[20]},'daily_units':{'temperature_2m_max':'°C','temperature_2m_min':'°C'}})
         weather=Weather(httpx.AsyncClient(transport=httpx.MockTransport(handle),follow_redirects=False))
         location=(await weather.locations('City'))['locations'][0]
-        result=await weather.forecast(location,'UTC','celsius','2026-10-08');self.assertEqual(result['precipitation_probability_max'],20)
+        result=await weather.forecast(location,'UTC','celsius','2026-10-08');self.assertEqual(result['precipitation_probability_max'],20);self.assertEqual(result['page'],'https://weather.com/weather/today/l/1.00,2.00')
         self.assertTrue(all(request.url.scheme=='https' for request in calls));self.assertNotIn('Authorization',calls[-1].headers)
         with self.assertRaises(ValueError):await weather.forecast(location,'UTC','celsius','2026-10-09')
         await weather.close()

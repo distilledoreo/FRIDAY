@@ -84,7 +84,7 @@ internal fun PersonalDashboard(state:ChatUiState,vm:ChatViewModel,onClose:()->Un
                         }
                     }
                 }
-                if(weatherOpen)weather?.let { source -> WeatherDetail(source) { source.optString("source").takeIf { it.startsWith("https://") }?.let(uri::openUri) } }
+                if(weatherOpen)weather?.let { source -> WeatherDetail(source) { runCatching { uri.openUri(forecastPage(source)) } } }
                 HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant.copy(alpha=.5f))
                 val phone=data.phoneEvents
                 when {
@@ -329,6 +329,11 @@ private fun SparkleGlyph() {
         drawPath(star(size.width*.8f,size.height*.2f,size.width*.15f),accent)
     }
 }
+
+/** A forecast page for people: the brief's weather page, else a search for the place. Never the API URL. */
+internal fun forecastPage(source:JSONObject):String =
+    source.optString("page").takeIf { it.startsWith("https://weather.com/") }
+        ?: "https://duckduckgo.com/?q="+android.net.Uri.encode("weather "+source.optString("location"))
 
 private fun rows(array:org.json.JSONArray?) = (0 until (array?.length()?:0)).mapNotNull { array?.optJSONObject(it) }
 internal fun eventTime(event:JSONObject,timezone:String?):String {

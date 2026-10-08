@@ -151,7 +151,7 @@ class Weather:
             if units['temperature_2m_max']!=('°C' if unit=='celsius' else '°F') or units['temperature_2m_min']!=units['temperature_2m_max']: raise ValueError()
             source=str(httpx.URL(url,params=params))
             conditions={0:'Clear sky',1:'Mostly clear',2:'Partly cloudy',3:'Overcast',45:'Fog',48:'Freezing fog',51:'Light drizzle',53:'Drizzle',55:'Heavy drizzle',56:'Freezing drizzle',57:'Freezing drizzle',61:'Light rain',63:'Rain',65:'Heavy rain',66:'Freezing rain',67:'Freezing rain',71:'Light snow',73:'Snow',75:'Heavy snow',77:'Snow grains',80:'Light rain showers',81:'Rain showers',82:'Heavy rain showers',85:'Snow showers',86:'Heavy snow showers',95:'Thunderstorms',96:'Thunderstorms with hail',99:'Thunderstorms with hail'}
-            return {**values,'conditions':conditions.get(values['weather_code'],'Conditions unavailable'),'date':date,'location':location['label'],'temperature_unit':units['temperature_2m_max'],'source':source,'attribution':'Weather data by Open-Meteo (CC BY 4.0)','forecast':True}
+            return {**values,'conditions':conditions.get(values['weather_code'],'Conditions unavailable'),'date':date,'location':location['label'],'temperature_unit':units['temperature_2m_max'],'source':source,'page':f"https://weather.com/weather/today/l/{float(location['latitude']):.2f},{float(location['longitude']):.2f}",'attribution':'Weather data by Open-Meteo (CC BY 4.0)','forecast':True}
         except (ValueError,KeyError,IndexError,TypeError): raise ValueError('Weather source returned incomplete or stale data') from None
 
 
