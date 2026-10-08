@@ -56,6 +56,24 @@ class WorkspaceToolsTest {
             assertEquals("/workspace/agent/tasks/$id/report", gateway.path)
         } finally { dir.deleteRecursively() }
     }
+    @Test fun accountToolsRequireReadApprovalAndEncodeExactScope() = runBlocking {
+        val dir = Files.createTempDirectory("account-tools").toFile()
+        try {
+            val gateway = FakeGateway()
+            val tools = workspaceTools(gateway, KnowledgeStore(dir.resolve("knowledge.json")), FileConversationStore(dir.resolve("chats")))
+            val registry = ToolRegistry().apply { tools.forEach(::register) }
+            val account = "a".repeat(32)
+            val call = ToolCall("1", "read_account_inbox", """{"account_id":"$account","query":"project & limit=999","limit":2}""")
+            registry.execute(call, ToolConfirmer { false }); assertEquals("", gateway.path)
+            registry.execute(call, ToolConfirmer { true })
+            assertEquals("/workspace/agent/accounts/$account/mail?query=project+%26+limit%3D999&limit=2", gateway.path)
+            assertTrue(tools.filter { it.name.startsWith("read_account_") }.all { it.requiresConfirmation })
+            assertFalse(tools.any { it.name.contains("send_account") || it.name.contains("account_password") })
+            try { tools.first { it.name == "read_account_message" }.execute(buildJsonObject { put("account_id", account); put("message_id", "../approve") }); fail("Path injection accepted") } catch (_: IllegalArgumentException) { }
+            try { tools.first { it.name == "read_account_calendar" }.execute(buildJsonObject { put("account_id", account); put("start", "2026-10-08T00:00:00Z"); put("end", "2026-12-08T00:00:00Z") }); fail("Unbounded calendar accepted") } catch (_: IllegalArgumentException) { }
+            assertEquals("/workspace/agent/accounts/$account/mail?query=project+%26+limit%3D999&limit=2", gateway.path)
+        } finally { dir.deleteRecursively() }
+    }
     @Test fun memoryIsSavedOnlyAfterConfirmationAndCanBeForgotten() = runBlocking {
         val dir = Files.createTempDirectory("workspace-tools").toFile()
         try {

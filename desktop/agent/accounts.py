@@ -79,6 +79,9 @@ class Accounts:
         await self.mail_call(self.mail.verify, config)
         existing = self.vault.find_account('imap', config['email'])
         if existing:
+            previous = self.vault.credentials(existing['id'])
+            if (previous.get('imap_host'), previous.get('username')) != (config['imap_host'], config['username']):
+                raise ValueError('Mail account identity changed; remove the old account before connecting this server/login')
             self.vault.replace_credentials(existing['id'], config)
             return self.vault.metadata(existing['id'])
         return self.vault.add('imap', config['email'], config)
@@ -89,6 +92,27 @@ class Accounts:
         config = self.vault.credentials(identifier)
         if 'mail_read' not in config.get('features', []): raise AccountError('This account did not authorize mail reads')
         return config
+
+    def bind_scopes(self, reads):
+        from .account_scopes import normalize, bound
+        return bound([dict(read, account=self.vault.metadata(read['account_id'])) for read in normalize(reads)])
+
+    def validate_scopes(self, reads):
+        from .account_scopes import bound
+        for read in bound(reads):
+            if self.vault.metadata(read['account_id']) != read['account']: raise ValueError('Scoped account changed or was removed; review a new task')
+
+    async def scoped_snapshot(self, reads):
+        self.validate_scopes(reads)
+        result = []
+        for read in reads:
+            if read['kind'] == 'inbox': value = await self.read_messages(read['account_id'], read['query'], read['limit'])
+            elif read['kind'] == 'message': value = await self.read_message(read['account_id'], read['message_id'])
+            else: value = await self.read_calendar(read['account_id'], read['start'], read['end'], read['limit'])
+            result.append({'scope':read, 'data':value, 'untrusted':True})
+            if len(json.dumps(result, ensure_ascii=False).encode()) > 120 * 1024: raise AccountError('Selected account data exceeds cloud context limit; approve narrower reads')
+        self.validate_scopes(reads)
+        return result
 
     def configure(self, provider, config):
         if provider not in SCOPES or not isinstance(config, dict): raise ValueError('Unsupported OAuth provider')

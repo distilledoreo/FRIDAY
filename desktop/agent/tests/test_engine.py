@@ -56,6 +56,36 @@ class FakeCloud:
 
 @unittest.skipUnless(os.environ.get('FRIDAY_DOCKER_TEST') == '1', 'Opt-in real OpenCode/Docker test with fake cloud')
 class EngineDockerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_actual_opencode_receives_scoped_data_only_through_host_cloud_broker(self):
+        from desktop.agent.approvals import Approvals
+        calls = []
+        class ScopedCloud:
+            model = 'openrouter/free'
+            requests = 0
+            async def close(self): pass
+            async def complete(self, request):
+                self.requests += 1; calls.append(request)
+                return {'id':'synthetic', 'object':'chat.completion', 'model':self.model,
+                        'choices':[{'index':0,'message':{'role':'assistant','content':'Synthetic private summary'},'finish_reason':'stop'}],
+                        'usage':{'prompt_tokens':10,'completion_tokens':5,'total_tokens':15}}
+        with tempfile.TemporaryDirectory() as root:
+            store = Approvals(Path(root)/'agent.sqlite')
+            scope = {'account_id':'a'*32,'kind':'inbox','query':'project','limit':2,
+                     'account':{'id':'a'*32,'provider':'google','label':'synthetic@example.com'}}
+            task = store.propose_task('Summarize selected inbox', ['Read only selected private source data'], data_scopes=[scope])
+            store.approve_task(task['id'],task['fingerprint']); store.start_task(task['id'],task['fingerprint'])
+            task['account_context'] = [{'scope':scope,'data':{'messages':[{'id':'message','preview':'synthetic private snapshot'}]},'untrusted':True}]
+            task['account_context_guard'] = lambda: None
+            engine = OpenCodeEngine(IMAGE, ScopedCloud, timeout=60)
+            engine.bind(store)
+            async def report(kind, data):
+                with store.db() as db: store.event(db,task['id'],kind,data)
+            result = await engine(task,report)
+            self.assertIn('Synthetic private summary', result['text'])
+            self.assertFalse(result['gpu']); self.assertGreater(len(calls),0)
+            self.assertTrue(all('synthetic private snapshot' in json.dumps(call) for call in calls))
+            self.assertNotIn('synthetic private snapshot',json.dumps(store.events(task['id'])))
+
     async def test_actual_opencode_runs_only_after_approval_and_reads_through_broker(self):
         with tempfile.TemporaryDirectory() as root:
             app = FastAPI()

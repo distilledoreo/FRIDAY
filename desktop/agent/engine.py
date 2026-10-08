@@ -71,6 +71,8 @@ class OpenCodeEngine:
         name = 'friday-agent-' + uuid.uuid4().hex
         kwargs = {'reader': self.reader} if self.reader is not None else {}
         kwargs['search'] = self.search
+        kwargs['account_context'] = task.get('account_context')
+        kwargs['account_context_guard'] = task.get('account_context_guard')
         broker = TaskBroker(self.store, task['id'], cloud, **kwargs)
         # Short tmpfs path avoids the Unix socket path-length limit and never
         # exposes the user's home to the container; only this socket is mounted.

@@ -116,10 +116,13 @@ class Approvals:
         db.execute('INSERT INTO events(task_id,kind,data,created) VALUES(?,?,?,?)',
                    (task_id, kind, encode(data), time.time()))
 
-    def propose_task(self, prompt, plan, schedule=None):
+    def propose_task(self, prompt, plan, schedule=None, data_scopes=None):
         if not isinstance(prompt, str) or not prompt.strip() or not isinstance(plan, list) or not plan:
             raise ValueError('Task requires a prompt and a nonempty plan')
         body = {'prompt': prompt, 'plan': plan}
+        if data_scopes:
+            from .account_scopes import bound
+            body['data_scopes'] = bound(data_scopes)
         if schedule is not None:
             if not isinstance(schedule, dict): raise ValueError('Invalid schedule')
             when = schedule.get('run_at')

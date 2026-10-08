@@ -28,6 +28,7 @@ class Proposal(BaseModel):
     prompt: str = Field(min_length=1, max_length=8000)
     plan: list[str] = Field(min_length=1, max_length=20)
     schedule: Schedule | None = None
+    data_scopes: list[dict] = Field(default_factory=list, max_length=5)
 
 
 class Approval(BaseModel):
@@ -169,7 +170,9 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
     async def propose(body: Proposal):
         if any(not step.strip() or len(step) > 2000 for step in body.plan):
             raise HTTPException(422, 'Each plan step must contain 1–2000 characters')
-        return guarded(store.propose_task, body.prompt, body.plan, body.schedule.model_dump() if body.schedule else None)
+        scopes = guarded(accounts.bind_scopes, body.data_scopes) if accounts else []
+        if body.data_scopes and not accounts: raise HTTPException(503, 'Account data is unavailable')
+        return guarded(store.propose_task, body.prompt, body.plan, body.schedule.model_dump() if body.schedule else None, scopes)
 
     @router.get('/tasks/{task_id}')
     async def task(task_id: str):
@@ -204,7 +207,14 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
                 current = store.task(task_id)
                 if current['status'] != 'running': raise asyncio.CancelledError()
                 with store.db() as db: store.event(db, task_id, kind, data)
-            result = await engine(store.task(task_id), report)
+            selected = store.task(task_id)
+            scopes = selected['proposal'].get('data_scopes', [])
+            if scopes:
+                if accounts is None: raise RuntimeError('Account data is unavailable')
+                selected['account_context'] = await accounts.scoped_snapshot(scopes)
+                selected['account_context_guard'] = lambda: accounts.validate_scopes(scopes)
+                await report('account_scopes_read', {'reads':len(scopes), 'untrusted':True, 'public_web_disabled':True})
+            result = await engine(selected, report)
             await report('result', result)
             if any(action['status'] == 'proposed' for action in store.actions(task_id)):
                 store.await_setup(task_id, fingerprint)

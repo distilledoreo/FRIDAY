@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import org.json.JSONObject
+import org.json.JSONArray
 import java.time.*
 import java.time.format.DateTimeFormatter
 
@@ -33,6 +34,8 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
     var schedule by remember { mutableStateOf<JSONObject?>(null) }
     var category by rememberSaveable { mutableStateOf("All") }
     var cursors by remember { mutableStateOf(listOf(0L)) }
+    var mailScopes by remember { mutableStateOf(setOf<String>()) }
+    var calendarScopes by remember { mutableStateOf(setOf<String>()) }
     val task = state.agentTask?.takeIf { it.optString("id") == selected }
     LaunchedEffect(selected) { cursors = listOf(0L); vm.refreshAgentActivity(selected, 0) }
     LaunchedEffect(selected, state.agentTasks.any { it.optString("status") in listOf("running", "approved") }) {
@@ -53,7 +56,28 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                 OutlinedTextField(plan, { plan = it.take(12000) }, label = { Text("Plan · one step per line") }, minLines = 3, modifier = Modifier.fillMaxWidth())
                 Row { Text("Schedule", Modifier.weight(1f)); Switch(scheduled, { scheduled = it }) }
                 if (scheduled) AgentScheduleEditor { schedule = it }
-                Button(onClick = { vm.proposeAgentTask(prompt.trim(), plan.lines().map(String::trim).filter(String::isNotBlank), if (scheduled) schedule else null); prompt = "" }, enabled = prompt.isNotBlank() && plan.isNotBlank() && (!scheduled || schedule != null) && !state.workspaceBusy) { Text("Save plan for review") }
+                if (state.connectedAccounts.isNotEmpty()) {
+                    Text("Account data for this cloud task", style = MaterialTheme.typography.titleSmall)
+                    Text("Choose exact reads to review. Only selected data goes to OpenRouter and a free cloud model. Private task reports are saved in Activity. Public web tools are disabled for account data tasks.", style = MaterialTheme.typography.bodySmall)
+                    state.connectedAccounts.forEach { account ->
+                        val id = account.getString("id")
+                        Text(account.optString("label"))
+                        Row { Checkbox(id in mailScopes, { mailScopes = if (it) mailScopes + id else mailScopes - id }); Text("Share up to 10 inbox headers", Modifier.weight(1f)) }
+                        if (account.optString("provider") != "imap") Row { Checkbox(id in calendarScopes, { calendarScopes = if (it) calendarScopes + id else calendarScopes - id }); Text("Share up to 30 events in next 7 days", Modifier.weight(1f)) }
+                    }
+                    if (scheduled && calendarScopes.isNotEmpty()) Text("Calendar dates are fixed when this plan is saved; repeated runs keep that same window.", style = MaterialTheme.typography.bodySmall)
+                }
+                Button(onClick = {
+                    val reads = JSONArray()
+                    val now = OffsetDateTime.now()
+                    state.connectedAccounts.forEach { account ->
+                        val id = account.getString("id")
+                        if (id in mailScopes) reads.put(JSONObject().put("account_id", id).put("kind", "inbox").put("limit", 10))
+                        if (id in calendarScopes) reads.put(JSONObject().put("account_id", id).put("kind", "calendar").put("start", now.toString()).put("end", now.plusDays(7).toString()).put("limit", 30))
+                    }
+                    vm.proposeAgentTask(prompt.trim(), plan.lines().map(String::trim).filter(String::isNotBlank), if (scheduled) schedule else null, reads)
+                    prompt = ""; mailScopes = emptySet(); calendarScopes = emptySet()
+                }, enabled = prompt.isNotBlank() && plan.isNotBlank() && (!scheduled || schedule != null) && mailScopes.size + calendarScopes.size <= 5 && !state.workspaceBusy) { Text("Save plan for review") }
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("All", "In progress", "Scheduled", "Done").forEach { label ->
                         FilterChip(selected = category == label, onClick = { category = label }, label = { Text(label) })
@@ -88,6 +112,7 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                     steps?.let { for (i in 0 until it.length()) Text("${i + 1}. ${it.getString(i)}") }
                     Text(agentStatus(current.optString("status")))
                     proposal.optJSONObject("schedule")?.let { Text(scheduleDescription(it), style = MaterialTheme.typography.bodySmall) }
+                    Text(accountScopeDescription(proposal), style = MaterialTheme.typography.bodySmall)
                     current.optJSONObject("schedule_state")?.let {
                         if (it.optBoolean("blocked")) Text("Paused by an interrupted run or an action needing review. Cancel this schedule before creating a revised plan.", color = MaterialTheme.colorScheme.error)
                         Text("${it.optInt("remaining")} runs left · " + if (it.optInt("remaining") > 0) "Next: ${agentTime(it.optDouble("next_run"))}" else "Waiting for the final run to finish", style = MaterialTheme.typography.bodySmall)
@@ -142,7 +167,7 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
     }
     confirming?.let { exact ->
         AlertDialog(onDismissRequest = { confirming = null }, title = { Text("Approve this task?") },
-            text = { Text("${exact.getJSONObject("proposal").optJSONObject("schedule")?.let(::scheduleDescription).orEmpty()}\n\n${exact.getJSONObject("proposal").toString(2)}\n\nThis approved task and gathered public sources go to a free cloud model via OpenRouter. This permits public browsing and reading within the plan. Other actions require another approval.", Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) },
+            text = { Text("${exact.getJSONObject("proposal").optJSONObject("schedule")?.let(::scheduleDescription).orEmpty()}\n\n${accountScopeDescription(exact.getJSONObject("proposal"))}\n\n${exact.getJSONObject("proposal").toString(2)}\n\nThis approved task goes to a free cloud model via OpenRouter. Selected account data is private, untrusted source material; it can appear in the saved report. Public browsing is available only when no account data scope is selected. Sending and other external actions require another exact approval.", Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) },
             confirmButton = { TextButton(onClick = { vm.approveAgentTask(exact.getString("id"), exact.getString("fingerprint")); confirming = null }) { Text("Approve") } },
             dismissButton = { TextButton(onClick = { confirming = null }) { Text("Back") } })
     }
@@ -241,6 +266,7 @@ private fun agentEventSummary(event: JSONObject): String {
     val data = event.getJSONObject("data")
     return when (event.optString("kind")) {
         "event_fragment" -> "Complete ${data.optString("kind").replace('_', ' ')} record · part ${data.optInt("index") + 1} of ${data.optInt("count")}. Open details to read this part."
+        "account_scopes_read" -> "Read ${data.optInt("reads")} approved account scopes. Public web tools disabled."
         "broker_model" -> "Cloud model request ${data.optInt("request")} · ${data.optString("model")}"
         "broker_read_page" -> "Read ${data.optString("url")} · ${data.optInt("chars")} characters"
         "opencode_event" -> data.optJSONObject("part")?.let { part ->
@@ -249,4 +275,19 @@ private fun agentEventSummary(event: JSONObject): String {
         "result" -> "Report saved. Read it above or discuss it in chat."
         else -> data.optString("text").ifBlank { data.optString("url").ifBlank { data.optString("message").ifBlank { "Details recorded" } } }
     }.take(600)
+}
+
+private fun accountScopeDescription(proposal: JSONObject): String {
+    val scopes = proposal.optJSONArray("data_scopes")
+    if (scopes == null || scopes.length() == 0) return "Account data: none. This task uses public sources."
+    return "Private account data shared with OpenRouter/free cloud after approval:\n" + (0 until scopes.length()).joinToString("\n") { index ->
+        val scope = scopes.getJSONObject(index)
+        val label = scope.optJSONObject("account")?.optString("label").orEmpty()
+        when (scope.optString("kind")) {
+            "inbox" -> "$label · up to ${scope.optInt("limit")} inbox headers · query: ${scope.optString("query").ifBlank { "recent inbox" }}"
+            "message" -> "$label · bounded text of message ${scope.optString("message_id")}"
+            "calendar" -> "$label · up to ${scope.optInt("limit")} events · ${scope.optString("start")} to ${scope.optString("end") }"
+            else -> "$label · unsupported scope; review a new plan"
+        }
+    } + "\nPublic web tools disabled. The saved report may contain private data."
 }

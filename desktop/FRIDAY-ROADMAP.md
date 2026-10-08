@@ -12,7 +12,7 @@ Goal: deliver the user's October 8 plan while preserving Claude's existing memor
 - CPU-only grounding pre-check searches before replies involving recent/current, date-sensitive, price/weather, officeholders, regulations, health and recommendation cues. Respect explicit no-search requests and text transformations. Supply labeled untrusted evidence and source links, report verification failure without fabricated citations. This English trigger is conservative, not complete semantic understanding.
 - Image quality testing deferred until GPU is available. Existing dimensions/step caps and 15-minute timeout remain intact; no speculative quality change without a render comparison.
 
-## Current additional delivery: 0.10.0
+## Current additional delivery: 0.11.0
 
 The approved cloud agent is deployed on the PC. Activity reviews plans, requests explicit approval, polls running tasks, pages events, displays authenticated static source screenshots, and supports cancellation. FRIDAY branding/persona now spans chat, voice and agent. Opening Activity refreshes its state directly, including read-only updates during a chat.
 
@@ -59,3 +59,15 @@ Each phase needs its own meaningful tests and deployable artifact. No mock-only 
 Account-route validation failures return generic errors without credential inputs; secrets use protected model fields. All 131 Android tests/build/lint pass. All 67 backend checks pass in aggregate: 64 from the full opt-in suite and three Docker checks rerun with the required docker group. Tests include a real local synthetic TLS/IMAP exchange and offline Docker/OpenCode/Chromium with fake inference. Production API-only deployment passed idle checks, backed up the fresh gateway, and preserved its source and persistent inference pause. Live authentication/private-mail-target/redacted-validation/outgoing gates pass; APK signer and authenticated/private download checksums verified. No real provider login, send, local inference, or device verification occurred.
 
 APK SHA-256: `4a346bb58812debc97c89aec893a0d18c1939533a61c7b617612c58b1dad660e`. Download: http://100.64.0.1:8081/local-assistant-0.10.0.apk. Natural-chat/scoped cloud account access, approved outgoing executors, morning briefs/proposal check-ins, wake word and expanded grounding remain active.
+
+## Account chat and scoped cloud checkpoint
+
+0.11.0 code15 adds normal-chat tools to list connected accounts and read exact bounded inbox/message/calendar selections. Private read results require phone confirmation before going to the selected chat model and may be saved in that chat. All account tools are blocked in incognito/Fresh slate, with workspace route enforcement as a second boundary. There are no model account setup, password, approval or send tools.
+
+Cloud plans accept at most five exact account read scopes. The approval fingerprint binds account handle/provider/label, inbox query, message identifier or fixed timezone-aware calendar window and limits. Activity displays the selections and disclosure to OpenRouter/free cloud before approval; default scope is empty. Saving a proposal never reads an account. Only approved execution fetches a bounded snapshot; removed accounts fail before reads and before/after cloud calls. IMAP reconnects cannot silently change the server/login behind an approved handle. Scheduled runs retain the same approved calendar window.
+
+Snapshots are untrusted source data, capped at 120 KiB, passed only through the host cloud broker; credentials never enter the model/container. Public search/page tools are disabled for private account tasks to prevent disclosure to additional destinations. Account source text is not added to the task audit; user-approved reports may contain private data. Cancellation/approval/restart boundaries remain enforced.
+
+All 132 Android tests/build/lint and all 73 full CPU-only backend checks pass, including a real offline OpenCode run receiving synthetic scoped data through fake cloud inference, plus existing Docker/Chromium tests. API-only production deployment preserved the fresh gateway source and persistent inference pause. Live synthetic exact-scope binding, proposal-only/no-execution and unsupported-side-effect gates pass; the synthetic account was removed and task canceled. APK signer and authenticated/private download checksums verified. No actual provider consent/login, outgoing action, local inference or physical phone verification occurred.
+
+APK SHA-256: `b4e77af48fcc3f05c3adf7b1180a7bb7695b9cbc2f8442b5435e13fa2976cdcf`. Download: http://100.64.0.1:8081/local-assistant-0.11.0.apk. Sending remains disabled (`outgoing_ready: false`). Approved outgoing executors, morning briefs/proposal check-ins, phone wake word/car evaluation and expanded grounding remain. OAuth client IDs, device verification and authorized GPU image-quality comparison remain external prerequisites. The full goal remains active.

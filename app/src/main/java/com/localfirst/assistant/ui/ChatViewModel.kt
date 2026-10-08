@@ -753,7 +753,11 @@ class ChatViewModel(
             agentTask = task, agentEventAfter = cursor, agentEvents = events?.let { e -> (0 until e.length()).map { e.getJSONObject(it) } }.orEmpty(),
         ) }
     }
-    fun refreshAgentActivity(taskId: String? = null, after: Long? = null) = workspaceAction(allowDuringChat = true) { loadAgentActivity(taskId, after); "Activity updated." }
+    fun refreshAgentActivity(taskId: String? = null, after: Long? = null) = workspaceAction(allowDuringChat = true) {
+        loadAgentActivity(taskId, after)
+        if (taskId == null) loadAccounts()
+        "Activity updated."
+    }
     private suspend fun loadAccounts() {
         val client = workspace ?: error("Computer unavailable.")
         val accounts = JSONObject(client.request("/workspace/agent/accounts")).getJSONArray("accounts")
@@ -847,9 +851,11 @@ class ChatViewModel(
         }
         _state.update { it.copy(showWorkspace = false, draft = "Read the report for FRIDAY task $id using get_agent_report, then help me discuss its findings.") }
     }
-    fun proposeAgentTask(prompt: String, plan: List<String>, schedule: JSONObject? = null) = workspaceAction {
+    fun proposeAgentTask(prompt: String, plan: List<String>, schedule: JSONObject? = null, dataScopes: JSONArray? = null) = workspaceAction {
         val client = workspace ?: error("Computer unavailable.")
-        client.request("/workspace/agent/tasks", "POST", JSONObject().put("prompt", prompt).put("plan", JSONArray(plan)).apply { schedule?.let { put("schedule", it) } })
+        client.request("/workspace/agent/tasks", "POST", JSONObject().put("prompt", prompt).put("plan", JSONArray(plan)).apply {
+            schedule?.let { put("schedule", it) }; dataScopes?.takeIf { it.length() > 0 }?.let { put("data_scopes", it) }
+        })
         loadAgentActivity(); "Plan saved for approval."
     }
     fun approveAgentTask(id: String, fingerprint: String) = workspaceAction {
