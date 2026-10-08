@@ -59,7 +59,7 @@ class PrivateAccountRoute(APIRoute):
         return private_errors
 
 
-def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=30, outgoing_enabled=False, outgoing_factory=None):
+def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=30, outgoing_enabled=False, outgoing_factory=None, grounding_search=None, grounding_reader=None):
     store = Approvals(Path(root) / 'agent.sqlite')
     if engine is not None and hasattr(engine, 'bind'): engine.bind(store)
     router = APIRouter(prefix='/workspace/agent', dependencies=auth, route_class=PrivateAccountRoute)
@@ -76,6 +76,9 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
     from .briefing import Briefing, routes as briefing_routes
     briefing=Briefing(root,accounts)
     briefing_routes(router,briefing)
+    from .grounding import install as install_grounding
+    from .public_web import read as public_reader
+    grounding=install_grounding(app,auth,grounding_search,grounding_reader or public_reader)
     running = {}
     outgoing_running = {}
     scheduler = None
@@ -88,7 +91,7 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
     async def health():
         ready = engine is not None and (not hasattr(engine, 'available') or await engine.available())
         return {'ready': ready, 'gpu': False, 'outgoing_ready':bool(executors and executors.enabled),
-                'active_outgoing':len(outgoing_running)+(len(accounts.mail_tasks) if accounts else 0)+briefing.busy,
+                'active_web_reads':grounding.active,'active_outgoing':len(outgoing_running)+(len(accounts.mail_tasks) if accounts else 0)+briefing.busy,
                 'detail': ('FRIDAY can research and review outgoing drafts. Exact outgoing approval is available for configured accounts.' if executors and executors.enabled else 'FRIDAY can research and review outgoing drafts. Outgoing activation remains off until account/device verification and explicit setup.') if ready else unavailable_detail or 'Cloud agent unavailable; proposals can be saved while its setup is checked'}
 
     class OAuthConfig(BaseModel):

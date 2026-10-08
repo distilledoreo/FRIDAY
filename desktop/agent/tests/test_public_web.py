@@ -53,9 +53,22 @@ class PublicWebTests(unittest.TestCase):
                 def close(self): pass
             with self.assertRaises(ValueError): read('https://example.com', resolver('8.8.8.8'), Connection)
 
+    def test_wire_deadline_stops_slow_reads_without_an_unbounded_socket_timeout(self):
+        now=[0];closed=[]
+        class Connection:
+            def __init__(self,*args):pass
+            def request(self,*args,**kwargs):now[0]=46
+            def getresponse(self):return Response()
+            def close(self):closed.append(True)
+        with self.assertRaises(TimeoutError):read('https://example.com',resolver('8.8.8.8'),Connection,clock=lambda:now[0])
+        self.assertEqual(closed,[True])
+
 
 class Response:
     def __init__(self, status=200, headers=None, body=b'<p>Page</p>'):
+        self.position=0
         self.status, self.headers, self.body = status, {'Content-Type': 'text/html', **(headers or {})}, body
     def getheader(self, key, default=None): return self.headers.get(key, default)
-    def read(self, amount): return self.body[:amount]
+    def read(self, amount):
+        value=self.body[self.position:self.position+amount];self.position+=len(value);return value
+    def read1(self, amount):return self.read(amount)

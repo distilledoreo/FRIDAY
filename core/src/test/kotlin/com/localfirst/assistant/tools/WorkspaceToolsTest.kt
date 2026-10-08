@@ -29,7 +29,8 @@ class WorkspaceToolsTest {
             assertEquals("/workspace/analyze", gateway.path)
             assertEquals(args, Json.parseToJsonElement(gateway.body!!))
             tools.first { it.name == "fetch_page" }.execute(buildJsonObject { put("url", "https://example.com") })
-            assertEquals(16000, Json.parseToJsonElement(gateway.body!!).jsonObject["max_chars"]!!.jsonPrimitive.int)
+            assertEquals("/grounding/page", gateway.path)
+            assertEquals("https://example.com", Json.parseToJsonElement(gateway.body!!).jsonObject["url"]!!.jsonPrimitive.content)
         } finally { dir.deleteRecursively() }
     }
     @Test fun agentToolCanOnlySaveAPlanForUserReview() = runBlocking {
@@ -125,7 +126,7 @@ class WorkspaceToolsTest {
     private class FakeGateway : WorkspaceGateway {
         var path = ""; var body: String? = null
         override suspend fun toolRequest(path: String, method: String, body: String?): String {
-            this.path = path; this.body = body; return "{\"success\":true}"
+            this.path = path; this.body = body; return if (path == "/grounding/page") "{\"url\":\"https://example.com\",\"passages\":[{\"text\":\"Synthetic source\"}]}" else "{\"success\":true}"
         }
     }
 }

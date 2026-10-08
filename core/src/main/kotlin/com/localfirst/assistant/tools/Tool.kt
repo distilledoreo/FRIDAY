@@ -51,6 +51,8 @@ data class ToolExecutionResult(
 data class SourceLink(
     val title: String,
     val url: String,
+    /** Exact page passages were supplied; this does not assert their truth. */
+    val contentRead: Boolean = false,
 )
 
 /**

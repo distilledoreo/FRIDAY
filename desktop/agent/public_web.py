@@ -4,12 +4,31 @@ Never forwards cookies, authorization or caller-supplied headers. The sandbox
 itself has no IP network. A later IPC adapter exposes only these bounded reads.
 """
 import http.client
+import asyncio
+import time
 import ipaddress
 import socket
 import ssl
 from urllib.parse import urljoin, urlsplit
 
 MAX_BODY = 2 * 1024 * 1024
+
+
+class PublicReadPool:
+    """Process-wide cap shared by phone evidence reads and approved agent IPC."""
+    def __init__(self):self.pending=set()
+    async def fetch(self,reader,url,timeout):
+        if len(self.pending)>=3:raise ValueError('Public reader capacity reached; retry later')
+        job=asyncio.create_task(asyncio.to_thread(reader,url));self.pending.add(job)
+        def complete(future):
+            self.pending.discard(future)
+            if not future.cancelled():future.exception()
+        job.add_done_callback(complete)
+        return await asyncio.wait_for(asyncio.shield(job),timeout)
+
+
+READ_POOL=PublicReadPool()
+
 
 
 def destination(url, resolve=socket.getaddrinfo):
@@ -45,11 +64,17 @@ class PinnedHTTPS(http.client.HTTPSConnection):
             raise
 
 
-def read(url, resolve=socket.getaddrinfo, connection=PinnedHTTPS):
+def read(url, resolve=socket.getaddrinfo, connection=PinnedHTTPS, clock=time.monotonic):
+    deadline=clock()+45
+    def remaining():
+        value=deadline-clock()
+        if value<=0:raise TimeoutError('Public read deadline exceeded')
+        return min(15,value)
     for _ in range(6):
         host, address, path = destination(url, resolve)
         client = connection(host, address)
         try:
+            client.timeout=remaining()
             client.request('GET', path, headers={'Host': host, 'Accept-Encoding': 'identity', 'User-Agent': 'FRIDAY-ReadOnly/1'})
             response = client.getresponse()
             if response.status in (301, 302, 303, 307, 308):
@@ -63,8 +88,15 @@ def read(url, resolve=socket.getaddrinfo, connection=PinnedHTTPS):
                 raise ValueError('Unsupported page type')
             if response.getheader('Content-Encoding', 'identity') != 'identity':
                 raise ValueError('Compressed responses are not accepted')
-            body = response.read(MAX_BODY + 1)
-            if len(body) > MAX_BODY: raise ValueError('Page exceeds 2 MB')
+            body=bytearray()
+            while True:
+                timeout=remaining()
+                sock=getattr(client,'sock',None)
+                if sock is not None:sock.settimeout(timeout)
+                chunk=(response.read1 if hasattr(response,'read1') else response.read)(min(65536,MAX_BODY+1-len(body)))
+                if not chunk:break
+                body.extend(chunk)
+                if len(body)>MAX_BODY:raise ValueError('Page exceeds 2 MB')
             return {'url': url, 'mime': mime, 'content': body.decode('utf-8', errors='replace'), 'untrusted': True}
         finally: client.close()
     raise ValueError('Too many redirects')

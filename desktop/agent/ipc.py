@@ -10,7 +10,8 @@ import os
 from pathlib import Path
 import struct
 
-from .public_web import read
+from .public_web import read, READ_POOL
+from .grounding import page_evidence
 
 MAX_REQUEST = 2 * 1024 * 1024
 MAX_RESPONSE = 4 * 1024 * 1024
@@ -51,12 +52,14 @@ class TaskBroker:
                 result = await self.cloud.complete(arguments)
                 record = {'model': self.cloud.model, 'request': self.cloud.requests}
             elif operation == 'read_page':
-                if set(arguments) != {'url'}: raise ValueError('Only a page URL is accepted')
+                if not {'url'}<=set(arguments)<={'url','query'} or not isinstance(arguments.get('query',''),str) or len(arguments.get('query',''))>500:raise ValueError('Read requires one URL and optional topic of at most 500 characters')
                 if self.web_reads >= 100: raise ValueError('Task page limit reached')
                 self.web_reads += 1
-                result = await asyncio.wait_for(asyncio.to_thread(self.reader, arguments['url']), timeout=30)
+                result = await READ_POOL.fetch(self.reader,arguments['url'],30)
+                result.update(page_evidence(result,arguments['url'],arguments.get('query','')))
                 self.sources.add(result['url'])
-                record = {'url': result['url'], 'mime': result['mime'], 'chars': len(result['content'])}
+                record = {'url': result['url'], 'mime': result['mime'], 'chars': len(result['content']), 'document_sha256':result['document_sha256'],'document_truncated':result['document_truncated'],
+                          'selected_passages':[{'id':entry['id'],'start':entry['start'],'end':entry['end']} for entry in result['passages']]}
             elif operation == 'record_screenshot':
                 if arguments.get('url') not in self.sources: raise ValueError('Screenshot source was not read by this task')
                 result = self.store.save_screenshot(self.task_id, arguments['url'], arguments.get('png'))
@@ -74,7 +77,7 @@ class TaskBroker:
                 result = self.store.propose_action(self.task_id, arguments.get('kind'),
                                                    arguments.get('destination'), arguments.get('payload'))
                 result['executable'] = False
-                result['detail'] = 'Proposal saved for review. Account/executor setup is still required; no action has run.'
+                result['detail'] = 'Proposal saved for review. Exact human approval and verified outgoing activation are still required; no action has run.'
                 record = {'id': result['id'], 'fingerprint': result['fingerprint']}
             else:
                 raise ValueError('Unsupported broker operation')

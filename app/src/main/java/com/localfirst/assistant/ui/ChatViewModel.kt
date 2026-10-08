@@ -39,7 +39,7 @@ import com.localfirst.assistant.tools.SetMediaVolumeTool
 import com.localfirst.assistant.tools.ToolConfirmer
 import com.localfirst.assistant.tools.ToolRegistry
 import com.localfirst.assistant.tools.workspaceTools
-import com.localfirst.assistant.tools.WebSearchTool
+import com.localfirst.assistant.tools.GroundedWebSearchTool
 import com.localfirst.assistant.tools.phone.phoneTools
 import com.localfirst.assistant.voice.ScreenContextService
 import com.localfirst.assistant.voice.VoiceForegroundService
@@ -74,6 +74,7 @@ data class ChatUiState(
     val privacy: ChatPrivacy = ChatPrivacy(),
     val groundingStatus: String? = null,
     val groundingSources: List<com.localfirst.assistant.tools.SourceLink> = emptyList(),
+    val groundingResearchAvailable: Boolean = false,
     val title: String = ConversationTitles.NEW_CHAT,
     val messages: List<Message> = emptyList(),
     val draft: String = "",
@@ -504,6 +505,7 @@ class ChatViewModel(
         holdForeground()
         turnJob = viewModelScope.launch {
             var outcome: TurnOutcome? = null
+            var groundingAttempted = false
             try {
                 val client = workspace
                 if (client != null && _state.value.privacy.recall) {
@@ -517,15 +519,22 @@ class ChatViewModel(
                     } catch (e: CancellationException) { throw e }
                     catch (e: Exception) { _state.update { it.copy(recallSources = emptyList(), recallStatus = "PC memory unavailable; this reply uses the current conversation.") } }
                 }
+                val grounding = com.localfirst.assistant.grounding.GroundingPrecheck
+                val webTools = com.localfirst.assistant.conversation.ConversationEngine.WEB_TOOLS
+                session.blockedTools = if (grounding.blocksWeb(pendingRecallQuery)) webTools else emptySet()
+                session.confirmedTools = if (grounding.privateRequest(pendingRecallQuery) || _state.value.recallSources.isNotEmpty()) webTools else emptySet()
+                _state.update { it.copy(groundingResearchAvailable = grounding.largerResearch(pendingRecallQuery) && !it.privacy.incognito) }
                 val searchTool = session.toolRegistry.getAvailableTools().firstOrNull { it.name == "web_search" }
                 if (searchTool != null && com.localfirst.assistant.grounding.GroundingPrecheck.needsSearch(pendingRecallQuery)) {
+                    groundingAttempted = true
                     _state.update { it.copy(groundingStatus = "Checking current sources…", groundingSources = emptyList()) }
                     val result = com.localfirst.assistant.grounding.GroundingPrecheck.run(pendingRecallQuery, searchTool)
                     if (result != null) {
                         session.latestUserNote = session.latestUserNote.orEmpty() + com.localfirst.assistant.grounding.GroundingPrecheck.note(result)
-                        _state.update { it.copy(groundingStatus = if (result.success) "Current sources checked" else "Current sources could not be verified", groundingSources = result.sources) }
+                        _state.update { it.copy(groundingStatus = if (result.success) "Evidence retrieved; checking claim support and citations" else "Current sources could not be verified", groundingSources = result.sources) }
                     }
-                } else _state.update { it.copy(groundingStatus = null, groundingSources = emptyList()) }
+                } else _state.update { it.copy(groundingStatus = if (grounding.privateRequest(pendingRecallQuery)) "Private question: public web lookups require separate approval" else null, groundingSources = emptyList()) }
+                if (grounding.blocksWeb(pendingRecallQuery)) session.latestUserNote = session.latestUserNote.orEmpty() + "\nPublic web access is disabled for this turn by the user's request. State when current facts cannot be verified; do not invent citations."
                 outcome = block { messages ->
                     _state.update { it.copy(messages = messages) }
                 }
@@ -535,6 +544,17 @@ class ChatViewModel(
                 _state.update { it.copy(error = e.message ?: "Something went wrong.") }
             } finally {
                 val messages = session.snapshot()
+                if (outcome is TurnOutcome.Completed) {
+                    val userAt = messages.indexOfLast { it is Message.User }
+                    val turn = messages.drop(userAt + 1)
+                    val webResults = turn.filterIsInstance<Message.ToolResult>().filter { it.name in com.localfirst.assistant.conversation.ConversationEngine.WEB_TOOLS && it.success }
+                    val sources = com.localfirst.assistant.grounding.GroundingPrecheck.mergeSources(_state.value.groundingSources + webResults.flatMap { it.sources })
+                    if (groundingAttempted || webResults.isNotEmpty()) {
+                        val answer = turn.filterIsInstance<Message.Assistant>().lastOrNull()?.content.orEmpty()
+                        val check = com.localfirst.assistant.grounding.GroundingPrecheck.audit(answer, sources)
+                        _state.update { it.copy(groundingStatus = check.status, groundingSources = sources) }
+                    }
+                }
                 _state.update {
                     it.copy(
                         messages = messages,
@@ -677,7 +697,7 @@ class ChatViewModel(
         _state.update {
             it.copy(
                 conversationId = null,
-                groundingStatus = null, groundingSources = emptyList(),
+                groundingStatus = null, groundingSources = emptyList(), groundingResearchAvailable = false,
                 title = ConversationTitles.NEW_CHAT,
                 messages = emptyList(),
                 draft = "",
@@ -908,6 +928,14 @@ class ChatViewModel(
         _state.update { it.copy(accountContent = JSONObject(workspace?.request("/workspace/agent/accounts/$id/calendar?start=${Uri.encode(start)}&end=${Uri.encode(end)}") ?: error("Computer unavailable."))) }; "Calendar loaded."
     }
 
+    fun proposeGroundedResearch() {
+        val query = pendingRecallQuery.trim()
+        val grounding = com.localfirst.assistant.grounding.GroundingPrecheck
+        if (_state.value.busy || _state.value.workspaceBusy || _state.value.privacy.incognito || query.isBlank() || grounding.blocksWeb(query) || grounding.privateRequest(query)) return
+        if (query.length > 7900) { _state.update { it.copy(error = "This research prompt exceeds the task limit. Use a focused public question in Activity.") }; return }
+        proposeAgentTask("Research this public question: $query", listOf("Find primary authoritative sources", "Read relevant source passages and dates", "Check material claims, conflicting evidence and limits", "Cite supporting URLs and state uncertainty"))
+        _state.update { it.copy(showWorkspace = true, workspaceDestination = WorkspaceDestination.ACTIVITY) }
+    }
     fun discussAgentReport(id: String) {
         if (_state.value.privacy.incognito || _state.value.busy || !id.matches(Regex("[a-f0-9]{32}"))) return
         if (_state.value.draft.isNotBlank() || _state.value.draftAttachments.isNotEmpty()) {
@@ -1299,7 +1327,7 @@ class ChatViewModelFactory(
         val registry = ToolRegistry().apply {
             workspaceTools(workspace, knowledge, conversations).forEach(::register)
             register(SetMediaVolumeTool { level -> volume.setPercent(level) })
-            register(WebSearchTool(search))
+            register(GroundedWebSearchTool(workspace))
             phoneTools(AndroidPhoneActions(app)).forEach(::register)
         }
         return ChatViewModel(

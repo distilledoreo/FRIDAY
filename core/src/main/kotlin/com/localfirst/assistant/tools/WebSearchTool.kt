@@ -43,7 +43,7 @@ class WebSearchTool(
             ToolExecutionResult(
                 success = true,
                 content = formatWebSearchResult(request.query, response),
-                sources = response.results.map { SourceLink(title = it.title.ifBlank { it.url }, url = it.url) },
+                sources = response.results.map { SourceLink(title = it.title.ifBlank { it.url }, url = it.url, contentRead = !it.pageText.isNullOrBlank()) },
             )
         } catch (e: CancellationException) {
             throw e
@@ -73,6 +73,7 @@ class WebSearchTool(
             putJsonObject("properties") {
                 putJsonObject("query") {
                     put("type", "string")
+                    put("maxLength", WebSearchArguments.MAX_QUERY_CHARS)
                     put("description", "The search query.")
                 }
                 putJsonObject("limit") {

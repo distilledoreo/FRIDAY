@@ -33,14 +33,17 @@ class ConversationEngine(
         confirmer: ToolConfirmer? = null,
         latestUserNote: String? = null,
         checkpoint: suspend () -> Unit = {},
+        blockedTools: Set<String> = emptySet(),
+        confirmedTools: Set<String> = emptySet(),
     ): TurnOutcome {
         var rounds = 0
+        var privateData = messages.filterIsInstance<Message.ToolResult>().any { it.success && it.name in PRIVATE_TOOLS }
         while (true) {
             val partial = StringBuilder()
             val response = try {
                 modelProvider.streamConversation(
                     messages = outboundMessages(systemPrompt, messages, latestUserNote),
-                    tools = toolRegistry.definitions(),
+                    tools = toolRegistry.definitions().filter { it.name !in blockedTools },
                 ) { delta ->
                     // Providers may deliver deltas on their own thread.
                     val soFar = synchronized(partial) { partial.append(delta).toString() }
@@ -104,9 +107,11 @@ class ConversationEngine(
                     }
                     onUpdate(messages.toList())
                     if (response.calls.any { it.name == "generate_image" }) checkpoint()
+                    privateData = privateData || response.calls.any { it.name in PRIVATE_TOOLS }
                     for ((index, call) in response.calls.withIndex()) {
                         val result = try {
-                            toolRegistry.execute(call, confirmer)
+                            if (call.name in blockedTools) com.localfirst.assistant.tools.ToolExecutionResult(false, "Web access is disabled for this turn. Respect the user's offline/no-search request.")
+                            else toolRegistry.execute(call, confirmer, forceConfirmation = call.name in confirmedTools || privateData && call.name in WEB_TOOLS)
                         } catch (e: CancellationException) {
                             for (unanswered in response.calls.drop(index)) {
                                 messages += Message.ToolResult(
@@ -177,6 +182,8 @@ class ConversationEngine(
     }
 
     companion object {
+        val WEB_TOOLS = setOf("web_search", "fetch_page")
+        private val PRIVATE_TOOLS = setOf("read_account_inbox", "read_account_message", "read_account_calendar", "read_account_calendar_event", "read_daily_brief", "list_followups", "search_memory", "search_history", "get_agent_report")
         /**
          * Hides reasoning markup some models emit even with reasoning off:
          * text before a closing `</think>` (often a draft the model then repeats)

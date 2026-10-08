@@ -78,7 +78,7 @@ class WorkspaceClient(private val context: Context, private val settings: () -> 
     val serverIdentity: String get() = settings().searchBaseUrl.trim().trimEnd('/')
     suspend fun request(path: String, method: String = "GET", body: JSONObject? = null, timeoutMs: Int = 120000): String = withContext(Dispatchers.IO) {
         val s = settings()
-        val privateAccountAction = path.startsWith("/workspace/agent/accounts") || path.startsWith("/workspace/agent/outgoing") || path.startsWith("/workspace/agent/actions") || path.startsWith("/workspace/agent/briefing")
+        val privateAccountAction = path.startsWith("/grounding") || path.startsWith("/workspace/agent/accounts") || path.startsWith("/workspace/agent/outgoing") || path.startsWith("/workspace/agent/actions") || path.startsWith("/workspace/agent/briefing")
         if (privateAccountAction) {
             val endpoint = java.net.URI(s.searchBaseUrl)
             val host = endpoint.host.orEmpty()

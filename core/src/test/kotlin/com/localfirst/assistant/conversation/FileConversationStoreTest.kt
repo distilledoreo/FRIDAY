@@ -28,7 +28,7 @@ class FileConversationStoreTest {
                 name = "web_search",
                 content = "1. SearXNG",
                 success = true,
-                sources = listOf(SourceLink("SearXNG", "https://searxng.org")),
+                sources = listOf(SourceLink("SearXNG", "https://searxng.org", contentRead = true)),
             ),
             Message.Assistant("Here it is."),
         )

@@ -33,6 +33,9 @@ class ConversationSession(
 
     /** Added to the latest user message when it is sent (not stored), e.g. the current time. */
     var latestUserNote: String? = null
+    /** Per-turn network policy; also enforced against unadvertised model calls. */
+    var blockedTools: Set<String> = emptySet()
+    var confirmedTools: Set<String> = emptySet()
 
     private val messages = initialMessages.toMutableList()
     private val mutex = Mutex()
@@ -117,6 +120,8 @@ class ConversationSession(
             confirmer = confirmer,
             latestUserNote = latestUserNote,
             checkpoint = checkpoint,
+            blockedTools = blockedTools,
+            confirmedTools = confirmedTools,
         )
 
     private fun truncateAfter(index: Int) {

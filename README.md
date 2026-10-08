@@ -12,6 +12,10 @@ Milestones implemented:
 6. Voice mode and assistant registration: a hands-free voice conversation with barge-in, and the app can be the phone's default digital assistant.
 7. Images and file attachments: photos, camera capture, PDFs, Word documents, and text/code files, with previews and saved attachments.
 
+## FRIDAY 0.14 public evidence
+
+Phone search/page tools retrieve bounded public static passages with source provenance, dates and explicit snippet/unavailable states. Chat enforces no-search requests and separate exact public-query/URL confirmation after private tool results or recalled memory. Citation status checks link coverage only; factual support still requires checking the supplied passages. Eligible deeper research is proposed in Activity and runs only after approval. Private account-scoped agent tasks cannot use public web tools. See [delivery and verification](desktop/FRIDAY-ROADMAP.md). Sending remains disabled pending real provider/device verification and explicit activation.
+
 ## Layout
 
 ```

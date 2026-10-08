@@ -203,6 +203,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     Column {
                         state.groundingStatus?.let { status ->
                             Text(status, Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelSmall)
+                            if (state.groundingResearchAvailable) TextButton(onClick = viewModel::proposeGroundedResearch, enabled = !state.busy && !state.workspaceBusy) { Text("Propose deeper research in Activity") }
                             if (state.groundingSources.isNotEmpty()) androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).horizontalScroll(rememberScrollState())) {
                                 state.groundingSources.take(5).forEach { source -> TextButton(onClick = { defaultUriHandler.openUri(source.url) }) { Text(source.title.take(35), maxLines = 1) } }
                             }

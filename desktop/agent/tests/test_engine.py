@@ -12,7 +12,7 @@ from desktop.agent.api import install
 from desktop.agent.container_bridge import config, page_text
 from desktop.agent.engine import OpenCodeEngine
 
-IMAGE = os.environ.get('FRIDAY_AGENT_IMAGE', 'sha256:9bc4dbfe9b1707601808c57a6d3149879ab41cc2383cf4480a380588b739a27f')
+IMAGE = os.environ.get('FRIDAY_AGENT_IMAGE', 'sha256:d394c600f06e5ef44e10f42e8523136c8f27b7e1c26943381bdd60a6a73a9da5')
 
 
 class EnginePolicyTests(unittest.TestCase):

@@ -66,6 +66,19 @@ class IpcTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((await self.call({'operation': 'model'}))['ok'])
         self.assertEqual(self.cloud.requests, 0)
 
+    async def test_agent_receives_late_passages_and_audit_contains_provenance_only(self):
+        self.start()
+        self.broker.reader=lambda url:{'url':url,'mime':'text/html','content':'<p>'+('Intro only. '*2000)+'</p><p>Frontier exact synthetic passage.</p>'}
+        response=await self.call({'operation':'read_page','arguments':{'url':'https://example.com','query':'frontier'}})
+        self.assertTrue(response['ok']);result=response['result']
+        self.assertGreater(result['passages'][0]['start'],20000);self.assertIn('Frontier',result['passages'][0]['text'])
+        self.assertFalse(result['truth_verified']);self.assertTrue(result['untrusted'])
+        events=self.store.events(self.task['id'])
+        event=next(event for event in events if event['kind']=='broker_read_page')
+        self.assertIn('document_sha256',json.dumps(event));self.assertNotIn('Frontier exact synthetic passage',json.dumps(event))
+        for extra in ({'headers':{'Authorization':'secret'}},{'query':'x'*501}):
+            invalid=await self.call({'operation':'read_page','arguments':{'url':'https://example.com',**extra}})
+            self.assertFalse(invalid['ok'])
     async def test_actions_remain_proposals_and_payload_is_bounded(self):
         self.start()
         response = await self.call({'operation': 'propose_action', 'arguments': {'kind': 'send', 'destination': 'person@example.com', 'payload': {'text': 'Reviewed'}}})

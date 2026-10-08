@@ -38,7 +38,7 @@ def main():
         if not (server / 'workspace-data/background-inference.paused').is_file():
             raise RuntimeError('Persistent GPU maintenance pause is required')
         agent_health=client.get('/workspace/agent/health')
-        if agent_health.status_code==200 and agent_health.json().get('active_outgoing',0):
+        if agent_health.status_code==200 and (agent_health.json().get('active_outgoing',0) or agent_health.json().get('active_web_reads',0)):
             raise RuntimeError('Account/outgoing host work is active; defer deployment until it finishes')
         agent_db = server / 'workspace-data/agent/agent.sqlite'
         if agent_db.exists():

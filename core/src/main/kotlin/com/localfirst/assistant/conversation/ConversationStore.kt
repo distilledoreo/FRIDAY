@@ -156,7 +156,7 @@ private data class ConversationDto(
 }
 
 @Serializable
-private data class SourceDto(val title: String, val url: String)
+private data class SourceDto(val title: String, val url: String, val contentRead: Boolean = false)
 
 @Serializable
 private data class AttachmentDto(
@@ -217,7 +217,7 @@ private data class MessageDto(
             name = name.orEmpty(),
             content = content,
             success = success ?: false,
-            sources = sources.map { SourceLink(it.title, it.url) },
+            sources = sources.map { SourceLink(it.title, it.url, it.contentRead) },
         )
         else -> null
     }
@@ -243,7 +243,7 @@ private data class MessageDto(
                 id = message.toolCallId,
                 name = message.name,
                 success = message.success,
-                sources = message.sources.map { SourceDto(it.title, it.url) },
+                sources = message.sources.map { SourceDto(it.title, it.url, it.contentRead) },
             )
         }
     }

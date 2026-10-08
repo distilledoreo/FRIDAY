@@ -12,6 +12,8 @@ def enable(app, auth, root, search):
     config = root / 'runtime.json'
     engine = None
     detail = None
+    async def research(query): return await search(q=query, n=5)
+    async def grounded_search(query): return await search(q=query, n=10)
     if config.is_file():
         try:
             value = json.loads(config.read_text())
@@ -22,7 +24,6 @@ def enable(app, auth, root, search):
             model = value.get('model', 'openrouter/free')
             if not key or not (model.endswith(':free') or model == 'openrouter/free'):
                 raise ValueError('Free cloud configuration missing')
-            async def research(query): return await search(q=query, n=5)
             engine = OpenCodeEngine(value['image'], lambda: FreeCloud(key, model=model), search=research)
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             detail = 'Cloud agent unavailable: check its runtime configuration and OpenRouter credential. Local chat is unaffected.'
@@ -33,4 +34,4 @@ def enable(app, auth, root, search):
             outgoing=json.loads(outgoing_config.read_text())
             outgoing_enabled=set(outgoing)=={'enabled','phone_and_provider_verified'} and outgoing['enabled'] is True and outgoing['phone_and_provider_verified'] is True
         except (OSError,ValueError,TypeError):pass
-    return install(app, auth, root, engine, unavailable_detail=detail,outgoing_enabled=outgoing_enabled)
+    return install(app, auth, root, engine, unavailable_detail=detail,outgoing_enabled=outgoing_enabled,grounding_search=grounded_search)
