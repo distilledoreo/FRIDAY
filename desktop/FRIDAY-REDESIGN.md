@@ -28,7 +28,7 @@ ChatScreen/ChatViewModel: conversation creation/history/search/projects, drafts 
 - [x] Phase 4: collapsed real-data dashboard, actual source/error/empty states, useful proactivity selection and actions.
 - [x] Phase 5: consistent bubbles, native adaptive renderer/full-width/expandable modes, integrated existing voice/approval/transcript behavior.
 - [x] Phase 6: every workspace/settings/history/project/account/library/image/activity/remaining screen and dialog updated consistently.
-- [x] Phase 7: final visual/interaction/font-scale/accessibility/reduced-motion/performance/regression validation, same-signer installable APK/private checksum/source ZIP/draft PR and user-facing notes.
+- [x] Phase 7: final visual/interaction/font-scale/accessibility/reduced-motion/performance/regression validation, same-signer installable APK/checksum/source ZIP/draft PR and explicit private-route availability and user-facing notes.
 
 Required visual matrix: empty dark/light home; sidebar open/closed/morph; composer empty/text/multiline/keyboard/active chat; dashboard collapsed/partial/expanded/empty/unavailable; conversation text/table/image/tool/approval/error/expanded; voice listening/thinking/speaking/paused/error; appearance/settings; projects/history/library/images/activity/accounts/memory/data/brief; custom accent, reduced motion, large fonts and narrow landscape. Use actual Compose renders, not HTML mockups. No physical device was connected; the CPU-only emulator encountered Android system ANRs. Screenshot and interaction results must be observed before claiming validation. Real provider/device prerequisites remain explicit. No outgoing activation or model/GPU changes.
 
@@ -44,6 +44,6 @@ All seven implementation phases are complete. Native Android validation: 145 cor
 
 Remaining device verification: physical Android IME/back gestures, real microphone/STT/TTS/Bluetooth/Android Auto, live connected calendars/accounts and smoothness/battery measurements. CPU-only emulator hit Android system/SystemUI ANRs; native tests do not constitute a physical-phone performance benchmark. No real model inference, account consent/action, backend deployment, model configuration change or outgoing activation was performed for this redesign. Segoe is not bundled; the Android system sans fallback is used.
 
-APK: http://100.64.0.1:8081/local-assistant-0.16.0.apk
+Delivery: signed APK and source ZIP are supplied directly in the chat. Update files are staged in the existing private download directory, but the private route is currently unavailable: Tailscale reports NeedsLogin and port 8081 has no active listener. HTTP download verification could not be completed; restoring that route requires its existing login/service setup.
 
 APK SHA-256: `6eb13fc98b6533978831c09965e55889b65d5a180f63ecf1838c2d25d411db4b`. Same application id and signer as the existing release; data formats remain unchanged.
