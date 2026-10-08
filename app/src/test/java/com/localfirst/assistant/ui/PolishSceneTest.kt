@@ -1,6 +1,7 @@
 package com.localfirst.assistant.ui
 
 import androidx.compose.ui.test.isRoot
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.localfirst.assistant.MainActivity
@@ -39,5 +40,14 @@ class PolishSceneTest {
     @Test fun home() {
         theme(ThemeMode.DARK); capture("home-dark")
         theme(ThemeMode.LIGHT); capture("home-light")
+    }
+
+    @Test fun sidebar() {
+        theme(ThemeMode.DARK)
+        compose.onNode(androidx.compose.ui.test.hasContentDescription("FRIDAY. Open navigation")).performClick()
+        compose.waitForIdle()
+        capture("sidebar-dark")
+        theme(ThemeMode.LIGHT)
+        capture("sidebar-light")
     }
 }

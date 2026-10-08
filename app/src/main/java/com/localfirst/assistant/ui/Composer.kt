@@ -120,7 +120,7 @@ internal fun Composer(
                         color = if (palette.dark) Color.White.copy(alpha = .07f) else Color.Black.copy(alpha = .05f),
                         modifier = Modifier.padding(start = 4.dp).size(42.dp),
                     ) {
-                        Box(contentAlignment = Alignment.Center) { Icon(Icons.Filled.Add, contentDescription = "Attachments and tools", modifier = Modifier.size(22.dp)) }
+                        Box(contentAlignment = Alignment.Center) { Icon(LineIcons.Add, contentDescription = "Attachments and tools", modifier = Modifier.size(22.dp)) }
                     }
                     TextField(
                         value = draft,
@@ -139,7 +139,7 @@ internal fun Composer(
                         ),
                     )
                     if (onDictate != null && !voiceActive) IconButton(onClick = onDictate, enabled = !busy, modifier = Modifier.size(44.dp)) {
-                        Icon(AppIcons.Mic, contentDescription = if (dictating) "Stop dictation" else "Dictate a message",
+                        Icon(LineIcons.Mic, contentDescription = if (dictating) "Stop dictation" else "Dictate a message",
                             tint = if (dictating) accent else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(21.dp))
                     }
                     val hasText = draft.isNotBlank() || attachments.isNotEmpty() || editing

@@ -254,7 +254,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                             val needsYou = state.agentTasks.any { it.optString("status") in FRIDAY_NEEDS_YOU }
                             val working = state.agentTasks.any { it.optString("status") in FRIDAY_WORKING }
                             if (state.messages.isNotEmpty() || state.draft.isNotBlank() || state.draftAttachments.isNotEmpty() || state.projectId != null) {
-                                HeaderCircleButton("New chat", { if (!state.busy) viewModel.newChat() }) { Icon(Icons.Filled.Create, contentDescription = null, modifier = Modifier.size(19.dp)) }
+                                HeaderCircleButton("New chat", { if (!state.busy) viewModel.newChat() }) { Icon(LineIcons.NewChat, contentDescription = null, modifier = Modifier.size(21.dp)) }
                                 Spacer(Modifier.width(6.dp))
                             }
                             HeaderCircleButton(

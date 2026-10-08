@@ -108,4 +108,17 @@ class PolishComponentTest {
         compose.runOnIdle { at = 4f }
         capture("ambient-t4")
     }
+
+    @Test fun brand() {
+        compose.setContent {
+            com.localfirst.assistant.ui.theme.AssistantTheme(preferences = AppearanceSettings(reducedMotion = true)) {
+                androidx.compose.material3.Surface(color = androidx.compose.material3.MaterialTheme.colorScheme.background) {
+                    androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.padding(16.dp)) {
+                        FridayBrand(0f, {}); FridayBrand(.5f, {}); FridayBrand(1f, {})
+                    }
+                }
+            }
+        }
+        capture("brand-stages")
+    }
 }

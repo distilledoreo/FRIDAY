@@ -32,27 +32,50 @@ import com.localfirst.assistant.voice.VoicePhase
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.math.sin
+import androidx.compose.ui.text.drawText
 import androidx.compose.animation.core.withInfiniteAnimationFrameNanos
 import kotlin.math.PI
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.lerp
 
-/** The F is constructed separately: menu strokes translate into its arms, never deform text. */
+/**
+ * The F is the menu button. Closed, three lines stand in for it ("≡RIDAY"); as the sidebar opens
+ * ([progress] 0 to 1) the top and middle lines become the F's arms and the bottom line swings up into
+ * its stem, spelling FRIDAY. Lines and letters are drawn together from the same font metrics, so
+ * they stay aligned at any density or font size, and "RIDAY" never moves.
+ */
 @Composable
 internal fun FridayBrand(progress:Float,onClick:()->Unit,modifier:Modifier=Modifier,foreground:Color=MaterialTheme.colorScheme.onBackground) {
     val p=progress.coerceIn(0f,1f)
-    Row(modifier.height(56.dp).width(180.dp).clickable(role=Role.Button,onClick=onClick)
-         .clearAndSetSemantics { contentDescription=if(p>.5f)"FRIDAY. Close navigation"else "FRIDAY. Open navigation"; role=Role.Button;onClick { onClick();true } },verticalAlignment=Alignment.CenterVertically) {
-        Canvas(Modifier.width(43.dp).height(36.dp)) {
-            val f=26.dp.toPx(); val top=10.dp.toPx(); val middle=18.dp.toPx(); val bottom=27.dp.toPx(); val width=1.35.dp.toPx()
-            drawLine(foreground,Offset(f,top),Offset(f,bottom),width)
-            drawLine(foreground.copy(alpha=1-p),Offset(f,top),Offset(f+11.dp.toPx(),top),width)
-            drawLine(foreground.copy(alpha=1-p),Offset(f,middle),Offset(f+8.dp.toPx(),middle),width)
-            val x=f*p
-            drawLine(foreground,Offset(x,14.dp.toPx()+(top-14.dp.toPx())*p),Offset(x+(10+p).dp.toPx(),14.dp.toPx()+(top-14.dp.toPx())*p),width)
-            drawLine(foreground,Offset(x,21.dp.toPx()+(middle-21.dp.toPx())*p),Offset(x+(10-2*p).dp.toPx(),21.dp.toPx()+(middle-21.dp.toPx())*p),width)
+    val density=androidx.compose.ui.platform.LocalDensity.current
+    val scale=density.fontScale
+    val measurer=androidx.compose.ui.text.rememberTextMeasurer()
+    val style=androidx.compose.ui.text.TextStyle(fontWeight=FontWeight.Light,fontSize=(22f/scale).sp,letterSpacing=(5f/scale).sp,color=foreground)
+    val word=remember(style,measurer) { measurer.measure("RIDAY",style) }
+    val font=with(density) { (22f/scale).sp.toPx() }
+    val cap=font*.711f
+    val arm=cap*.62f
+    val textX=with(density) { 8.dp.toPx() }+arm+with(density) { (5f/scale).sp.toPx() }+font*.08f
+    Row(modifier.height(56.dp).clickable(role=Role.Button,onClick=onClick)
+         .clearAndSetSemantics { contentDescription=if(p>.5f)"FRIDAY. Close navigation"else "FRIDAY. Open navigation"; role=Role.Button;onClick { onClick();true } }
+         .padding(end=12.dp),verticalAlignment=Alignment.CenterVertically) {
+        Canvas(Modifier.height(56.dp).width(with(density) { (textX+word.size.width).toDp() })) {
+            val x0=8.dp.toPx()
+            val baseline=center.y+cap/2f
+            val top=baseline-cap
+            val middle=baseline-cap/2f
+            val width=(font*.068f).coerceAtLeast(1.2.dp.toPx())
+            val round=androidx.compose.ui.graphics.StrokeCap.Round
+            // Top line: the F's top arm in both states.
+            drawLine(foreground,Offset(x0,top),Offset(x0+arm,top),width,round)
+            // Middle line: shortens slightly into the F's middle arm.
+            drawLine(foreground,Offset(x0,middle),Offset(x0+arm*(1f-.2f*p),middle),width,round)
+            // Bottom line: swings up around its left end into the stem, growing to the full letter height.
+            val angle=-PI.toFloat()/2f*p
+            val length=arm+(cap-arm)*p
+            drawLine(foreground,Offset(x0,baseline),Offset(x0+length*kotlin.math.cos(angle),baseline+length*sin(angle)),width,round)
+            drawText(word,topLeft=Offset(textX,baseline-word.firstBaseline))
         }
-        Text("RIDAY",fontWeight=FontWeight.Light,fontSize=(20f/androidx.compose.ui.platform.LocalDensity.current.fontScale).sp,letterSpacing=(3.5f/androidx.compose.ui.platform.LocalDensity.current.fontScale).sp,color=foreground)
     }
 }
 

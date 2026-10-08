@@ -3,6 +3,8 @@ package com.localfirst.assistant.ui
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Box
@@ -89,25 +91,24 @@ internal fun ChatDrawer(
         Column(modifier = Modifier.fillMaxHeight()) {
             Spacer(Modifier.height(64.dp))
             OutlinedTextField(value = query, onValueChange = onQuery, placeholder = { Text("Search chats") },
-                leadingIcon = { Icon(Icons.Filled.Search, null) }, singleLine = true,
+                leadingIcon = { Icon(LineIcons.Search, null, Modifier.size(22.dp)) }, singleLine = true,
                 shape = MaterialTheme.shapes.small,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp))
             LazyColumn(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
                 if (query.isBlank()) {
-                    item { NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text("New chat") }, icon = { Icon(Icons.Filled.Create, null) }, selected = false, onClick = onNewChat) }
-                    item { NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text("Incognito chat") }, icon = { Icon(Icons.Filled.Lock, null) }, selected = false, onClick = onIncognito) }
-                    item { NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text("FRIDAY") }, icon = { Icon(AppIcons.Computer, null) }, selected = false, onClick = onActivity) }
-                    item { NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text("Library") }, icon = { Icon(AppIcons.Folder, null) }, selected = false, onClick = onFiles) }
-                    item { NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text("Images") }, icon = { Icon(AppIcons.Image, null) }, selected = false, onClick = onImages) }
-
-
-                    item { TextButton(shape = MaterialTheme.shapes.small, onClick = onProjects, modifier = Modifier.padding(top = 12.dp)) { Text("Projects") } }
-                    items(projects, key = { "project:${it.id}" }) { project ->
-                        NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text(project.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            icon = { Icon(AppIcons.Folder, null) }, selected = activeProjectId == project.id,
-                            onClick = { onProject(project.id) })
+                    item { DrawerRow("New chat", LineIcons.NewChat, onNewChat) }
+                    item { DrawerRow("Incognito chat", LineIcons.Incognito, onIncognito) }
+                    item { DrawerRow("FRIDAY", LineIcons.Friday, onActivity) }
+                    item { DrawerRow("Library", LineIcons.Library, onFiles) }
+                    item { DrawerRow("Images", LineIcons.Images, onImages) }
+                    item {
+                        Text("Projects", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 6.dp))
                     }
-                    if (projects.isEmpty()) item { TextButton(shape = MaterialTheme.shapes.small, onClick = onProjects) { Text("Create a project") } }
+                    items(projects, key = { "project:${it.id}" }) { project ->
+                        DrawerRow(project.name, LineIcons.Project, { onProject(project.id) }, selected = activeProjectId == project.id)
+                    }
+                    item { DrawerRow(if (projects.isEmpty()) "Create a project" else "All projects", if (projects.isEmpty()) LineIcons.Add else LineIcons.Library, onProjects, quiet = true) }
                 }
                 if (visibleChats.isEmpty()) {
                     item {
@@ -140,13 +141,7 @@ internal fun ChatDrawer(
                 }
             }
             HorizontalDivider()
-            NavigationDrawerItem(shape = MaterialTheme.shapes.small,
-                label = { Text("Settings") },
-                icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
-                selected = false,
-                onClick = onOpenSettings,
-                modifier = Modifier.padding(12.dp),
-            )
+            Box(Modifier.padding(12.dp)) { DrawerRow("Settings", LineIcons.Settings, onOpenSettings) }
         }
     }
 
@@ -217,7 +212,7 @@ internal fun ConversationRow(
             )
             Box {
                 IconButton(onClick = { menu = true }) {
-                    Icon(Icons.Filled.MoreVert, contentDescription = "Chat options")
+                    Icon(LineIcons.More, contentDescription = "Chat options", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .7f))
                 }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     DropdownMenuItem(
@@ -250,3 +245,15 @@ private fun startOfToday(): Long = Calendar.getInstance().apply {
     set(Calendar.SECOND, 0)
     set(Calendar.MILLISECOND, 0)
 }.timeInMillis
+
+/** One sidebar destination: a thin line icon and a label, in the drawer's quiet style. */
+@Composable
+private fun DrawerRow(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit, selected: Boolean = false, quiet: Boolean = false) {
+    NavigationDrawerItem(
+        shape = MaterialTheme.shapes.small,
+        label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (quiet) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface) },
+        icon = { Icon(icon, contentDescription = null, modifier = Modifier.size(22.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+        selected = selected,
+        onClick = onClick,
+    )
+}

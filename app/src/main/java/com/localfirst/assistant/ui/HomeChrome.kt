@@ -93,7 +93,7 @@ internal fun ProfileButton(name: String, dot: Color?, actions: List<Pair<String,
         HeaderCircleButton("Profile and menu", { open = true }, dot) {
             val initial = name.trim().firstOrNull()?.uppercaseChar()
             if (initial != null) Text(initial.toString(), fontSize = 17.sp, fontWeight = FontWeight.Normal)
-            else Icon(Icons.Filled.Person, contentDescription = null, modifier = Modifier.size(20.dp))
+            else Icon(LineIcons.Person, contentDescription = null, modifier = Modifier.size(22.dp))
         }
         DropdownMenu(open, onDismissRequest = { open = false }) {
             actions.forEach { (label, action) -> DropdownMenuItem(text = { Text(label) }, onClick = { open = false; action() }) }
