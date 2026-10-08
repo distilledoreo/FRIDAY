@@ -3,6 +3,8 @@ package com.localfirst.assistant.ui
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.background
 import androidx.compose.runtime.getValue
@@ -135,5 +137,35 @@ class PolishComponentTest {
             }
         }
         capture("f-glyph")
+    }
+
+    @Test fun brandOptions() {
+        val options = listOf(
+            "D" to BrandShape(.89f, .45f, .507f),
+            "I" to BrandShape(.89f, .38f, .507f),
+            "J" to BrandShape(.8f, .38f, .507f),
+            "F" to BrandShape(.89f, .3f, .507f),
+        )
+        var dark by androidx.compose.runtime.mutableStateOf(true)
+        run {
+            compose.setContent {
+                com.localfirst.assistant.ui.theme.AssistantTheme(preferences = AppearanceSettings(theme = if (dark) ThemeMode.DARK else ThemeMode.LIGHT, reducedMotion = true)) {
+                    androidx.compose.material3.Surface(androidx.compose.ui.Modifier.fillMaxSize(), color = androidx.compose.material3.MaterialTheme.colorScheme.background) {
+                        androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.padding(16.dp)) {
+                            options.forEach { (name, shape) ->
+                                androidx.compose.foundation.layout.Row(androidx.compose.ui.Modifier.padding(vertical = 18.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                                    androidx.compose.material3.Text(name, androidx.compose.ui.Modifier.width(28.dp), color = androidx.compose.ui.graphics.Color(0xFFE89980))
+                                    FridayBrand(0f, {}, closed = shape, modifier = androidx.compose.ui.Modifier.graphicsLayer(scaleX = 2.2f, scaleY = 2.2f, transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, .5f)))
+                                }
+                            }
+                            androidx.compose.foundation.layout.Row { androidx.compose.material3.Text("open", androidx.compose.ui.Modifier.width(28.dp), color = androidx.compose.ui.graphics.Color(0xFFE89980), fontSize = 10.sp); FridayBrand(1f, {}) }
+                        }
+                    }
+                }
+            }
+            capture("brand-finalists-dark")
+            compose.runOnIdle { dark = false }
+            capture("brand-finalists-light")
+        }
     }
 }

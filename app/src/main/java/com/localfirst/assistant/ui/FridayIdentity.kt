@@ -39,6 +39,12 @@ import kotlin.math.PI
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.lerp
 
+/** The closed menu icon's proportions, relative to the top line: middle and bottom line lengths, middle height (share of cap height), faint stem. */
+internal data class BrandShape(val middle:Float,val bottom:Float,val middleHeight:Float=.5f,val ghostStem:Float=0f) {
+    // Chosen from a side-by-side comparison: reads as an F first, while three distinct lines still say "menu".
+    companion object { val DEFAULT=BrandShape(.89f,.38f,.507f) }
+}
+
 /**
  * The F is the menu button. Closed, three lines stand in for it (the bottom one shorter); as the
  * sidebar opens ([progress] 0 to 1) the top and middle lines become the F's arms and the bottom line
@@ -46,7 +52,7 @@ import androidx.compose.ui.graphics.lerp
  * and hand over to the real glyph at the end, so the open word is simply "FRIDAY" in one typeface.
  */
 @Composable
-internal fun FridayBrand(progress:Float,onClick:()->Unit,modifier:Modifier=Modifier,foreground:Color=MaterialTheme.colorScheme.onBackground) {
+internal fun FridayBrand(progress:Float,onClick:()->Unit,modifier:Modifier=Modifier,foreground:Color=MaterialTheme.colorScheme.onBackground,closed:BrandShape=BrandShape.DEFAULT) {
     val p=progress.coerceIn(0f,1f)
     val density=androidx.compose.ui.platform.LocalDensity.current
     val scale=density.fontScale
@@ -80,11 +86,13 @@ internal fun FridayBrand(progress:Float,onClick:()->Unit,modifier:Modifier=Modif
             val topY=baseline-cap+mix(line,.05f*em)/2f
             drawLine(lines,Offset(stemLeft,topY),Offset(topRight,topY),mix(line,.05f*em),butt)
             // Middle line becomes the slightly shorter middle arm.
-            val midY=baseline-cap*mix(.5f,.507f)
-            drawLine(lines,Offset(stemLeft,midY),Offset(mix(topRight,.4825f*em),midY),mix(line,.0525f*em),butt)
+            val midY=baseline-cap*mix(closed.middleHeight,.507f)
+            drawLine(lines,Offset(stemLeft,midY),Offset(mix(stemLeft+(topRight-stemLeft)*closed.middle,.4825f*em),midY),mix(line,.0525f*em),butt)
             // Bottom line (shorter) swings up around its left end into the full-height stem.
             val angle=-PI.toFloat()/2f*p
-            val length=mix((topRight-stemLeft)*.6f,cap)
+            val length=mix((topRight-stemLeft)*closed.bottom,cap)
+            // An optional faint stem hints at the F while closed.
+            if(closed.ghostStem>0f&&p<1f)drawLine(lines.copy(alpha=lines.alpha*closed.ghostStem*(1f-p)),Offset(stemLeft+stemWidth/2f,baseline),Offset(stemLeft+stemWidth/2f,baseline-cap),stemWidth,butt)
             val pivot=Offset(mix(stemLeft,stemLeft+stemWidth/2f),baseline-mix(line/2f,0f))
             drawLine(lines,pivot,pivot+Offset(length*kotlin.math.cos(angle),length*sin(angle)),mix(line,stemWidth),butt)
             drawText(word,topLeft=origin)
