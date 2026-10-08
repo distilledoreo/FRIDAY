@@ -19,6 +19,7 @@ import java.io.File
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -161,6 +162,13 @@ fun ChatScreen(viewModel: ChatViewModel) {
                 snackbarHost = { SnackbarHost(snackbar) },
                 topBar = {
                     CenterAlignedTopAppBar(
+                        // Incognito looks different at a glance, like a private browser window.
+                        colors = if (state.privacy.incognito) TopAppBarDefaults.centerAlignedTopAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.inverseSurface,
+                            titleContentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                            navigationIconContentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                            actionIconContentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                        ) else TopAppBarDefaults.centerAlignedTopAppBarColors(),
                         navigationIcon = {
                             IconButton(onClick = { scope.launch { drawerState.open() } }) {
                                 Icon(Icons.Filled.Menu, contentDescription = "Chats")
@@ -185,7 +193,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                         },
                         actions = {
                             MoreActions(buildList {
-                                add("Start incognito chat" to { viewModel.startIncognito() })
+                                if (state.privacy.incognito) add("Exit incognito" to viewModel::newChat) else add("Start incognito chat" to { viewModel.startIncognito() })
                                 if (state.privacy.incognito) add((if (state.privacy.freshSlate) "Use saved memories (new incognito chat)" else "Fresh slate (new incognito chat)") to { viewModel.startIncognito(!state.privacy.freshSlate) })
                                 add((if (state.projectId == null) "Choose project" else "Project details") to {
                                     state.projectId?.let(viewModel::openProject) ?: viewModel.openWorkspace(WorkspaceDestination.PROJECTS)
@@ -193,8 +201,14 @@ fun ChatScreen(viewModel: ChatViewModel) {
                                 if (state.projectId != null) add("Remove from project" to { viewModel.selectProject(null) })
                                 if (state.conversationId != null) add("Export chat" to { viewModel.openWorkspace(WorkspaceDestination.DATA) })
                             })
-                            IconButton(onClick = viewModel::newChat, enabled = state.messages.isNotEmpty() || state.draft.isNotBlank() || state.draftAttachments.isNotEmpty() || state.projectId != null) {
-                                Icon(Icons.Filled.Create, contentDescription = "New chat")
+                            if (state.privacy.incognito) {
+                                TextButton(onClick = viewModel::newChat, enabled = !state.workspaceBusy) {
+                                    Text("Exit", color = MaterialTheme.colorScheme.inverseOnSurface)
+                                }
+                            } else {
+                                IconButton(onClick = viewModel::newChat, enabled = state.messages.isNotEmpty() || state.draft.isNotBlank() || state.draftAttachments.isNotEmpty() || state.projectId != null) {
+                                    Icon(Icons.Filled.Create, contentDescription = "New chat")
+                                }
                             }
                         },
                     )
@@ -213,7 +227,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                                 Text("Won’t be saved · Fresh slate", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
                                 androidx.compose.material3.Switch(state.privacy.freshSlate, { viewModel.startIncognito(it) }, enabled = !state.busy && !state.workspaceBusy)
                             }
-                            Text(if (state.privacy.freshSlate) "No memories. Ends when you leave the app or start another chat." else "Saved memories are available. Ends when you leave the app or start another chat.", Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelSmall)
+                            Text(if (state.privacy.freshSlate) "No memories. Nothing is saved; tap Exit at the top to leave." else "Uses your saved memories. Nothing is saved; tap Exit at the top to leave.", Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelSmall)
                         }
                         Box {
                         Composer(
