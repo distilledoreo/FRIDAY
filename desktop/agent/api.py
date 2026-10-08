@@ -9,7 +9,10 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
+from pydantic import BaseModel, Field, ConfigDict, SecretStr
 
 from .approvals import Approvals
 
@@ -31,10 +34,22 @@ class Approval(BaseModel):
     fingerprint: str = Field(pattern=r'^[a-f0-9]{64}$')
 
 
+class PrivateAccountRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+        async def private_errors(request):
+            try: return await handler(request)
+            except RequestValidationError:
+                if request.url.path.startswith('/workspace/agent/accounts'):
+                    return JSONResponse(status_code=422, content={'detail':'Invalid account request; check required fields and limits'})
+                raise
+        return private_errors
+
+
 def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=30):
     store = Approvals(Path(root) / 'agent.sqlite')
     if engine is not None and hasattr(engine, 'bind'): engine.bind(store)
-    router = APIRouter(prefix='/workspace/agent', dependencies=auth)
+    router = APIRouter(prefix='/workspace/agent', dependencies=auth, route_class=PrivateAccountRoute)
     from .review import OutgoingReview
     try:
         from .vault import Vault
@@ -57,17 +72,31 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
                 'detail': 'FRIDAY can research public pages and report back. Account actions are still being connected.' if ready else unavailable_detail or 'Cloud agent unavailable; proposals can be saved while its setup is checked'}
 
     class OAuthConfig(BaseModel):
+        model_config = ConfigDict(extra='forbid')
         client_id: str = Field(max_length=300)
-        client_secret: str | None = Field(default=None, max_length=500)
+        client_secret: SecretStr | None = Field(default=None, max_length=500)
 
     class OAuthStart(BaseModel):
+        model_config = ConfigDict(extra='forbid')
         provider: str
         features: list[str] = Field(default_factory=lambda: ['mail_read','calendar_read'], max_length=3)
 
     class OAuthFinish(BaseModel):
+        model_config = ConfigDict(extra='forbid')
         flow_id: str = Field(max_length=100)
         state: str = Field(max_length=128)
-        code: str = Field(min_length=1, max_length=8192)
+        code: SecretStr = Field(min_length=1, max_length=8192)
+
+    class MailConfig(BaseModel):
+        model_config = ConfigDict(extra='forbid')
+        email: str = Field(min_length=1, max_length=320)
+        username: str = Field(min_length=1, max_length=320)
+        password: SecretStr = Field(min_length=1, max_length=1024)
+        imap_host: str = Field(min_length=1, max_length=253)
+        smtp_host: str | None = Field(default=None, min_length=1, max_length=253)
+        smtp_port: int | None = Field(default=None, strict=True)
+        smtp_username: str | None = Field(default=None, min_length=1, max_length=320)
+        smtp_password: SecretStr | None = Field(default=None, min_length=1, max_length=1024)
 
     async def account_call(method, *args):
         if accounts is None: raise HTTPException(503, 'Install and unlock the desktop credential vault first')
@@ -83,7 +112,9 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
     @router.post('/accounts/config/{provider}')
     async def configure_provider(provider: str, body: OAuthConfig):
         if accounts is None: raise HTTPException(503, 'Credential vault unavailable')
-        try: accounts.configure(provider, body.model_dump(exclude_none=True))
+        config = body.model_dump(exclude_none=True)
+        if 'client_secret' in config: config['client_secret'] = config['client_secret'].get_secret_value()
+        try: accounts.configure(provider, config)
         except ValueError as error: raise HTTPException(409, str(error)) from None
         except Exception: raise HTTPException(503, 'Unlock the desktop credential vault first') from None
         return {'provider':provider,'configured':True}
@@ -92,9 +123,16 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
     async def start_sign_in(body: OAuthStart):
         return await account_call(accounts.begin if accounts else None, body.provider, body.features)
 
+    @router.post('/accounts/imap')
+    async def connect_mail(body: MailConfig):
+        config = body.model_dump(exclude_none=True)
+        for name in ('password', 'smtp_password'):
+            if name in config: config[name] = config[name].get_secret_value()
+        return await account_call(accounts.connect_mail if accounts else None, config)
+
     @router.post('/accounts/oauth/complete')
     async def complete_sign_in(body: OAuthFinish):
-        return await account_call(accounts.complete if accounts else None, body.flow_id, body.state, body.code)
+        return await account_call(accounts.complete if accounts else None, body.flow_id, body.state, body.code.get_secret_value())
 
     @router.post('/accounts/oauth/{flow_id}/cancel')
     async def cancel_sign_in(flow_id: str):
@@ -121,7 +159,7 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
     @router.get('/accounts')
     async def list_accounts():
         return {'accounts': vault.accounts() if vault else [], 'vault_installed': vault is not None,
-                'detail': 'Google/Microsoft backend OAuth and bounded mail/calendar readers are connected; phone sign-in and actual accounts still require setup. Credentials have no read/export API.'}
+                'detail': 'Google/Microsoft and public TLS IMAP accounts support bounded reads. Credentials have no read/export API. SMTP settings are saved but sending remains disabled.'}
 
     @router.get('/tasks')
     async def tasks(limit: int = Query(default=50, ge=1, le=100)):

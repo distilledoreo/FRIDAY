@@ -771,6 +771,12 @@ class ChatViewModel(
         workspace?.request("/workspace/agent/accounts/config/$provider", "POST", body) ?: error("Computer unavailable.")
         loadAccounts(); "Provider configured on the PC."
     }
+    fun connectMailAccount(email: String, username: String, password: String, imapHost: String, smtpHost: String, smtpPort: Int) = workspaceAction {
+        val body = JSONObject().put("email", email.trim()).put("username", username.trim()).put("password", password).put("imap_host", imapHost.trim())
+        if (smtpHost.isNotBlank()) { body.put("smtp_host", smtpHost.trim()); body.put("smtp_port", smtpPort) }
+        workspace?.request("/workspace/agent/accounts/imap", "POST", body) ?: error("Computer unavailable.")
+        loadAccounts(); "Mail account connected. SMTP settings are saved; sending remains disabled."
+    }
     fun beginAccountSignIn(provider: String, features: List<String>) = workspaceAction {
         val value = JSONObject(workspace?.request("/workspace/agent/accounts/oauth/start", "POST", JSONObject().put("provider", provider).put("features", JSONArray(features))) ?: error("Computer unavailable."))
         _state.update { it.copy(oauthFlow = value, oauthLaunched = false, oauthCompleting = false, oauthResolutionFlow = null) }; "Continue in the provider’s sign-in screen."

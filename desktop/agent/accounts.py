@@ -43,17 +43,52 @@ async def request_json(client, method, url, **kwargs):
 
 
 class Accounts:
-    def __init__(self, vault, client=None):
+    def __init__(self, vault, client=None, mail=None):
         self.vault = vault
         self.client = client or httpx.AsyncClient(timeout=45, trust_env=False, follow_redirects=False)
         self.owns_client = client is None
         self.flows = {}
         self.lock = asyncio.Lock()
         self.refresh_locks = {}
+        from .mail import Mail
+        self.mail = mail or Mail()
+        self.mail_tasks = set()
 
     async def close(self):
         self.flows.clear()
+        if self.mail_tasks: await asyncio.gather(*self.mail_tasks, return_exceptions=True)
         if self.owns_client: await self.client.aclose()
+
+    async def mail_call(self, method, *args):
+        # Cancellation never releases the slot while its bounded host read runs.
+        if len(self.mail_tasks) >= 2: raise AccountError('Mail access is busy; try again shortly')
+        task = asyncio.create_task(asyncio.to_thread(method, *args))
+        self.mail_tasks.add(task)
+        def finished(value):
+            self.mail_tasks.discard(value)
+            if not value.cancelled(): value.exception()  # Consume detached failures.
+        task.add_done_callback(finished)
+        from .mail import MailError
+        try: return await asyncio.wait_for(asyncio.shield(task), timeout=45)
+        except MailError as error: raise AccountError(str(error)) from None
+        except Exception: raise AccountError('Mail access unavailable; check settings and reconnect') from None
+
+    async def connect_mail(self, value):
+        from .mail import settings
+        config = settings(value)
+        await self.mail_call(self.mail.verify, config)
+        existing = self.vault.find_account('imap', config['email'])
+        if existing:
+            self.vault.replace_credentials(existing['id'], config)
+            return self.vault.metadata(existing['id'])
+        return self.vault.add('imap', config['email'], config)
+
+    def mail_config(self, identifier):
+        metadata = self.vault.metadata(identifier)
+        if metadata['provider'] != 'imap': return None
+        config = self.vault.credentials(identifier)
+        if 'mail_read' not in config.get('features', []): raise AccountError('This account did not authorize mail reads')
+        return config
 
     def configure(self, provider, config):
         if provider not in SCOPES or not isinstance(config, dict): raise ValueError('Unsupported OAuth provider')
@@ -165,6 +200,12 @@ class Accounts:
 
     async def read_messages(self, identifier, query='', limit=10):
         if not isinstance(query, str) or len(query)>500 or type(limit) is not int or not 1<=limit<=20: raise ValueError('Invalid mail query/limit')
+        config = self.mail_config(identifier)
+        if config is not None:
+            messages = await self.mail_call(self.mail.read_messages, config, query, limit)
+            self.vault.metadata(identifier)
+            return {'account_id':identifier, 'messages':messages, 'untrusted':True,
+                    'detail':'Read only; at most 20 headers from the latest 100 inbox messages. Search is limited to that window.'}
         provider, token = await self.token(identifier, 'mail_read')
         headers = {'Authorization':'Bearer '+token}
         if provider == 'google':
@@ -195,6 +236,13 @@ class Accounts:
         return {'cancelled': True}
 
     async def read_message(self, identifier, message_id):
+        config = self.mail_config(identifier)
+        if config is not None:
+            if not isinstance(message_id, str) or not re.fullmatch(r'[1-9][0-9]{0,9}:[1-9][0-9]{0,9}', message_id): raise ValueError('Invalid IMAP message identifier')
+            value = await self.mail_call(self.mail.read_message, config, message_id)
+            self.vault.metadata(identifier)
+            return {'account_id':identifier, 'message':value, 'untrusted':True,
+                    'detail':'Read only; message stays unread. Attachments and remote images are not fetched.'}
         message_id = self._message_id(message_id)
         provider, token = await self.token(identifier, 'mail_read')
         headers = {'Authorization':'Bearer '+token}

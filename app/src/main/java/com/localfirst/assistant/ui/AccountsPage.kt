@@ -18,6 +18,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.unit.dp
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.Identity
@@ -37,6 +39,7 @@ internal fun AccountsPage(state: ChatUiState, vm: ChatViewModel) {
     var mailRead by remember { mutableStateOf(true) }
     var calendarRead by remember { mutableStateOf(true) }
     var mailSend by remember { mutableStateOf(false) }
+    var mailSetup by remember { mutableStateOf(false) }
     val resolution = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         if (result.resultCode != Activity.RESULT_OK || result.data == null) vm.googleAccountResult(null)
         else runCatching { Identity.getAuthorizationClient(context).getAuthorizationResultFromIntent(result.data) }
@@ -92,6 +95,15 @@ internal fun AccountsPage(state: ChatUiState, vm: ChatViewModel) {
                 }
             }
         }
+        item {
+            OutlinedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Other email provider", style = MaterialTheme.typography.titleMedium)
+                    Text("Connect a public IMAP server with verified TLS on port 993. Use a provider app password if required. SMTP settings can be saved for future approved sending.")
+                    Button(onClick = { mailSetup = true }, enabled = flow == null && !state.workspaceBusy) { Text("Connect mail account") }
+                }
+            }
+        }
         if (state.connectedAccounts.isEmpty()) item { Text("No accounts connected.") }
         items(state.connectedAccounts, key = { it.getString("id") }) { account ->
             OutlinedCard(Modifier.fillMaxWidth()) {
@@ -99,7 +111,7 @@ internal fun AccountsPage(state: ChatUiState, vm: ChatViewModel) {
                     Text(account.optString("label"), style = MaterialTheme.typography.titleMedium)
                     Text(account.optString("provider"))
                     Row { TextButton(onClick = { vm.readAccountMail(account.getString("id")) }, enabled = !state.workspaceBusy) { Text("Inbox") }
-                        TextButton(onClick = { vm.readAccountCalendar(account.getString("id")) }, enabled = !state.workspaceBusy) { Text("Next 7 days") }
+                        if (account.optString("provider") != "imap") TextButton(onClick = { vm.readAccountCalendar(account.getString("id")) }, enabled = !state.workspaceBusy) { Text("Next 7 days") }
                         TextButton(onClick = { remove = account }, enabled = !state.workspaceBusy) { Text("Remove") } }
                 }
             }
@@ -125,6 +137,9 @@ internal fun AccountsPage(state: ChatUiState, vm: ChatViewModel) {
         }
         item { Spacer(Modifier.height(24.dp)) }
     }
+    if (mailSetup) MailAccountDialog(onDismiss = { mailSetup = false }, onConnect = { email, username, password, imap, smtp, port ->
+        vm.connectMailAccount(email, username, password, imap, smtp, port); mailSetup = false
+    })
     setup?.let { provider ->
         AlertDialog(onDismissRequest = { setup = null; secret = "" }, title = { Text("${provider.replaceFirstChar(Char::uppercase)} application setup") },
             text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -138,4 +153,32 @@ internal fun AccountsPage(state: ChatUiState, vm: ChatViewModel) {
         text = { Text("Remove ${account.optString("label")} and its saved credential from FRIDAY. Provider grants can also be revoked in its account settings.") },
         confirmButton = { TextButton(onClick = { vm.removeAccount(account.getString("id")); remove = null }) { Text("Remove") } },
         dismissButton = { TextButton(onClick = { remove = null }) { Text("Cancel") } }) }
+}
+
+@Composable
+private fun MailAccountDialog(onDismiss: () -> Unit, onConnect: (String, String, String, String, String, Int) -> Unit) {
+    var email by remember { mutableStateOf("") }
+    var username by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var imap by remember { mutableStateOf("") }
+    var smtp by remember { mutableStateOf("") }
+    var startTls by remember { mutableStateOf(false) }
+    AlertDialog(onDismissRequest = { password = ""; onDismiss() }, title = { Text("Connect mail account") },
+        text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("This checks your IMAP login and saves encrypted credentials on the PC. Messages remain unread. SMTP login and sending are not enabled. Use OAuth above for Google and Microsoft.")
+            OutlinedTextField(email, { email = it.take(320) }, label = { Text("Email address") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email))
+            OutlinedTextField(username, { username = it.take(320) }, label = { Text("Login username · blank uses email") }, singleLine = true)
+            OutlinedTextField(password, { password = it.take(1024) }, label = { Text("Password or app password") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
+            OutlinedTextField(imap, { imap = it.take(253) }, label = { Text("IMAP hostname · TLS port 993") }, singleLine = true)
+            OutlinedTextField(smtp, { smtp = it.take(253) }, label = { Text("SMTP hostname · optional") }, singleLine = true)
+            if (smtp.isNotBlank()) {
+                Row { Text("SMTP STARTTLS on 587", Modifier.weight(1f)); Switch(startTls, { startTls = it }) }
+                Text(if (startTls) "Port 587 requires TLS before authentication." else "SMTP uses implicit TLS on port 465.", style = MaterialTheme.typography.bodySmall)
+                Text("Future SMTP use shares this username and password. Settings are saved without checking SMTP login.", style = MaterialTheme.typography.bodySmall)
+            }
+        } },
+        confirmButton = { TextButton(onClick = {
+            onConnect(email, username.ifBlank { email }, password, imap, smtp, if (startTls) 587 else 465); password = ""
+        }, enabled = email.isNotBlank() && password.isNotBlank() && imap.isNotBlank()) { Text("Check login and save on PC") } },
+        dismissButton = { TextButton(onClick = { password = ""; onDismiss() }) { Text("Cancel") } })
 }
