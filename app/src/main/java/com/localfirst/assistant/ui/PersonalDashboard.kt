@@ -4,15 +4,11 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.DateRange
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.*
@@ -43,13 +39,20 @@ internal fun PersonalDashboard(state:ChatUiState,vm:ChatViewModel,onClose:()->Un
     val data=state.dashboard
     val level=LocalAppearance.current.proactivity
     val uri=LocalUriHandler.current
+    val accent=com.localfirst.assistant.ui.theme.LocalFridayPalette.current.accent
+    val muted=MaterialTheme.colorScheme.onSurfaceVariant
     var allEvents by remember { mutableStateOf(false) }
+    var openEvent by remember { mutableStateOf<String?>(null) }
+    var weatherOpen by remember { mutableStateOf(false) }
+    val enabled=!state.workspaceBusy&&!state.busy
     fun go(destination:WorkspaceDestination) { onClose();vm.openWorkspace(destination) }
+    fun talk(text:String) { onClose();vm.chatAbout(text) }
     LazyColumn(Modifier.fillMaxWidth().heightIn(min=240.dp,max=720.dp),contentPadding=PaddingValues(start=16.dp,end=16.dp,bottom=24.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
         item { Row(verticalAlignment=Alignment.CenterVertically) {
-            Text(LocalDate.now().format(DateTimeFormatter.ofPattern("EEEE, MMMM d")),Modifier.weight(1f).padding(start=4.dp),style=MaterialTheme.typography.labelLarge,color=MaterialTheme.colorScheme.onSurfaceVariant)
-            IconButton(onClick=vm::refreshDashboard,enabled=!data.loading) { Icon(Icons.Filled.Refresh,"Refresh dashboard",Modifier.size(20.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant) }
-            IconButton(onClick=onClose) { Icon(Icons.Filled.Close,"Close dashboard",Modifier.size(20.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant) }
+            Text(LocalDate.now().format(DateTimeFormatter.ofPattern("EEEE, MMMM d")),Modifier.weight(1f).padding(start=4.dp),style=MaterialTheme.typography.labelLarge,color=muted)
+            IconButton(onClick={go(WorkspaceDestination.BRIEF)}) { Icon(LineIcons.Settings,"Dashboard settings",Modifier.size(20.dp),tint=muted) }
+            IconButton(onClick=vm::refreshDashboard,enabled=!data.loading) { Icon(LineIcons.Refresh,"Refresh dashboard",Modifier.size(20.dp),tint=muted) }
+            IconButton(onClick=onClose) { Icon(LineIcons.Close,"Close dashboard",Modifier.size(20.dp),tint=muted) }
         } }
         if(state.privacy.incognito) {
             item { DashCard { DashMessage("Your dashboard is unavailable in incognito.") } }
@@ -70,33 +73,30 @@ internal fun PersonalDashboard(state:ChatUiState,vm:ChatViewModel,onClose:()->Un
             val events=rows(calendar?.optJSONArray("events"))
             item { DashCard {
                 Row(Modifier.fillMaxWidth().padding(start=16.dp,end=4.dp,top=6.dp,bottom=6.dp),verticalAlignment=Alignment.CenterVertically) {
-                    Row(Modifier.weight(1f).clip(MaterialTheme.shapes.small).clickable { go(WorkspaceDestination.BRIEF) }.padding(vertical=10.dp),verticalAlignment=Alignment.CenterVertically) {
-                        Icon(Icons.Filled.DateRange,null,Modifier.size(22.dp),tint=com.localfirst.assistant.ui.theme.LocalFridayPalette.current.accent)
-                        Spacer(Modifier.width(12.dp));Text("Today",style=MaterialTheme.typography.titleMedium);Chevron()
-                    }
+                    Icon(LineIcons.Calendar,null,Modifier.size(22.dp),tint=accent)
+                    Spacer(Modifier.width(12.dp));Text("Today",Modifier.weight(1f).padding(vertical=10.dp),style=MaterialTheme.typography.titleMedium)
                     weather?.let { source ->
                         val high=source.optDouble("temperature_2m_max")
-                        Row(Modifier.clip(MaterialTheme.shapes.small).clickable { source.optString("source").takeIf { it.startsWith("https://") }?.let(uri::openUri) }.padding(10.dp),verticalAlignment=Alignment.CenterVertically) {
+                        Row(Modifier.clip(MaterialTheme.shapes.small).clickable { weatherOpen=!weatherOpen }.padding(10.dp),verticalAlignment=Alignment.CenterVertically) {
                             WeatherGlyph(source.optString("conditions"))
                             Spacer(Modifier.width(8.dp))
                             Text(if(high.isFinite())"${high.toInt()}°" else source.optString("conditions"),style=MaterialTheme.typography.titleMedium)
-                            Chevron()
                         }
                     }
                 }
+                if(weatherOpen)weather?.let { source -> WeatherDetail(source) { source.optString("source").takeIf { it.startsWith("https://") }?.let(uri::openUri) } }
                 HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant.copy(alpha=.5f))
                 val phone=data.phoneEvents
                 when {
                     calendar?.optString("status")!="available"&&phone!=null -> {
                         if(phone.isEmpty())DashMessage("Nothing on your calendar today.")
                         phone.take(if(allEvents)30 else 4).forEachIndexed { index,event ->
-                            DashRow(onClick={vm.openPhoneCalendar()}) {
-                                Text(if(event.allDay)"All day" else event.start.format(DateTimeFormatter.ofPattern("h:mm a")),Modifier.width(76.dp),style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                                Box(Modifier.padding(end=14.dp).size(8.dp).clip(CircleShape).background(eventColor(index,com.localfirst.assistant.ui.theme.LocalFridayPalette.current.accent)))
-                                DashText(event.title,phoneEventDetail(event))
+                            val key="phone-$index"
+                            EventRow(if(event.allDay)"All day" else event.start.format(DateTimeFormatter.ofPattern("h:mm a")),event.title,phoneEventDetail(event),eventColor(index,accent),openEvent==key,{openEvent=if(openEvent==key)null else key}) {
+                                EventActions(event.location,onOpen={vm.openPhoneCalendar(event.start)},onPrep={talk("Help me prepare for “${event.title}” today${event.location?.takeIf(String::isNotBlank)?.let { " at $it" }.orEmpty()}.")})
                             }
                         }
-                        if(phone.size>4)DashRow(onClick={allEvents=!allEvents}) { Text(if(allEvents)"Show fewer"else"Show all ${phone.size} events",style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant) }
+                        if(phone.size>4)ShowAll(allEvents,phone.size) { allEvents=!allEvents }
                     }
                     calendar?.optString("status")!="available"&&data.phoneCalendarNeedsPermission -> DashRow(onClick=vm::allowPhoneCalendar) { DashText("Show your phone’s calendar","Allow calendar access") }
                     calendar?.optString("status")=="unavailable" -> DashRow(onClick={go(WorkspaceDestination.ACCOUNTS)}) { DashText("Your calendar couldn’t be checked","Open accounts") }
@@ -104,75 +104,153 @@ internal fun PersonalDashboard(state:ChatUiState,vm:ChatViewModel,onClose:()->Un
                     events.isEmpty() -> DashMessage("Nothing on your calendar today.")
                     else -> {
                         events.take(if(allEvents)30 else 4).forEachIndexed { index,event ->
-                            DashRow(onClick={go(WorkspaceDestination.ACCOUNTS)}) {
-                                Text(eventTime(event,zone),Modifier.width(76.dp),style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                                Box(Modifier.padding(end=14.dp).size(8.dp).clip(CircleShape).background(eventColor(index,com.localfirst.assistant.ui.theme.LocalFridayPalette.current.accent)))
-                                DashText(event.optString("title").ifBlank { event.optString("summary").ifBlank { "Untitled event" } },eventDetail(event))
+                            val key="pc-$index"
+                            val title=event.optString("title").ifBlank { event.optString("summary").ifBlank { "Untitled event" } }
+                            val link=event.optString("htmlLink").takeIf { it.startsWith("https://") }
+                            EventRow(eventTime(event,zone),title,eventDetail(event),eventColor(index,accent),openEvent==key,{openEvent=if(openEvent==key)null else key}) {
+                                EventActions(event.optString("location").takeIf(String::isNotBlank),onOpen=link?.let { l -> { uri.openUri(l) } },onPrep={talk("Help me prepare for “$title” today.")})
                             }
                         }
-                        if(events.size>4)DashRow(onClick={allEvents=!allEvents}) { Text(if(allEvents)"Show fewer"else"Show all ${events.size} events",style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant) }
+                        if(events.size>4)ShowAll(allEvents,events.size) { allEvents=!allEvents }
                     }
                 }
-                Spacer(Modifier.height(6.dp))
+                HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant.copy(alpha=.5f))
+                Row(Modifier.fillMaxWidth().clickable(enabled=!state.busy) { onClose();vm.discussDailyBrief() }.heightIn(min=52.dp).padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically) {
+                    SparkleGlyph();Spacer(Modifier.width(12.dp))
+                    Text("Plan my day with FRIDAY",Modifier.weight(1f),style=MaterialTheme.typography.bodyLarge)
+                    Chevron()
+                }
             } }
-            val proposals=data.proposals.filter { dashboardProposalKinds(level,it.optString("kind")) }.take(level.suggestionLimit)
-            val attention=data.agentTasks.filter { it.optString("status") in FRIDAY_NEEDS_YOU }
-            val reviewCount=data.followups.size+attention.size+proposals.size
-            item { Row(horizontalArrangement=Arrangement.spacedBy(12.dp),modifier=Modifier.height(IntrinsicSize.Min)) {
-                DashCard(Modifier.weight(.42f).fillMaxHeight(),onClick={ if(attention.isNotEmpty()) { onClose();vm.openFriday() } else go(WorkspaceDestination.BRIEF) }) {
-                    Row(Modifier.fillMaxSize().padding(16.dp),verticalAlignment=Alignment.CenterVertically) {
-                        Icon(Icons.AutoMirrored.Filled.List,null,Modifier.size(22.dp),tint=com.localfirst.assistant.ui.theme.LocalFridayPalette.current.accent)
-                        Spacer(Modifier.width(12.dp))
-                        Text(if(reviewCount==0)"All caught up" else "$reviewCount ${if(reviewCount==1)"thing" else "things"} to review",Modifier.weight(1f),style=MaterialTheme.typography.bodyMedium)
-                        if(reviewCount>0)Chevron()
+            val tz=briefZone(zone)
+            fun shown(kind:String)=sections.firstOrNull { it.optString("kind")==kind }?.optString("status")!="disabled"
+            if(shown("followups"))item { DashCard {
+                Row(Modifier.padding(start=16.dp,top=14.dp,end=16.dp,bottom=2.dp),verticalAlignment=Alignment.CenterVertically) {
+                    Icon(LineIcons.Checklist,null,Modifier.size(22.dp),tint=accent);Spacer(Modifier.width(12.dp))
+                    Text("Follow-ups",Modifier.weight(1f),style=MaterialTheme.typography.titleMedium)
+                    if(data.followups.isNotEmpty())Text("${data.followups.size}",style=MaterialTheme.typography.labelLarge,color=muted)
+                }
+                if(data.followups.isEmpty())Text("Nothing waiting on you.",Modifier.padding(start=50.dp,top=2.dp,bottom=4.dp),style=MaterialTheme.typography.bodyMedium,color=muted)
+                data.followups.take(6).forEach { item -> key(item.optString("id")) { FollowupRow(item,tz,enabled,vm,::talk) } }
+                if(data.followups.size>6)DashRow(onClick={go(WorkspaceDestination.BRIEF)}) { Text("See all ${data.followups.size}",Modifier.weight(1f),style=MaterialTheme.typography.bodyMedium,color=muted) }
+                AddFollowup(tz,enabled,vm)
+                Spacer(Modifier.height(4.dp))
+            } }
+            val suggestions=if(!shown("situations"))emptyList() else data.proposals.filter { dashboardProposalKinds(level,it.optString("kind"))&&it.optString("kind")!="followup" }.take(level.suggestionLimit)
+            if(suggestions.isNotEmpty())item { DashCard {
+                Row(Modifier.padding(start=16.dp,top=14.dp,end=16.dp,bottom=4.dp),verticalAlignment=Alignment.CenterVertically) {
+                    SparkleGlyph();Spacer(Modifier.width(12.dp));Text("Worth a look",style=MaterialTheme.typography.titleMedium)
+                }
+                suggestions.forEach { proposal ->
+                    val source=proposal.optJSONObject("source")?:proposal
+                    val topic=source.optString("topic").ifBlank { source.optString("title").ifBlank { source.optString("summary") } }
+                    Column(Modifier.fillMaxWidth().padding(start=50.dp,end=16.dp,top=6.dp,bottom=6.dp)) {
+                        Text(topic.ifBlank { "Something from your conversations" }.replaceFirstChar(Char::uppercase),style=MaterialTheme.typography.bodyLarge,maxLines=2,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                        source.optString("summary",source.optString("detail")).takeIf { it.isNotBlank()&&it!=topic }?.let { Text(it,style=MaterialTheme.typography.bodySmall,color=muted,maxLines=2,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
+                        Row(Modifier.padding(top=6.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                            DashPill("Pick it up",primary=true,enabled=!state.busy) { talk("Let’s pick up where we left off on $topic.") }
+                            DashPill("Not now",enabled=enabled) { vm.dismissDashboardProposal(proposal.getString("id")) }
+                        }
                     }
                 }
-                val suggestion=proposals.firstOrNull()
-                val working=data.agentTasks.firstOrNull { it.optString("status") in FRIDAY_WORKING }
-                DashCard(Modifier.weight(.58f).fillMaxHeight(),onClick={ onClose();if(suggestion!=null)vm.openWorkspace(WorkspaceDestination.BRIEF) else vm.openFriday() }) {
-                    Row(Modifier.fillMaxSize().padding(16.dp),verticalAlignment=Alignment.CenterVertically) {
-                        SparkleGlyph()
-                        Spacer(Modifier.width(12.dp))
-                        val source=suggestion?.let { it.optJSONObject("source")?:it }
-                        DashText(
-                            source?.let { it.optString("title").ifBlank { it.optString("summary").ifBlank { "Worth a look" } } }
-                                ?: working?.let { "FRIDAY is working" } ?: "Ask FRIDAY to take something on",
-                            source?.optString("detail")?.takeIf(String::isNotBlank)
-                                ?: working?.optJSONObject("proposal")?.optString("prompt")
-                                ?: "Research, compare or keep watch for you",
-                            Modifier.weight(1f),
-                            compact=true,
-                        )
+                Spacer(Modifier.height(8.dp))
+            } }
+            val attention=data.agentTasks.filter { it.optString("status") in FRIDAY_NEEDS_YOU }
+            val working=data.agentTasks.filter { it.optString("status") in FRIDAY_WORKING }
+            item { DashCard {
+                Row(Modifier.padding(start=16.dp,top=14.dp,end=16.dp,bottom=2.dp),verticalAlignment=Alignment.CenterVertically) {
+                    Icon(LineIcons.Friday,null,Modifier.size(20.dp),tint=accent);Spacer(Modifier.width(14.dp))
+                    Text("FRIDAY",Modifier.weight(1f),style=MaterialTheme.typography.titleMedium)
+                    if(attention.isNotEmpty()||working.isNotEmpty())TextButton(onClick={onClose();vm.openFriday()},shape=MaterialTheme.shapes.small,colors=ButtonDefaults.textButtonColors(contentColor=muted)) { Text("All tasks") }
+                }
+                attention.take(3).forEach { task ->
+                    Row(Modifier.fillMaxWidth().clickable { onClose();vm.openFriday(task.optString("id")) }.padding(start=50.dp,end=12.dp,top=8.dp,bottom=8.dp),verticalAlignment=Alignment.CenterVertically) {
+                        DashText(task.optJSONObject("proposal")?.optString("prompt").orEmpty().ifBlank { "A task" },agentStatus(task.optString("status")))
+                        DashPill("Review",primary=true) { onClose();vm.openFriday(task.optString("id")) }
+                    }
+                }
+                working.take(2).forEach { task ->
+                    Row(Modifier.fillMaxWidth().clickable { onClose();vm.openFriday(task.optString("id")) }.padding(start=50.dp,end=10.dp,top=8.dp,bottom=8.dp),verticalAlignment=Alignment.CenterVertically) {
+                        DashText(task.optJSONObject("proposal")?.optString("prompt").orEmpty().ifBlank { "A task" },agentStatus(task.optString("status")))
                         Chevron()
                     }
                 }
-            } }
-            if(data.followups.isNotEmpty())item { DashCard {
-                DashHeader("Follow-ups")
-                data.followups.take(6).forEach { item ->
-                    Row(Modifier.fillMaxWidth().padding(start=16.dp,end=6.dp),verticalAlignment=Alignment.CenterVertically) {
-                        DashText(item.optString("title"),followupTime(item,zone),Modifier.weight(1f).padding(vertical=10.dp))
-                        IconButton(onClick={vm.completeDashboardFollowup(item.getString("id"))},enabled=!state.workspaceBusy&&!state.busy) { Icon(Icons.Filled.Check,"Mark ${item.optString("title")} done",tint=MaterialTheme.colorScheme.onSurfaceVariant) }
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-            } }
-            if(attention.isNotEmpty())item { DashCard {
-                DashHeader("FRIDAY needs your OK")
-                attention.take(3).forEach { task ->
-                    DashRow(onClick={onClose();vm.openFriday(task.optString("id"))}) { DashText(task.optJSONObject("proposal")?.optString("prompt").orEmpty(),agentStatus(task.optString("status"))) }
-                }
-                Spacer(Modifier.height(6.dp))
-            } }
-            item { Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.Center) {
-                TextButton(shape=MaterialTheme.shapes.small,onClick={go(WorkspaceDestination.BRIEF)},colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.onSurfaceVariant)) { Text("Edit sources") }
+                AskFriday(enabled=!state.busy) { request -> onClose();vm.askFriday(request) }
             } }
         }
     }
 }
 
 @Composable
-private fun DashCard(modifier:Modifier=Modifier,onClick:(()->Unit)?=null,content:@Composable ColumnScope.()->Unit) {
+private fun EventRow(time:String,title:String,detail:String?,dot:androidx.compose.ui.graphics.Color,open:Boolean,onToggle:()->Unit,actions:@Composable ()->Unit) {
+    Column(Modifier.fillMaxWidth().clickable(onClick=onToggle)) {
+        Row(Modifier.fillMaxWidth().heightIn(min=56.dp).padding(start=16.dp,end=16.dp,top=10.dp,bottom=10.dp),verticalAlignment=Alignment.CenterVertically) {
+            Text(time,Modifier.width(76.dp),style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Box(Modifier.padding(end=14.dp).size(8.dp).clip(CircleShape).background(dot))
+            DashText(title,detail)
+        }
+        if(open)actions()
+    }
+}
+
+/** What you can do with an event: open it, get there, or get ready for it. */
+@Composable
+private fun EventActions(location:String?,onOpen:(()->Unit)?,onPrep:()->Unit) {
+    val uri=LocalUriHandler.current
+    @OptIn(ExperimentalLayoutApi::class)
+    FlowRow(Modifier.fillMaxWidth().padding(start=16.dp,end=12.dp,bottom=12.dp),horizontalArrangement=Arrangement.spacedBy(8.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+        onOpen?.let { DashPill("Open",icon=LineIcons.Calendar,onClick=it) }
+        location?.takeIf(String::isNotBlank)?.let { place -> DashPill("Directions",icon=LineIcons.Place) { runCatching { uri.openUri("geo:0,0?q="+android.net.Uri.encode(place)) } } }
+        DashPill("Prep with FRIDAY",icon=LineIcons.Chat,onClick=onPrep)
+    }
+}
+
+@Composable
+private fun WeatherDetail(source:JSONObject,onSource:()->Unit) {
+    val low=source.optDouble("temperature_2m_min");val high=source.optDouble("temperature_2m_max")
+    val rain=source.optDouble("precipitation_probability_max")
+    val line=listOfNotNull(source.optString("conditions").takeIf(String::isNotBlank)?.replaceFirstChar(Char::uppercase),
+        if(high.isFinite()&&low.isFinite())"High ${high.toInt()}° · Low ${low.toInt()}°" else null,
+        if(rain.isFinite())"${rain.toInt()}% chance of rain" else null).joinToString(" · ")
+    Row(Modifier.fillMaxWidth().clickable(onClick=onSource).padding(start=50.dp,end=16.dp,bottom=12.dp),verticalAlignment=Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(source.optString("location"),style=MaterialTheme.typography.bodyMedium)
+            Text(line,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Chevron()
+    }
+}
+
+@Composable
+private fun ShowAll(all:Boolean,count:Int,onClick:()->Unit) =
+    Text(if(all)"Show fewer" else "Show all $count events",Modifier.fillMaxWidth().clickable(onClick=onClick).padding(start=108.dp,top=8.dp,bottom=12.dp),style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+
+/** A small rounded action: the accent one is the likely next step, the others stay quiet. */
+@Composable
+internal fun DashPill(label:String,primary:Boolean=false,icon:androidx.compose.ui.graphics.vector.ImageVector?=null,enabled:Boolean=true,onClick:()->Unit) {
+    val palette=com.localfirst.assistant.ui.theme.LocalFridayPalette.current
+    val fill=if(primary)palette.accent.copy(alpha=if(palette.dark).18f else .14f) else MaterialTheme.colorScheme.onSurface.copy(alpha=.06f)
+    Surface(onClick=onClick,enabled=enabled,shape=RoundedCornerShape(50),color=fill,contentColor=if(primary)palette.accent else MaterialTheme.colorScheme.onSurface) {
+        Row(Modifier.heightIn(min=36.dp).padding(horizontal=14.dp),verticalAlignment=Alignment.CenterVertically) {
+            icon?.let { Icon(it,null,Modifier.size(16.dp));Spacer(Modifier.width(6.dp)) }
+            Text(label,style=MaterialTheme.typography.labelLarge)
+        }
+    }
+}
+
+/** "Ask FRIDAY to take something on": hands a request straight to her. */
+@Composable
+private fun AskFriday(enabled:Boolean,onAsk:(String)->Unit) {
+    var text by remember { mutableStateOf("") }
+    fun ask() { if(text.isNotBlank()) { onAsk(text);text="" } }
+    OutlinedTextField(text,{text=it.take(4000)},Modifier.fillMaxWidth().padding(start=12.dp,end=12.dp,top=6.dp,bottom=12.dp),enabled=enabled,
+        placeholder={Text("Ask FRIDAY to take something on…")},singleLine=true,shape=RoundedCornerShape(24.dp),
+        keyboardOptions=androidx.compose.foundation.text.KeyboardOptions(imeAction=androidx.compose.ui.text.input.ImeAction.Send),
+        keyboardActions=androidx.compose.foundation.text.KeyboardActions(onSend={ask()}),
+        trailingIcon={IconButton(onClick=::ask,enabled=enabled&&text.isNotBlank()) { Icon(LineIcons.Send,"Ask FRIDAY",Modifier.size(20.dp)) }})
+}
+
+@Composable
+internal fun DashCard(modifier:Modifier=Modifier,onClick:(()->Unit)?=null,content:@Composable ColumnScope.()->Unit) {
     val dark=com.localfirst.assistant.ui.theme.LocalFridayPalette.current.dark
     val color=if(dark)androidx.compose.ui.graphics.Color(0xFF232326) else androidx.compose.ui.graphics.Color.White
     if(onClick!=null)Surface(onClick=onClick,modifier=modifier.fillMaxWidth(),shape=RoundedCornerShape(16.dp),color=color) { Column(content=content) }
@@ -180,7 +258,7 @@ private fun DashCard(modifier:Modifier=Modifier,onClick:(()->Unit)?=null,content
 }
 
 @Composable
-private fun DashRow(onClick:()->Unit,content:@Composable RowScope.()->Unit) {
+internal fun DashRow(onClick:()->Unit,content:@Composable RowScope.()->Unit) {
     Row(Modifier.fillMaxWidth().clickable(onClick=onClick).heightIn(min=56.dp).padding(start=16.dp,end=10.dp,top=10.dp,bottom=10.dp),verticalAlignment=Alignment.CenterVertically) {
         content()
         Chevron()
@@ -188,16 +266,16 @@ private fun DashRow(onClick:()->Unit,content:@Composable RowScope.()->Unit) {
 }
 
 @Composable
-private fun RowScope.DashText(title:String,detail:String?,modifier:Modifier=Modifier.weight(1f),compact:Boolean=false) {
+internal fun RowScope.DashText(title:String,detail:String?,modifier:Modifier=Modifier.weight(1f),compact:Boolean=false) {
     Column(modifier) {
         Text(title,style=if(compact)MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,maxLines=2,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
         detail?.takeIf(String::isNotBlank)?.let { Text(it,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
     }
 }
 
-@Composable private fun DashMessage(text:String) = Text(text,Modifier.padding(16.dp),style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
-@Composable private fun DashHeader(text:String) = Text(text,Modifier.padding(start=16.dp,top=14.dp,bottom=2.dp),style=MaterialTheme.typography.titleSmall)
-@Composable private fun Chevron() = Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight,null,Modifier.size(20.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=.7f))
+@Composable internal fun DashMessage(text:String) = Text(text,Modifier.padding(16.dp),style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+@Composable internal fun DashHeader(text:String) = Text(text,Modifier.padding(start=16.dp,top=14.dp,bottom=2.dp),style=MaterialTheme.typography.titleSmall)
+@Composable internal fun Chevron() = Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight,null,Modifier.size(20.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=.7f))
 
 /** Distinct, calm dot colors for consecutive events. */
 private fun eventColor(index:Int,accent:androidx.compose.ui.graphics.Color)=listOf(accent,androidx.compose.ui.graphics.Color(0xFF6F9BDE),androidx.compose.ui.graphics.Color(0xFF6DBE8B),androidx.compose.ui.graphics.Color(0xFFD9B26A),androidx.compose.ui.graphics.Color(0xFFA48BDB))[index%5]

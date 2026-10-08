@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime,timezone
 import json
 from pathlib import Path
 import tempfile
@@ -110,6 +110,9 @@ class BriefTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.brief.followups()),1);self.assertEqual(len(self.brief.followups('project')),2)
         self.configure(proactive_enabled=True)
         first=self.brief.proposals(refresh=True)['items'][0];self.assertEqual(first['source_id'],global_item['id'])
+        self.brief.change_followup(global_item['id'],'open','2026-10-09T11:00:00Z')
+        self.assertEqual(self.brief.proposals()['items'],[]);self.assertEqual(self.brief.followups()[0]['due'],datetime(2026,10,9,11,tzinfo=timezone.utc).timestamp())
+        with self.assertRaises(ValueError):self.brief.change_followup(global_item['id'],'open','2026-10-09T11:00:00')
         self.brief.change_followup(global_item['id'],'done');self.assertEqual(self.brief.proposals()['items'],[])
         self.brief.change_followup(private['id'],'deleted');self.assertEqual(self.brief.followups('project'),[])
         self.brief.add_followup(Followup(title='Another due follow-up',due='2026-10-08T11:00:00Z'))

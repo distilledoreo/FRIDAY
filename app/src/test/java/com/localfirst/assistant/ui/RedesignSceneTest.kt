@@ -109,9 +109,58 @@ class RedesignSceneTest {
             PersonalDashboard(ChatUiState(dashboard=DashboardState(loaded=true,snapshot=snapshot)),vm,onClose={})
         } } }
         compose.onNodeWithText("Nothing on your calendar today.").assertIsDisplayed()
-        compose.onNodeWithText("All caught up").assertIsDisplayed()
+        compose.onNodeWithText("Nothing waiting on you.").assertIsDisplayed()
+        compose.onNodeWithText("Add a follow-up").assertIsDisplayed()
         compose.onNodeWithText("No saved follow-ups.").assertDoesNotExist()
         capture("dashboard-connected-empty")
+    }
+
+    @Test fun dashboardItemsCanBeActedOnInPlace() {
+        val vm=(org.robolectric.RuntimeEnvironment.getApplication() as com.localfirst.assistant.AssistantApp).chat()
+        val now=System.currentTimeMillis()/1000.0
+        val snapshot=org.json.JSONObject("""{"date":"2026-10-08","timezone":"UTC","sections":[{"kind":"calendar","status":"available","events":[
+            {"title":"Design review","start":{"dateTime":"2026-10-08T15:00:00Z"},"end":{"dateTime":"2026-10-08T16:00:00Z"},"location":"Studio B"},
+            {"title":"Dentist","start":{"dateTime":"2026-10-08T18:30:00Z"},"end":{"dateTime":"2026-10-08T19:00:00Z"}}]},
+            {"kind":"weather","status":"available","location":"Isolated City","conditions":"clear sky","temperature_2m_max":24.2,"temperature_2m_min":12.0,"precipitation_probability_max":10}]}""")
+        val followups=listOf(
+            org.json.JSONObject().put("id","a").put("title","Send the venue deposit").put("due",now-3600),
+            org.json.JSONObject().put("id","b").put("title","Call back about the quote").put("due",now+86400),
+            org.json.JSONObject().put("id","c").put("title","Return the library book").put("due",org.json.JSONObject.NULL))
+        val proposals=listOf(org.json.JSONObject("""{"id":"p","kind":"situation","source":{"topic":"the apartment search","summary":"You were comparing two places last week."}}"""))
+        val tasks=listOf(org.json.JSONObject("""{"id":"t","status":"proposed","proposal":{"prompt":"Compare flights to Denver for next month"}}"""))
+        compose.setContent { AssistantTheme(preferences=AppearanceSettings(reducedMotion=true)) { Surface(Modifier.fillMaxSize(),color=MaterialTheme.colorScheme.surfaceContainerLow) {
+            PersonalDashboard(ChatUiState(dashboard=DashboardState(loaded=true,snapshot=snapshot,followups=followups,proposals=proposals,agentTasks=tasks)),vm,onClose={})
+        } } }
+        compose.onNodeWithText("Send the venue deposit").assertIsDisplayed()
+        compose.onNodeWithText("Overdue",substring=true).assertIsDisplayed()
+        capture("dashboard-actionable")
+        compose.onNodeWithText("Design review").performClick()
+        compose.onNodeWithText("Directions").assertIsDisplayed()
+        compose.onNodeWithText("Prep with FRIDAY").assertIsDisplayed()
+        compose.onNodeWithText("24°").performClick()
+        compose.onNodeWithText("High 24° · Low 12°",substring=true).assertIsDisplayed()
+        capture("dashboard-event-open")
+        compose.onNodeWithContentDescription("Options for Call back about the quote").performClick()
+        compose.onNodeWithText("Tomorrow morning").assertIsDisplayed()
+        compose.onNodeWithText("Pick a time…").assertIsDisplayed()
+        capture("dashboard-followup-menu")
+    }
+
+    @Test fun dashboardSettingsUseRowsTogglesAndTimes() {
+        val vm=(org.robolectric.RuntimeEnvironment.getApplication() as com.localfirst.assistant.AssistantApp).chat()
+        val prefs=org.json.JSONObject("""{"revision":"1","timezone":"","calendar_account_id":null,"weather":{"label":"Isolated City, Region","latitude":1.0,"longitude":2.0},"temperature_unit":"fahrenheit",
+            "include_situations":true,"include_followups":true,"morning_enabled":true,"proactive_enabled":false,"morning_time":"07:30","quiet_start":"22:00","quiet_end":"07:00","cadence_hours":168}""")
+        val followups=listOf(org.json.JSONObject().put("id","b").put("title","Call back about the quote").put("due",System.currentTimeMillis()/1000.0+86400))
+        compose.setContent { AssistantTheme(preferences=AppearanceSettings(reducedMotion=true)) { Surface(Modifier.fillMaxSize(),color=MaterialTheme.colorScheme.background) {
+            DailyBriefPage(ChatUiState(briefPreferences=prefs,briefFollowups=followups),vm)
+        } } }
+        compose.onNodeWithText("Morning brief").assertIsDisplayed()
+        compose.onNodeWithText("7:30 AM").assertIsDisplayed()
+        compose.onNodeWithText("Morning brief (HH:MM)",substring=true).assertDoesNotExist()
+        capture("brief-settings")
+        compose.onNodeWithText("Calendar").performClick()
+        compose.onNodeWithText("Connect an account…").assertIsDisplayed()
+        capture("brief-settings-calendar")
     }
 
     @Test fun startingAnActualConversationMovesTheComposerToTheBottom() {

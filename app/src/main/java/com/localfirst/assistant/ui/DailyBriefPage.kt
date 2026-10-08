@@ -1,7 +1,6 @@
 package com.localfirst.assistant.ui
 
-import android.app.DatePickerDialog
-import android.app.TimePickerDialog
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -9,154 +8,240 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
+import com.localfirst.assistant.ui.theme.LocalFridayPalette
 import org.json.JSONObject
-import java.time.*
+import java.time.LocalTime
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
+/** How often FRIDAY may offer a check-in, in hours, as the brief stores it. */
+private val CADENCES = listOf(72 to "Every few days", 168 to "About once a week", 336 to "Every two weeks", 720 to "About once a month")
+
+/**
+ * Dashboard and daily brief settings: where today comes from, what's included, and when FRIDAY may
+ * reach out. Every change saves as it's made.
+ */
 @Composable
-internal fun DailyBriefPage(state: ChatUiState, vm: ChatViewModel) {
+internal fun DailyBriefPage(state: ChatUiState, vm: ChatViewModel, onOpen: (WorkspaceDestination) -> Unit = {}) {
     val preferences = state.briefPreferences
     val context = LocalContext.current
-    val uriHandler = LocalUriHandler.current
-    var draft by remember(preferences?.optString("revision")) { mutableStateOf(preferences?.let { JSONObject(it.toString()).apply { remove("revision"); remove("calendar_account") } }) }
-    var city by remember { mutableStateOf("") }
-    var followup by remember { mutableStateOf("") }
-    var due by remember { mutableStateOf<String?>(null) }
+    var form by remember(preferences?.optString("revision")) { mutableStateOf(preferences?.let { JSONObject(it.toString()).apply { remove("revision"); remove("calendar_account") } }) }
     val enabled = !state.workspaceBusy && !state.busy && !state.privacy.incognito
-    fun change(key: String, value: Any) { draft = draft?.let { JSONObject(it.toString()).put(key, value) } }
+    var dialog by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) { vm.refreshBrief() }
-    LaunchedEffect(state.workspaceStatus) {
-        if (state.workspaceStatus == "Follow-up saved. No task or outgoing action was started.") { followup = ""; due = null }
+    fun change(vararg pairs: Pair<String, Any>) {
+        val next = form?.let { current -> JSONObject(current.toString()).apply { pairs.forEach { (k, v) -> put(k, v) } } } ?: return
+        form = next
+        vm.saveBriefPreferences(JSONObject(next.toString()))
     }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    val zone = briefZone(form?.optString("timezone"))
+
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
-            Text("Your daily brief", style = MaterialTheme.typography.titleLarge)
-            Text("Build a source snapshot for today. Selected calendar and weather sources are read only when you tap Build or confirm a chat read. Notices invite you to open the brief without fetching those sources.")
-            Text("Situations and follow-ups include global context and the current project. Nothing runs or sends automatically.", style = MaterialTheme.typography.bodySmall)
-            Row { Button(shape = MaterialTheme.shapes.small, onClick = vm::buildDailyBrief, enabled = enabled && preferences != null) { Text("Build today's brief") }; TextButton(shape = MaterialTheme.shapes.small, onClick = vm::refreshBrief, enabled = enabled) { Text("Refresh") } }
+            Text("What shows on your dashboard when you swipe up, and when FRIDAY may check in.", Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        state.dailyBrief?.let { brief ->
-            item { Text("${brief.optString("date")} · ${brief.optString("timezone")}", style = MaterialTheme.typography.titleMedium); Text("Snapshot checked at ${briefTime(brief.optDouble("checked_at"), brief.optString("timezone"))}. Sources may change afterward.", style = MaterialTheme.typography.bodySmall) }
-            val sections = brief.optJSONArray("sections")
-            if (sections != null) for (i in 0 until sections.length()) {
-                val section = sections.getJSONObject(i)
-                item(key = "brief-${section.optString("kind")}") {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(section.optString("kind").replaceFirstChar(Char::uppercase), style = MaterialTheme.typography.titleSmall)
-                        if (section.optString("status") != "available") Text(section.optString("detail").ifBlank { "Disabled in source settings." })
-                        else when (section.optString("kind")) {
-                            "calendar" -> {
-                                Text(section.optJSONObject("account")?.optString("label").orEmpty(), style = MaterialTheme.typography.labelMedium)
-                                val events = section.optJSONArray("events")
-                                if (events == null || events.length() == 0) Text("No events returned in today's primary-calendar window.")
-                                else for (n in 0 until events.length()) {
-                                    val event = events.getJSONObject(n)
-                                    Text(event.optString("title").ifBlank { "Untitled event" })
-                                    if (event.optBoolean("truncated")) Text("Event preview shortened; open the provider for complete details.", style = MaterialTheme.typography.bodySmall)
-                                    Text("${calendarTime(event.optJSONObject("start"), brief.optString("timezone"))} → ${calendarTime(event.optJSONObject("end"), brief.optString("timezone"))}", style = MaterialTheme.typography.bodySmall)
-                                    event.optString("location").takeIf(String::isNotBlank)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-                                }
-                                if (section.optBoolean("possibly_truncated")) Text("Calendar preview limit reached; more events may exist.")
-                            }
-                            "weather" -> {
-                                Text("${section.optString("location")}: ${section.optString("conditions")}")
-                                Text("Low ${section.optDouble("temperature_2m_min")} / high ${section.optDouble("temperature_2m_max")} ${section.optString("temperature_unit")} · precipitation chance ${section.optDouble("precipitation_probability_max").toInt()}%")
-                                Text("Forecast for today; conditions are not guaranteed. ${section.optString("attribution")}", style = MaterialTheme.typography.bodySmall)
-                                TextButton(shape = MaterialTheme.shapes.small, onClick = { uriHandler.openUri(section.getString("source")) }) { Text("Open forecast source") }
-                            }
-                            else -> {
-                                val rows = section.optJSONArray("items")
-                                if (rows == null || rows.length() == 0) Text("No items returned.")
-                                else for (n in 0 until rows.length()) {
-                                    val row = rows.getJSONObject(n)
-                                    Text(row.optString(if (section.optString("kind") == "situations") "summary" else "title"))
-                                    if (row.optBoolean("tentative")) { Text("Tentative · ${row.optString("source_title")}", style = MaterialTheme.typography.labelSmall); Text("User evidence: “${row.optString("quote")}”", style = MaterialTheme.typography.bodySmall) }
-                                    if (row.has("due") && !row.isNull("due")) Text("Due ${briefTime(row.optDouble("due"), brief.optString("timezone"))}", style = MaterialTheme.typography.bodySmall)
-                                }
-                                if (section.optBoolean("possibly_truncated")) Text("Source preview limit reached; more items may exist.", style = MaterialTheme.typography.bodySmall)
-                                Text(section.optString("detail"), style = MaterialTheme.typography.bodySmall)
+        if (state.privacy.incognito) { item { DashCard { DashMessage("Leave incognito to change these settings.") } }; return@LazyColumn }
+        val current = form
+        if (current == null) { item { DashCard { if (state.workspaceBusy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(16.dp)); DashMessage(if (state.workspaceBusy) "Loading…" else "Connect to your computer to change these settings.") } }; return@LazyColumn }
+
+        item { BriefLabel("Sources") }
+        item {
+            DashCard {
+                val account = state.connectedAccounts.firstOrNull { it.optString("id") == current.optString("calendar_account_id") }
+                val phoneAllowed = com.localfirst.assistant.phone.PermissionBroker.isGranted(context, android.Manifest.permission.READ_CALENDAR)
+                SettingRow(LineIcons.Calendar, "Calendar", account?.optString("label") ?: if (phoneAllowed) "This phone’s calendar" else "Not connected", enabled) { dialog = "calendar" }
+                SettingDivider()
+                SettingRow(LineIcons.Weather, "Weather", current.optJSONObject("weather")?.optString("label") ?: "Off", enabled) { dialog = "weather" }
+                if (current.optJSONObject("weather") != null) {
+                    SettingDivider()
+                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 52.dp, end = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Units", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                        SingleChoiceSegmentedButtonRow {
+                            listOf("fahrenheit" to "°F", "celsius" to "°C").forEachIndexed { i, (value, label) ->
+                                SegmentedButton(current.optString("temperature_unit", "celsius") == value, { change("temperature_unit" to value) }, SegmentedButtonDefaults.itemShape(i, 2), enabled = enabled, icon = {}) { Text(label) }
                             }
                         }
                     }
                 }
-            }
-            item { OutlinedButton(shape = MaterialTheme.shapes.small, onClick = vm::discussDailyBrief, enabled = enabled) { Text("Discuss in chat") }; Text("Prepares a draft. Sending it requests a confirmed read before sharing private sources with the selected model; chat may save the result.", style = MaterialTheme.typography.bodySmall) }
-        }
-        item { HorizontalDivider(); Text("Follow-ups", style = MaterialTheme.typography.titleMedium) }
-        items(state.briefFollowups, key = { it.getString("id") }) { row ->
-            Column {
-                Text(row.getString("title"))
-                if (!row.isNull("due")) Text("Due ${briefTime(row.optDouble("due"), preferences?.optString("timezone")?.takeIf(String::isNotBlank) ?: ZoneId.systemDefault().id)}", style = MaterialTheme.typography.bodySmall)
-                Row { TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.changeFollowup(row.getString("id")) }, enabled = enabled) { Text("Done") }; TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.changeFollowup(row.getString("id"), true) }, enabled = enabled) { Text("Delete") } }
+                SettingDivider()
+                val phoneZone = ZoneId.systemDefault().id
+                val zoneText = current.optString("timezone").ifBlank { phoneZone }
+                SettingRow(LineIcons.Globe, "Time zone", if (zoneText == phoneZone) "${zoneText.replace('_', ' ')} · same as phone" else zoneText.replace('_', ' '), enabled) { dialog = "timezone" }
             }
         }
+
+        item { BriefLabel("Show") }
         item {
-            OutlinedTextField(followup, { followup = it.take(800) }, label = { Text("New explicit follow-up") }, modifier = Modifier.fillMaxWidth())
-            Text(due?.let { "Due $it" } ?: "No due time: shown in brief only.", style = MaterialTheme.typography.bodySmall)
-            Row {
-                TextButton(shape = MaterialTheme.shapes.small, onClick = {
-                    val zone = runCatching { ZoneId.of(preferences?.optString("timezone")?.takeIf(String::isNotBlank) ?: ZoneId.systemDefault().id) }.getOrDefault(ZoneId.systemDefault())
-                    val now = ZonedDateTime.now(zone)
-                    DatePickerDialog(context, { _, year, month, day ->
-                        TimePickerDialog(context, { _, hour, minute -> due = LocalDate.of(year, month + 1, day).atTime(hour, minute).atZone(zone).toOffsetDateTime().toString() }, now.hour, now.minute, true).show()
-                    }, now.year, now.monthValue - 1, now.dayOfMonth).show()
-                }, enabled = enabled) { Text("Choose due time") }
-                TextButton(shape = MaterialTheme.shapes.small, onClick = { due = null }, enabled = enabled) { Text("Clear due") }
-            }
-            Button(shape = MaterialTheme.shapes.small, onClick = { vm.addFollowup(followup, due) }, enabled = enabled && followup.isNotBlank()) { Text("Save follow-up") }
-        }
-        item { HorizontalDivider(); Text("Check-in proposals", style = MaterialTheme.typography.titleMedium); TextButton(shape = MaterialTheme.shapes.small, onClick = vm::refreshCheckins, enabled = enabled) { Text("Check eligible proposals") } }
-        if (state.briefProposals.isEmpty()) item { Text("No pending proposals. Quiet hours, source opt-outs and cadence are respected.") }
-        items(state.briefProposals, key = { "proposal-${it.getString("id")}" }) { proposal ->
-            Column {
-                val source = proposal.getJSONObject("source")
-                Text(if (proposal.optString("kind") == "situation") "Would you like to revisit ${source.optString("topic")}?" else source.optString("title"))
-                Text(source.optString("summary", source.optString("detail")), style = MaterialTheme.typography.bodySmall)
-                if (proposal.optString("kind") == "morning") TextButton(shape = MaterialTheme.shapes.small, onClick = vm::buildDailyBrief, enabled = enabled) { Text("Build brief") }
-                TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.dismissCheckin(proposal.getString("id")) }, enabled = enabled) { Text("Dismiss") }
+            DashCard {
+                SwitchRow(LineIcons.Checklist, "Follow-ups", "Things you asked to be reminded about", current.optBoolean("include_followups"), enabled) { change("include_followups" to it) }
+                SettingDivider()
+                SwitchRow(LineIcons.Chat, "Open topics", "Conversations FRIDAY thinks you may want to pick back up", current.optBoolean("include_situations"), enabled) { change("include_situations" to it) }
             }
         }
-        draft?.let { form ->
-            item { HorizontalDivider(); Text("Source and notice settings", style = MaterialTheme.typography.titleMedium); Text("Changes take effect only when saved. No GPS or inferred location. Weather searches send the city name to Open-Meteo/GeoNames; forecasts send selected coordinates. The free service is for personal noncommercial use.", style = MaterialTheme.typography.bodySmall) }
-            item {
-                OutlinedTextField(form.optString("timezone"), { change("timezone", it.take(100)) }, label = { Text("Display timezone (for example America/New_York)") }, modifier = Modifier.fillMaxWidth())
-                TextButton(shape = MaterialTheme.shapes.small, onClick = { change("timezone", ZoneId.systemDefault().id) }, enabled = enabled) { Text("Use phone timezone") }
-                Text("Primary calendar: ${state.connectedAccounts.firstOrNull { it.optString("id") == form.optString("calendar_account_id") }?.optString("label") ?: "None"}")
-                TextButton(shape = MaterialTheme.shapes.small, onClick = { change("calendar_account_id", JSONObject.NULL) }, enabled = enabled) { Text("No calendar") }
+
+        item { BriefLabel("Notifications") }
+        item {
+            DashCard {
+                val morning = current.optString("morning_time").let { runCatching { LocalTime.parse(it) }.getOrNull() } ?: LocalTime.of(7, 30)
+                SwitchRow(LineIcons.Bell, "Morning brief", "A nudge to look at your day", current.optBoolean("morning_enabled"), enabled) { change("morning_enabled" to it) }
+                if (current.optBoolean("morning_enabled")) TimeRow("Around", morning, enabled) { dialog = "morning" }
+                SettingDivider()
+                SwitchRow(LineIcons.Friday, "Check-ins", "FRIDAY offers to revisit a follow-up or open topic", current.optBoolean("proactive_enabled"), enabled) { change("proactive_enabled" to it) }
+                if (current.optBoolean("proactive_enabled")) {
+                    var open by remember { mutableStateOf(false) }
+                    val hours = current.optInt("cadence_hours", 72)
+                    Box {
+                        ValueRow("How often", CADENCES.firstOrNull { it.first == hours }?.second ?: "Every $hours hours", enabled) { open = true }
+                        DropdownMenu(open, { open = false }) {
+                            CADENCES.forEach { (h, label) -> DropdownMenuItem(text = { Text(label) }, onClick = { open = false; change("cadence_hours" to h) }, trailingIcon = { if (h == hours) Text("✓", color = LocalFridayPalette.current.accent) }) }
+                        }
+                    }
+                }
+                SettingDivider()
+                val start = runCatching { LocalTime.parse(current.optString("quiet_start")) }.getOrNull() ?: LocalTime.of(22, 0)
+                val end = runCatching { LocalTime.parse(current.optString("quiet_end")) }.getOrNull() ?: LocalTime.of(7, 0)
+                SettingRow(LineIcons.Moon, "Quiet hours", if (start == end) "No notifications at all" else "No notifications between", enabled, chevron = false) {}
+                TimeRow("From", start, enabled) { dialog = "quiet_start" }
+                TimeRow("Until", end, enabled) { dialog = "quiet_end" }
+                Spacer(Modifier.height(6.dp))
             }
-            items(state.connectedAccounts.filter { it.optString("provider") in listOf("google", "microsoft") }, key = { "brief-account-${it.getString("id")}" }) { account ->
-                OutlinedButton(shape = MaterialTheme.shapes.small, onClick = { change("calendar_account_id", account.getString("id")) }, enabled = enabled) { Text("Use ${account.optString("label")}") }
+        }
+
+        item { BriefLabel("Follow-ups") }
+        item {
+            DashCard {
+                if (state.briefFollowups.isEmpty()) Text("Nothing waiting on you.", Modifier.padding(start = 16.dp, top = 14.dp, bottom = 2.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                state.briefFollowups.forEach { item -> key(item.optString("id")) { FollowupRow(item, zone, enabled, vm) } }
+                AddFollowup(zone, enabled, vm)
             }
-            item {
-                Text("Weather: ${form.optJSONObject("weather")?.optString("label") ?: "None"}")
-                OutlinedTextField(city, { city = it.take(100) }, label = { Text("Weather city and region") }, modifier = Modifier.fillMaxWidth())
-                Row { TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.findWeatherCity(city) }, enabled = enabled && city.length >= 2) { Text("Find city") }; TextButton(shape = MaterialTheme.shapes.small, onClick = { change("weather", JSONObject.NULL) }, enabled = enabled) { Text("No weather") } }
+        }
+
+        item {
+            Text("Weather looks up only the city you choose. Notifications never include your calendar or notes, and Android may deliver them a few minutes late.",
+                Modifier.padding(horizontal = 4.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+
+    val current = form ?: return
+    when (dialog) {
+        "morning" -> ClockDialog("Morning brief", runCatching { LocalTime.parse(current.optString("morning_time")) }.getOrDefault(LocalTime.of(7, 30)), { dialog = null }) { dialog = null; change("morning_time" to hhmm(it)) }
+        "quiet_start" -> ClockDialog("Quiet from", runCatching { LocalTime.parse(current.optString("quiet_start")) }.getOrDefault(LocalTime.of(22, 0)), { dialog = null }) { dialog = null; change("quiet_start" to hhmm(it)) }
+        "quiet_end" -> ClockDialog("Quiet until", runCatching { LocalTime.parse(current.optString("quiet_end")) }.getOrDefault(LocalTime.of(7, 0)), { dialog = null }) { dialog = null; change("quiet_end" to hhmm(it)) }
+        "calendar" -> ChoiceDialog("Calendar", { dialog = null }) {
+            val selected = current.optString("calendar_account_id")
+            state.connectedAccounts.filter { it.optString("provider") in listOf("google", "microsoft") }.forEach { account ->
+                ChoiceRow(account.optString("label"), account.optString("provider").replaceFirstChar(Char::uppercase), selected == account.optString("id")) { dialog = null; change("calendar_account_id" to account.getString("id")) }
             }
-            items(state.weatherLocations, key = { "city-${it.optDouble("latitude")}-${it.optDouble("longitude")}" }) { location -> OutlinedButton(shape = MaterialTheme.shapes.small, onClick = { change("weather", location) }, enabled = enabled) { Text(location.getString("label")) } }
-            item { Row(verticalAlignment = Alignment.CenterVertically) { Text("Fahrenheit", Modifier.weight(1f)); Switch(form.optString("temperature_unit") == "fahrenheit", { change("temperature_unit", if (it) "fahrenheit" else "celsius") }, enabled = enabled) } }
-            items(listOf("include_situations" to "Include tentative situations", "include_followups" to "Include explicit follow-ups", "morning_enabled" to "Morning invitation", "proactive_enabled" to "Occasional check-in proposals")) { (key, label) ->
-                Row(verticalAlignment = Alignment.CenterVertically) { Text(label, Modifier.weight(1f)); Switch(form.optBoolean(key), { change(key, it) }, enabled = enabled) }
+            ChoiceRow("This phone’s calendar", "Whatever calendars are synced to this phone", current.isNull("calendar_account_id") || selected.isBlank()) {
+                dialog = null
+                if (!current.isNull("calendar_account_id") && selected.isNotBlank()) change("calendar_account_id" to JSONObject.NULL)
+                vm.allowPhoneCalendar()
             }
-            item {
-                Text("Background notices are off by default, contain no source text, and use Android's roughly 15-minute polling; timing is not exact. Morning invitation is offered only within two hours of its time, with no catch-up burst. Check-ins respect Memory's master opt-out and stay proposals. Dismissed follow-up/situation IDs stay dismissed.", style = MaterialTheme.typography.bodySmall)
-                OutlinedTextField(form.optString("morning_time"), { change("morning_time", it.take(5)) }, label = { Text("Morning time (HH:MM)") })
-                OutlinedTextField(form.optString("quiet_start"), { change("quiet_start", it.take(5)) }, label = { Text("Quiet hours start (HH:MM)") })
-                OutlinedTextField(form.optString("quiet_end"), { change("quiet_end", it.take(5)) }, label = { Text("Quiet hours end (HH:MM)") })
-                Text("Equal quiet start/end means quiet all day. Quiet hours and a 72-hour minimum cooldown also apply to inline chat check-in offers.", style = MaterialTheme.typography.bodySmall)
-                OutlinedTextField(form.optInt("cadence_hours", 72).toString(), { value -> value.toIntOrNull()?.let { change("cadence_hours", it) } }, label = { Text("Check-in cadence in hours (72–720)") })
-                Button(shape = MaterialTheme.shapes.small, onClick = { vm.saveBriefPreferences(JSONObject(form.toString())) }, enabled = enabled) { Text("Save source and notice settings") }
-            }
+            ChoiceRow("Connect an account…", "Google or Microsoft, through your computer", false) { dialog = null; onOpen(WorkspaceDestination.ACCOUNTS) }
+        }
+        "weather" -> WeatherDialog(state, vm, enabled, { dialog = null }) { location -> dialog = null; change("weather" to (location ?: JSONObject.NULL)) }
+        "timezone" -> TimeZoneDialog(current.optString("timezone"), { dialog = null }) { dialog = null; change("timezone" to it) }
+    }
+}
+
+private fun hhmm(time: LocalTime) = time.format(DateTimeFormatter.ofPattern("HH:mm"))
+private fun clock(time: LocalTime) = time.format(DateTimeFormatter.ofPattern("h:mm a"))
+
+@Composable private fun BriefLabel(text: String) =
+    Text(text, Modifier.padding(start = 4.dp, top = 12.dp, bottom = 2.dp), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+@Composable private fun SettingDivider() = HorizontalDivider(Modifier.padding(start = 52.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .5f))
+
+@Composable
+private fun SettingRow(icon: ImageVector, title: String, value: String?, enabled: Boolean, chevron: Boolean = true, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(enabled = enabled && chevron, onClick = onClick).heightIn(min = 60.dp).padding(start = 16.dp, end = 12.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.width(14.dp))
+        DashText(title, value)
+        if (chevron) Chevron()
+    }
+}
+
+@Composable
+private fun SwitchRow(icon: ImageVector, title: String, detail: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(enabled = enabled) { onChange(!checked) }.heightIn(min = 64.dp).padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(checked, onChange, enabled = enabled)
+    }
+}
+
+/** An indented "label ........ value ›" row under a setting. */
+@Composable
+private fun ValueRow(label: String, value: String, enabled: Boolean, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick).heightIn(min = 48.dp).padding(start = 52.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.bodyLarge)
+        Chevron()
+    }
+}
+
+@Composable private fun TimeRow(label: String, time: LocalTime, enabled: Boolean, onClick: () -> Unit) = ValueRow(label, clock(time), enabled, onClick)
+
+@Composable
+private fun ChoiceDialog(title: String, onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    AlertDialog(onDismissRequest = onDismiss, title = { FridayDialogWindow(); Text(title) }, text = { Column(content = content) },
+        confirmButton = {}, dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = onDismiss) { Text("Cancel") } })
+}
+
+@Composable
+private fun ChoiceRow(title: String, detail: String?, selected: Boolean, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).heightIn(min = 56.dp).padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        RadioButton(selected, onClick)
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+            detail?.takeIf(String::isNotBlank)?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
     }
 }
 
-private fun briefTime(seconds: Double, zone: String): String = runCatching { Instant.ofEpochSecond(seconds.toLong()).atZone(ZoneId.of(zone)).format(DateTimeFormatter.ofPattern("EEE, MMM d 'at' HH:mm z")) }.getOrDefault("Time unavailable")
-private fun calendarTime(value: JSONObject?, zone: String): String {
-    if (value == null) return "Time unavailable"
-    value.optString("date").takeIf(String::isNotBlank)?.let { return "$it (all day; end date is exclusive)" }
-    val text = value.optString("dateTime")
-    return runCatching { OffsetDateTime.parse(text).atZoneSameInstant(ZoneId.of(zone)).format(DateTimeFormatter.ofPattern("MMM d HH:mm z")) }.getOrElse { "$text ${value.optString("timeZone")}" }
+@Composable
+private fun WeatherDialog(state: ChatUiState, vm: ChatViewModel, enabled: Boolean, onDismiss: () -> Unit, onPick: (JSONObject?) -> Unit) {
+    var city by remember { mutableStateOf("") }
+    AlertDialog(onDismissRequest = onDismiss, title = { FridayDialogWindow(); Text("Weather") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                OutlinedTextField(city, { city = it.take(100) }, placeholder = { Text("City, region") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { if (city.length >= 2) vm.findWeatherCity(city) }),
+                    trailingIcon = { IconButton(onClick = { vm.findWeatherCity(city) }, enabled = enabled && city.length >= 2) { Icon(LineIcons.Search, "Find city", Modifier.size(20.dp)) } })
+                if (state.workspaceBusy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 8.dp))
+                state.weatherLocations.forEach { location ->
+                    Row(Modifier.fillMaxWidth().clickable { onPick(location) }.heightIn(min = 48.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(LineIcons.Place, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.width(12.dp)); Text(location.optString("label"), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { onPick(null) }) { Text("Turn off weather") } },
+        dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = onDismiss) { Text("Cancel") } })
+}
+
+@Composable
+private fun TimeZoneDialog(value: String, onDismiss: () -> Unit, onPick: (String) -> Unit) {
+    var text by remember { mutableStateOf(value) }
+    val valid = runCatching { ZoneId.of(text.trim()) }.isSuccess
+    AlertDialog(onDismissRequest = onDismiss, title = { FridayDialogWindow(); Text("Time zone") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ChoiceRow("Same as phone", ZoneId.systemDefault().id.replace('_', ' '), value.isBlank() || value == ZoneId.systemDefault().id) { onPick(ZoneId.systemDefault().id) }
+                OutlinedTextField(text, { text = it.take(100) }, label = { Text("Other, like America/Chicago") }, singleLine = true, isError = text.isNotBlank() && !valid, modifier = Modifier.fillMaxWidth())
+            }
+        },
+        confirmButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { onPick(text.trim()) }, enabled = valid) { Text("Use this") } },
+        dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = onDismiss) { Text("Cancel") } })
 }

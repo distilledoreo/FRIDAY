@@ -60,6 +60,7 @@ class Followup(Strict):
 
 class FollowupState(Strict):
     status: str
+    due: str | None = Field(default=None,max_length=100)
 
 
 def digest(value):
@@ -194,21 +195,27 @@ class Briefing:
         title=body.title.strip()
         if not title or any(ord(char)<32 and char not in '\n\t' for char in title):raise ValueError('Use a readable follow-up title')
         if re.search(r'(?i)(password\s*[:=]|api[_ -]?key\s*[:=]|bearer\s+[a-z0-9]|sk-[a-z0-9_-]{15,}|-----BEGIN .*PRIVATE KEY)',title):raise ValueError('Do not save credentials as follow-ups')
-        due=None
-        if body.due:
-            parsed=datetime.fromisoformat(body.due.replace('Z','+00:00'))
-            if parsed.tzinfo is None:raise ValueError('Follow-up due time needs an explicit timezone offset')
-            due=parsed.timestamp()
-            if not math.isfinite(due):raise ValueError('Invalid follow-up due time')
+        due=self.due(body.due)
         with self.db() as db:
             if db.execute("SELECT count(*) FROM followups WHERE status='open'").fetchone()[0]>=200:raise ValueError('Resolve an existing follow-up first (200 open limit)')
             identifier=uuid.uuid4().hex
             db.execute('INSERT INTO followups VALUES(?,?,?,?,?,?)',(identifier,title,body.scope,due,'open',self.now()))
         return {'id':identifier,'saved':True,'detail':'Follow-up saved only; no task, message or notification was executed.'}
-    def change_followup(self,identifier,status):
-        if status not in ('done','deleted'):raise ValueError('Follow-up state must be done or deleted')
+    @staticmethod
+    def due(text):
+        if not text:return None
+        parsed=datetime.fromisoformat(text.replace('Z','+00:00'))
+        if parsed.tzinfo is None:raise ValueError('Follow-up due time needs an explicit timezone offset')
+        due=parsed.timestamp()
+        if not math.isfinite(due):raise ValueError('Invalid follow-up due time')
+        return due
+    def change_followup(self,identifier,status,due=None):
+        if status not in ('done','deleted','open'):raise ValueError('Follow-up state must be open, done or deleted')
         with self.db() as db:
-            if status=='deleted':changed=db.execute('DELETE FROM followups WHERE id=?',(identifier,)).rowcount
+            if status=='open':
+                # Rescheduling (snooze): a new due time; a pending check-in for the old time is cancelled below.
+                changed=db.execute("UPDATE followups SET due=?,updated=? WHERE id=? AND status='open'",(self.due(due),self.now(),identifier)).rowcount
+            elif status=='deleted':changed=db.execute('DELETE FROM followups WHERE id=?',(identifier,)).rowcount
             else:changed=db.execute("UPDATE followups SET status='done',updated=? WHERE id=?",(self.now(),identifier)).rowcount
             db.execute("UPDATE checkins SET status='cancelled' WHERE kind='followup' AND source_id=? AND status='pending'",(identifier,))
         if not changed:raise ValueError('Follow-up not found')
@@ -356,7 +363,7 @@ def routes(router,briefing):
     @router.post('/briefing/followups')
     async def add(body:Followup):return checked(briefing.add_followup,body)
     @router.patch('/briefing/followups/{identifier}')
-    async def change(identifier:str,body:FollowupState):return checked(briefing.change_followup,identifier,body.status)
+    async def change(identifier:str,body:FollowupState):return checked(briefing.change_followup,identifier,body.status,body.due)
     @router.delete('/briefing/followups/{identifier}')
     async def remove(identifier:str):return checked(briefing.change_followup,identifier,'deleted')
     @router.post('/briefing/proposals/refresh')
