@@ -94,27 +94,18 @@ class PolishComponentTest {
     }
 
     @Test fun ambientMoves() {
-        androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>().contentResolver.let {
-            android.provider.Settings.Global.putFloat(it, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f)
-        }
-        compose.mainClock.autoAdvance = false
+        var at by androidx.compose.runtime.mutableFloatStateOf(0f)
         compose.setContent {
             com.localfirst.assistant.ui.theme.AssistantTheme(preferences = AppearanceSettings(reducedMotion = false)) {
                 androidx.compose.material3.Surface(androidx.compose.ui.Modifier.fillMaxSize(), color = androidx.compose.material3.MaterialTheme.colorScheme.background) {
-                    FridayAmbient(null, 0f, false, androidx.compose.ui.Modifier.fillMaxSize())
+                    FridayAmbient(null, 0f, false, androidx.compose.ui.Modifier.fillMaxSize(), fixedTime = at)
                 }
             }
         }
-        compose.mainClock.advanceTimeBy(500)
         capture("ambient-t0")
-        compose.mainClock.advanceTimeBy(2000)
+        compose.runOnIdle { at = 2f }
         capture("ambient-t2")
-        compose.mainClock.advanceTimeBy(2000)
+        compose.runOnIdle { at = 4f }
         capture("ambient-t4")
-        // Frames for a short preview animation.
-        for (frame in 0 until 48) {
-            compose.mainClock.advanceTimeBy(166)
-            capture("frames/ambient-%02d".format(frame))
-        }
     }
 }

@@ -32,7 +32,7 @@ import com.localfirst.assistant.voice.VoicePhase
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.math.sin
-import androidx.compose.runtime.withFrameNanos
+import androidx.compose.animation.core.withInfiniteAnimationFrameNanos
 import kotlin.math.PI
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.lerp
@@ -63,7 +63,7 @@ internal fun FridayBrand(progress:Float,onClick:()->Unit,modifier:Modifier=Modif
  * motion is reduced.
  */
 @Composable
-internal fun FridayAmbient(voicePhase:VoicePhase?,level:Float,thinking:Boolean,modifier:Modifier=Modifier) {
+internal fun FridayAmbient(voicePhase:VoicePhase?,level:Float,thinking:Boolean,modifier:Modifier=Modifier,fixedTime:Float?=null) {
     val palette=LocalFridayPalette.current
     val owner=LocalLifecycleOwner.current
     var visible by remember { mutableStateOf(owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) }
@@ -72,15 +72,17 @@ internal fun FridayAmbient(voicePhase:VoicePhase?,level:Float,thinking:Boolean,m
         owner.lifecycle.addObserver(observer);onDispose { owner.lifecycle.removeObserver(observer) }
     }
     val active=voicePhase!=null&&voicePhase!=VoicePhase.PAUSED||thinking
-    // Animation time in seconds, advanced every frame; faster while listening or thinking.
-    var time by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(visible,palette.reducedMotion,active) {
-        if(visible&&!palette.reducedMotion) {
+    // Animation time in seconds, advanced every frame; faster while listening or thinking. An infinite-animation
+    // frame clock, so test harnesses (which pause infinite animations) can still reach idle.
+    var clock by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(visible,palette.reducedMotion,active,fixedTime) {
+        if(fixedTime==null&&visible&&!palette.reducedMotion) {
             val speed=if(active)1.8f else 1f
-            var last=withFrameNanos { it }
-            while(isActive) withFrameNanos { now -> time=(time+(now-last)/1e9f*speed)%3600f;last=now }
+            var last=withInfiniteAnimationFrameNanos { it }
+            while(isActive) withInfiniteAnimationFrameNanos { now -> clock=(clock+(now-last)/1e9f*speed)%3600f;last=now }
         }
     }
+    val time=fixedTime?:clock
     val intensity by animateFloatAsState(
         when {
             voicePhase==VoicePhase.LISTENING -> .85f+.35f*level.coerceIn(0f,1f)
