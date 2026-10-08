@@ -1,5 +1,8 @@
 package com.localfirst.assistant.ui
 
+import com.localfirst.assistant.presentation.UiBlocks
+import com.localfirst.assistant.presentation.UiSegment
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -135,19 +138,31 @@ internal fun AssistantMessage(
     actionsEnabled: Boolean,
     onCopy: (String) -> Unit,
     onRegenerate: () -> Unit,
+    onChoose: ((String) -> Unit)? = null,
 ) {
-    val pattern=ResponseLayout.choose(item.text)
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Surface(shape=MaterialTheme.shapes.medium,color=MaterialTheme.colorScheme.surface,modifier=if(pattern==ResponsePattern.BUBBLE)Modifier.fillMaxWidth(.94f)else Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(horizontal=16.dp,vertical=12.dp)) {
-                ResponseRenderer(item.text,pattern) { onCopy(item.text) }
+    val plain = remember(item.text) { if (UiBlocks.contains(item.text)) UiBlocks.plainText(item.text) else item.text }
+    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // Text renders as before; FRIDAY's components sit between text at full width.
+        UiBlocks.segments(item.text).forEachIndexed { index, segment ->
+            when (segment) {
+                is UiSegment.Text -> {
+                    val pattern=ResponseLayout.choose(segment.markdown)
+                    Surface(shape=MaterialTheme.shapes.medium,color=MaterialTheme.colorScheme.surface,modifier=if(pattern==ResponsePattern.BUBBLE)Modifier.fillMaxWidth(.94f)else Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(horizontal=16.dp,vertical=12.dp)) {
+                            ResponseRenderer(segment.markdown.trim(),pattern) { onCopy(plain) }
+                        }
+                    }
+                }
+                is UiSegment.Block -> FridayComponent(segment.block, "${item.index}-$index", onChoose.takeIf { item.isLatest && actionsEnabled && !item.streaming })
+                is UiSegment.Invalid -> ComponentFallback(segment.raw)
+                UiSegment.Pending -> ComponentPending()
             }
         }
         if (item.streaming) {
             PulsingDot(modifier = Modifier.padding(top = 6.dp))
         } else {
             Row(horizontalArrangement = Arrangement.spacedBy(0.dp)) {
-                SmallIconButton(AppIcons.ContentCopy, "Copy") { onCopy(item.text) }
+                SmallIconButton(AppIcons.ContentCopy, "Copy") { onCopy(plain) }
                 if (item.isLatest) {
                     SmallIconButton(Icons.Filled.Refresh, "Regenerate", enabled = actionsEnabled, onClick = onRegenerate)
                 }

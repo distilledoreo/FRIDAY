@@ -50,7 +50,6 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
             item {
                 Column(Modifier.padding(top = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     FridayComputerCard(state, vm)
-                    TextButton(shape = MaterialTheme.shapes.small, onClick={vm.openWorkspace(WorkspaceDestination.TASKS)}) { Text("Scheduled tasks") }
                     if (state.privacy.incognito) Text("FRIDAY isn’t available in incognito.", style = MaterialTheme.typography.bodySmall)
                     else FridayAskBox(state, vm)
                 }

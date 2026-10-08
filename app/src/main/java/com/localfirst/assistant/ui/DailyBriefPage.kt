@@ -89,7 +89,7 @@ internal fun DailyBriefPage(state: ChatUiState, vm: ChatViewModel) {
         items(state.briefFollowups, key = { it.getString("id") }) { row ->
             Column {
                 Text(row.getString("title"))
-                if (!row.isNull("due")) Text("Due ${briefTime(row.optDouble("due"), preferences?.optString("timezone") ?: "UTC")}", style = MaterialTheme.typography.bodySmall)
+                if (!row.isNull("due")) Text("Due ${briefTime(row.optDouble("due"), preferences?.optString("timezone")?.takeIf(String::isNotBlank) ?: ZoneId.systemDefault().id)}", style = MaterialTheme.typography.bodySmall)
                 Row { TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.changeFollowup(row.getString("id")) }, enabled = enabled) { Text("Done") }; TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.changeFollowup(row.getString("id"), true) }, enabled = enabled) { Text("Delete") } }
             }
         }
@@ -98,7 +98,7 @@ internal fun DailyBriefPage(state: ChatUiState, vm: ChatViewModel) {
             Text(due?.let { "Due $it" } ?: "No due time: shown in brief only.", style = MaterialTheme.typography.bodySmall)
             Row {
                 TextButton(shape = MaterialTheme.shapes.small, onClick = {
-                    val zone = runCatching { ZoneId.of(preferences?.optString("timezone") ?: "UTC") }.getOrDefault(ZoneOffset.UTC)
+                    val zone = runCatching { ZoneId.of(preferences?.optString("timezone")?.takeIf(String::isNotBlank) ?: ZoneId.systemDefault().id) }.getOrDefault(ZoneId.systemDefault())
                     val now = ZonedDateTime.now(zone)
                     DatePickerDialog(context, { _, year, month, day ->
                         TimePickerDialog(context, { _, hour, minute -> due = LocalDate.of(year, month + 1, day).atTime(hour, minute).atZone(zone).toOffsetDateTime().toString() }, now.hour, now.minute, true).show()

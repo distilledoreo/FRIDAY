@@ -1,6 +1,19 @@
 package com.localfirst.assistant.ui
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -28,97 +41,200 @@ internal fun PersonalDashboard(state:ChatUiState,vm:ChatViewModel,onClose:()->Un
     val uri=LocalUriHandler.current
     var allEvents by remember { mutableStateOf(false) }
     fun go(destination:WorkspaceDestination) { onClose();vm.openWorkspace(destination) }
-    LazyColumn(Modifier.fillMaxWidth().heightIn(min=240.dp,max=720.dp),contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
+    LazyColumn(Modifier.fillMaxWidth().heightIn(min=240.dp,max=720.dp),contentPadding=PaddingValues(start=16.dp,end=16.dp,bottom=24.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
         item { Row(verticalAlignment=Alignment.CenterVertically) {
-            Text("Your dashboard",Modifier.weight(1f),style=MaterialTheme.typography.titleLarge)
-            if(onToggle!=null)TextButton(shape = MaterialTheme.shapes.small, onClick=onToggle) { Text(if(expanded)"Collapse"else"Expand") }
-            TextButton(shape = MaterialTheme.shapes.small, onClick=onClose) { Text("Close") }
+            Text(LocalDate.now().format(DateTimeFormatter.ofPattern("EEEE, MMMM d")),Modifier.weight(1f).padding(start=4.dp),style=MaterialTheme.typography.labelLarge,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            IconButton(onClick=vm::refreshDashboard,enabled=!data.loading) { Icon(Icons.Filled.Refresh,"Refresh dashboard",Modifier.size(20.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant) }
+            IconButton(onClick=onClose) { Icon(Icons.Filled.Close,"Close dashboard",Modifier.size(20.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant) }
         } }
         if(state.privacy.incognito) {
-            item { DashboardCard("Private session") { Text("Your personal dashboard is unavailable in incognito.",style=MaterialTheme.typography.bodyMedium) } }
+            item { DashCard { DashMessage("Your dashboard is unavailable in incognito.") } }
         } else if(data.scope!=state.projectId.orEmpty()||data.loading) {
-            item { LinearProgressIndicator(Modifier.fillMaxWidth());Text("Checking your selected sources…",Modifier.padding(top=12.dp),style=MaterialTheme.typography.bodyMedium) }
+            item { DashCard { LinearProgressIndicator(Modifier.fillMaxWidth().padding(16.dp));DashMessage("Checking your sources…") } }
         } else if(data.error!=null) {
-            item { DashboardCard("Dashboard unavailable") { Text(data.error,style=MaterialTheme.typography.bodyMedium);Row { TextButton(shape = MaterialTheme.shapes.small, onClick=vm::refreshDashboard) { Text("Try again") };TextButton(shape = MaterialTheme.shapes.small, onClick={go(WorkspaceDestination.SETTINGS)}) { Text("Settings") } } } }
+            item { DashCard {
+                DashMessage(data.error)
+                DashRow(onClick=vm::refreshDashboard) { Text("Try again",Modifier.weight(1f),style=MaterialTheme.typography.bodyLarge) }
+                DashRow(onClick={go(WorkspaceDestination.SETTINGS)}) { Text("Settings",Modifier.weight(1f),style=MaterialTheme.typography.bodyLarge) }
+            } }
         } else if(data.loaded) {
             val snapshot=data.snapshot
+            val zone=snapshot?.optString("timezone")?.takeIf(String::isNotBlank)
             val sections=rows(snapshot?.optJSONArray("sections"))
             val calendar=sections.firstOrNull { it.optString("kind")=="calendar" }
-            val weather=sections.firstOrNull { it.optString("kind")=="weather" }
+            val weather=sections.firstOrNull { it.optString("kind")=="weather" }?.takeIf { it.optString("status")=="available" }
             val events=rows(calendar?.optJSONArray("events"))
-            item { DashboardCard("Today") {
-                weather?.takeIf { it.optString("status")=="available" }?.let { source ->
-                    val high=source.optDouble("temperature_2m_max")
-                    Text("${source.optString("location")} · ${source.optString("conditions")}",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                    if(high.isFinite())TextButton(shape = MaterialTheme.shapes.small, onClick={source.optString("source").takeIf { it.startsWith("https://") }?.let(uri::openUri)}) { Text("${high.toInt()}${source.optString("temperature_unit")} · Forecast") }
-                }
-                if(weather?.optString("status")=="unavailable")Text("Your selected forecast could not be checked.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                if(calendar?.optString("status")!="available") {
-                    Text(if(calendar?.optString("status")=="unavailable")"Your selected calendar could not be checked."else"Choose a calendar to see today's events.",style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                    TextButton(shape = MaterialTheme.shapes.small, onClick={go(WorkspaceDestination.BRIEF)}) { Text("Choose sources") }
-                } else if(events.isEmpty())Text("No events returned for today.",style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                else {
-                    events.take(if(allEvents)30 else 4).forEach { event ->
-                        Row(Modifier.fillMaxWidth().heightIn(min=56.dp).padding(vertical=8.dp),verticalAlignment=Alignment.Top,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-                            Text(eventTime(event,snapshot?.optString("timezone")),Modifier.widthIn(min=64.dp,max=90.dp),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                            Column(Modifier.weight(1f)) { Text(event.optString("title").ifBlank { event.optString("summary").ifBlank { "Untitled event" } },style=MaterialTheme.typography.bodyMedium);event.optString("location").takeIf(String::isNotBlank)?.let { Text(it,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant) } }
+            item { DashCard {
+                Row(Modifier.fillMaxWidth().padding(start=16.dp,end=4.dp,top=6.dp,bottom=6.dp),verticalAlignment=Alignment.CenterVertically) {
+                    Row(Modifier.weight(1f).clip(MaterialTheme.shapes.small).clickable { go(WorkspaceDestination.BRIEF) }.padding(vertical=10.dp),verticalAlignment=Alignment.CenterVertically) {
+                        Icon(Icons.Filled.DateRange,null,Modifier.size(22.dp),tint=com.localfirst.assistant.ui.theme.LocalFridayPalette.current.accent)
+                        Spacer(Modifier.width(12.dp));Text("Today",style=MaterialTheme.typography.titleMedium);Chevron()
+                    }
+                    weather?.let { source ->
+                        val high=source.optDouble("temperature_2m_max")
+                        Row(Modifier.clip(MaterialTheme.shapes.small).clickable { source.optString("source").takeIf { it.startsWith("https://") }?.let(uri::openUri) }.padding(10.dp),verticalAlignment=Alignment.CenterVertically) {
+                            WeatherGlyph(source.optString("conditions"))
+                            Spacer(Modifier.width(8.dp))
+                            Text(if(high.isFinite())"${high.toInt()}°" else source.optString("conditions"),style=MaterialTheme.typography.titleMedium)
+                            Chevron()
                         }
                     }
-                    if(events.size>4)TextButton(shape = MaterialTheme.shapes.small, onClick={allEvents=!allEvents}) { Text(if(allEvents)"Show fewer events"else"Show all ${events.size} events") }
-                    if(calendar.optBoolean("possibly_truncated"))Text("This preview may omit additional events.",style=MaterialTheme.typography.bodySmall)
-                    TextButton(shape = MaterialTheme.shapes.small, onClick={go(WorkspaceDestination.ACCOUNTS)}) { Text("Open calendar accounts") }
                 }
-                snapshot?.optString("date")?.takeIf(String::isNotBlank)?.let { Text("$it · ${snapshot.optString("timezone")}",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }
-            } }
-            item { DashboardCard("Follow-ups") {
-                if(data.followups.isEmpty())Text("No saved follow-ups.",style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                data.followups.take(6).forEach { item -> Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f).padding(vertical=8.dp)) { Text(item.optString("title"),style=MaterialTheme.typography.bodyMedium);followupTime(item,snapshot?.optString("timezone"))?.let { Text(it,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant) } }
-                    TextButton(shape = MaterialTheme.shapes.small, onClick={vm.completeDashboardFollowup(item.getString("id"))},enabled=!state.workspaceBusy&&!state.busy) { Text("Done") }
-                } }
-                TextButton(shape = MaterialTheme.shapes.small, onClick={go(WorkspaceDestination.BRIEF)}) { Text("Manage follow-ups") }
-            } }
-            val tasks=data.tasks.filter { it.status !in listOf("done","completed","cancelled") }
-            item { DashboardCard("Tasks and attention") {
-                val attention=data.agentTasks.filter { it.optString("status") in FRIDAY_NEEDS_YOU||it.optString("status") in FRIDAY_WORKING }
-                if(tasks.isEmpty()&&attention.isEmpty())Text("No unfinished tasks returned.",style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                tasks.take(4).forEach { task -> Text(task.prompt,style=MaterialTheme.typography.bodyMedium);Text(task.status,style=MaterialTheme.typography.labelSmall,color=if(task.status in listOf("failed","error"))MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) }
-                attention.take(3).forEach { task ->
-                    Text(task.optJSONObject("proposal")?.optString("prompt").orEmpty(),style=MaterialTheme.typography.bodyMedium)
-                    Text(agentStatus(task.optString("status")),style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                    TextButton(shape = MaterialTheme.shapes.small, onClick={onClose();vm.openFriday(task.optString("id"))}) { Text("Review task") }
+                HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant.copy(alpha=.5f))
+                when {
+                    calendar?.optString("status")=="unavailable" -> DashRow(onClick={go(WorkspaceDestination.ACCOUNTS)}) { DashText("Your calendar couldn’t be checked","Open accounts") }
+                    calendar?.optString("status")!="available" -> DashRow(onClick={go(WorkspaceDestination.BRIEF)}) { DashText("Connect a calendar to see your day","Choose sources") }
+                    events.isEmpty() -> DashMessage("Nothing on your calendar today.")
+                    else -> {
+                        events.take(if(allEvents)30 else 4).forEachIndexed { index,event ->
+                            DashRow(onClick={go(WorkspaceDestination.ACCOUNTS)}) {
+                                Text(eventTime(event,zone),Modifier.width(76.dp),style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                                Box(Modifier.padding(end=14.dp).size(8.dp).clip(CircleShape).background(eventColor(index,com.localfirst.assistant.ui.theme.LocalFridayPalette.current.accent)))
+                                DashText(event.optString("title").ifBlank { event.optString("summary").ifBlank { "Untitled event" } },eventDetail(event))
+                            }
+                        }
+                        if(events.size>4)DashRow(onClick={allEvents=!allEvents}) { Text(if(allEvents)"Show fewer"else"Show all ${events.size} events",style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant) }
+                    }
                 }
-                Row { TextButton(shape = MaterialTheme.shapes.small, onClick={go(WorkspaceDestination.TASKS)}) { Text("View tasks") };TextButton(shape = MaterialTheme.shapes.small, onClick={go(WorkspaceDestination.ACTIVITY)}) { Text("Assistant activity") } }
+                Spacer(Modifier.height(6.dp))
             } }
             val proposals=data.proposals.filter { dashboardProposalKinds(level,it.optString("kind")) }.take(level.suggestionLimit)
-            item { DashboardCard("Worth a look") {
-                if(proposals.isEmpty())Text("Nothing relevant to suggest right now.",style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                proposals.forEach { proposal ->
-                    val source=proposal.optJSONObject("source")?:proposal
-                    Text(source.optString("title").ifBlank { source.optString("summary").ifBlank { source.optString("detail").ifBlank { "Saved follow-up" } } },style=MaterialTheme.typography.bodyMedium)
-                    if(proposal.optString("kind")=="situation")Text("Tentative · review the source evidence",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                    source.optString("detail").takeIf(String::isNotBlank)?.let { Text(it,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }
-                    Row { TextButton(shape = MaterialTheme.shapes.small, onClick={go(WorkspaceDestination.BRIEF)}) { Text("Review") };TextButton(shape = MaterialTheme.shapes.small, onClick={vm.dismissDashboardProposal(proposal.getString("id"))},enabled=!state.workspaceBusy&&!state.busy) { Text("Dismiss") } }
+            val attention=data.agentTasks.filter { it.optString("status") in FRIDAY_NEEDS_YOU }
+            val reviewCount=data.followups.size+attention.size+proposals.size
+            item { Row(horizontalArrangement=Arrangement.spacedBy(12.dp),modifier=Modifier.height(IntrinsicSize.Min)) {
+                DashCard(Modifier.weight(.42f).fillMaxHeight(),onClick={ if(attention.isNotEmpty()) { onClose();vm.openFriday() } else go(WorkspaceDestination.BRIEF) }) {
+                    Row(Modifier.fillMaxSize().padding(16.dp),verticalAlignment=Alignment.CenterVertically) {
+                        Icon(Icons.AutoMirrored.Filled.List,null,Modifier.size(22.dp),tint=com.localfirst.assistant.ui.theme.LocalFridayPalette.current.accent)
+                        Spacer(Modifier.width(12.dp))
+                        Text(if(reviewCount==0)"All caught up" else "$reviewCount ${if(reviewCount==1)"thing" else "things"} to review",Modifier.weight(1f),style=MaterialTheme.typography.bodyMedium)
+                        if(reviewCount>0)Chevron()
+                    }
+                }
+                val suggestion=proposals.firstOrNull()
+                val working=data.agentTasks.firstOrNull { it.optString("status") in FRIDAY_WORKING }
+                DashCard(Modifier.weight(.58f).fillMaxHeight(),onClick={ onClose();if(suggestion!=null)vm.openWorkspace(WorkspaceDestination.BRIEF) else vm.openFriday() }) {
+                    Row(Modifier.fillMaxSize().padding(16.dp),verticalAlignment=Alignment.CenterVertically) {
+                        SparkleGlyph()
+                        Spacer(Modifier.width(12.dp))
+                        val source=suggestion?.let { it.optJSONObject("source")?:it }
+                        DashText(
+                            source?.let { it.optString("title").ifBlank { it.optString("summary").ifBlank { "Worth a look" } } }
+                                ?: working?.let { "FRIDAY is working" } ?: "Ask FRIDAY to take something on",
+                            source?.optString("detail")?.takeIf(String::isNotBlank)
+                                ?: working?.optJSONObject("proposal")?.optString("prompt")
+                                ?: "Research, compare or keep watch for you",
+                            Modifier.weight(1f),
+                            compact=true,
+                        )
+                        Chevron()
+                    }
                 }
             } }
-            item { Row { TextButton(shape = MaterialTheme.shapes.small, onClick=vm::refreshDashboard,enabled=!data.loading) { Text("Refresh") };TextButton(shape = MaterialTheme.shapes.small, onClick={go(WorkspaceDestination.BRIEF)}) { Text("Sources and brief") } } }
+            if(data.followups.isNotEmpty())item { DashCard {
+                DashHeader("Follow-ups")
+                data.followups.take(6).forEach { item ->
+                    Row(Modifier.fillMaxWidth().padding(start=16.dp,end=6.dp),verticalAlignment=Alignment.CenterVertically) {
+                        DashText(item.optString("title"),followupTime(item,zone),Modifier.weight(1f).padding(vertical=10.dp))
+                        IconButton(onClick={vm.completeDashboardFollowup(item.getString("id"))},enabled=!state.workspaceBusy&&!state.busy) { Icon(Icons.Filled.Check,"Mark ${item.optString("title")} done",tint=MaterialTheme.colorScheme.onSurfaceVariant) }
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+            } }
+            if(attention.isNotEmpty())item { DashCard {
+                DashHeader("FRIDAY needs your OK")
+                attention.take(3).forEach { task ->
+                    DashRow(onClick={onClose();vm.openFriday(task.optString("id"))}) { DashText(task.optJSONObject("proposal")?.optString("prompt").orEmpty(),agentStatus(task.optString("status"))) }
+                }
+                Spacer(Modifier.height(6.dp))
+            } }
+            item { Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.Center) {
+                TextButton(shape=MaterialTheme.shapes.small,onClick={go(WorkspaceDestination.BRIEF)},colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.onSurfaceVariant)) { Text("Edit sources") }
+            } }
         }
     }
 }
 
 @Composable
-private fun DashboardCard(title:String,content:@Composable ColumnScope.()->Unit) {
-    Surface(Modifier.fillMaxWidth(),shape=MaterialTheme.shapes.medium,color=MaterialTheme.colorScheme.surface,shadowElevation=1.dp) {
-        Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) { Text(title,style=MaterialTheme.typography.titleSmall);content() }
+private fun DashCard(modifier:Modifier=Modifier,onClick:(()->Unit)?=null,content:@Composable ColumnScope.()->Unit) {
+    val dark=com.localfirst.assistant.ui.theme.LocalFridayPalette.current.dark
+    val color=if(dark)androidx.compose.ui.graphics.Color(0xFF232326) else androidx.compose.ui.graphics.Color.White
+    if(onClick!=null)Surface(onClick=onClick,modifier=modifier.fillMaxWidth(),shape=RoundedCornerShape(16.dp),color=color) { Column(content=content) }
+    else Surface(modifier.fillMaxWidth(),shape=RoundedCornerShape(16.dp),color=color) { Column(content=content) }
+}
+
+@Composable
+private fun DashRow(onClick:()->Unit,content:@Composable RowScope.()->Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick=onClick).heightIn(min=56.dp).padding(start=16.dp,end=10.dp,top=10.dp,bottom=10.dp),verticalAlignment=Alignment.CenterVertically) {
+        content()
+        Chevron()
     }
 }
+
+@Composable
+private fun RowScope.DashText(title:String,detail:String?,modifier:Modifier=Modifier.weight(1f),compact:Boolean=false) {
+    Column(modifier) {
+        Text(title,style=if(compact)MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,maxLines=2,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+        detail?.takeIf(String::isNotBlank)?.let { Text(it,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
+    }
+}
+
+@Composable private fun DashMessage(text:String) = Text(text,Modifier.padding(16.dp),style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+@Composable private fun DashHeader(text:String) = Text(text,Modifier.padding(start=16.dp,top=14.dp,bottom=2.dp),style=MaterialTheme.typography.titleSmall)
+@Composable private fun Chevron() = Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight,null,Modifier.size(20.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=.7f))
+
+/** Distinct, calm dot colors for consecutive events. */
+private fun eventColor(index:Int,accent:androidx.compose.ui.graphics.Color)=listOf(accent,androidx.compose.ui.graphics.Color(0xFF6F9BDE),androidx.compose.ui.graphics.Color(0xFF6DBE8B),androidx.compose.ui.graphics.Color(0xFFD9B26A),androidx.compose.ui.graphics.Color(0xFFA48BDB))[index%5]
+
+/** "30 min · Google Meet": length and place, when the event has them. */
+internal fun eventDetail(event:JSONObject):String? {
+    val length=runCatching {
+        val start=OffsetDateTime.parse(event.optJSONObject("start")?.optString("dateTime")).toInstant()
+        val end=OffsetDateTime.parse(event.optJSONObject("end")?.optString("dateTime")).toInstant()
+        val minutes=Duration.between(start,end).toMinutes()
+        when { minutes<=0 -> null; minutes<60 -> "$minutes min"; minutes%60==0L -> "${minutes/60} hr"; else -> "${minutes/60} hr ${minutes%60} min" }
+    }.getOrNull()
+    val place=event.optString("location").ifBlank { event.optString("conference").ifBlank { event.optString("hangoutLink").takeIf(String::isNotBlank)?.let { "Video call" }.orEmpty() } }
+    return listOfNotNull(length,place.takeIf(String::isNotBlank)).joinToString(" · ").ifBlank { null }
+}
+
+@Composable
+private fun WeatherGlyph(conditions:String) {
+    val accent=MaterialTheme.colorScheme.primary
+    val sunny=conditions.contains("clear",true)||conditions.contains("sun",true)
+    val cloud=MaterialTheme.colorScheme.onSurfaceVariant
+    Canvas(Modifier.size(22.dp)) {
+        val c=center;val r=size.minDimension*.2f
+        if(sunny) {
+            drawCircle(androidx.compose.ui.graphics.Color(0xFFF2B35B),r,c)
+            for(i in 0 until 8) { val a=i*Math.PI/4;val d1=r*1.5f;val d2=r*2.2f
+                drawLine(androidx.compose.ui.graphics.Color(0xFFF2B35B),androidx.compose.ui.geometry.Offset(c.x+(d1*Math.cos(a)).toFloat(),c.y+(d1*Math.sin(a)).toFloat()),androidx.compose.ui.geometry.Offset(c.x+(d2*Math.cos(a)).toFloat(),c.y+(d2*Math.sin(a)).toFloat()),strokeWidth=1.6.dp.toPx(),cap=androidx.compose.ui.graphics.StrokeCap.Round) }
+        } else {
+            drawCircle(cloud,r*1.05f,c+androidx.compose.ui.geometry.Offset(-r*.6f,r*.2f))
+            drawCircle(cloud,r*1.35f,c+androidx.compose.ui.geometry.Offset(r*.5f,-r*.1f))
+            drawRect(cloud,c+androidx.compose.ui.geometry.Offset(-r*1.6f,r*.2f),androidx.compose.ui.geometry.Size(r*3.4f,r*1.05f))
+        }
+    }
+}
+
+@Composable
+private fun SparkleGlyph() {
+    val accent=com.localfirst.assistant.ui.theme.LocalFridayPalette.current.accent
+    Canvas(Modifier.size(22.dp)) {
+        fun star(cx:Float,cy:Float,r:Float) = androidx.compose.ui.graphics.Path().apply {
+            moveTo(cx,cy-r);quadraticTo(cx,cy,cx+r,cy);quadraticTo(cx,cy,cx,cy+r);quadraticTo(cx,cy,cx-r,cy);quadraticTo(cx,cy,cx,cy-r);close()
+        }
+        drawPath(star(size.width*.42f,size.height*.55f,size.width*.36f),accent,style=androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx(),join=androidx.compose.ui.graphics.StrokeJoin.Round))
+        drawPath(star(size.width*.8f,size.height*.2f,size.width*.15f),accent)
+    }
+}
+
 private fun rows(array:org.json.JSONArray?) = (0 until (array?.length()?:0)).mapNotNull { array?.optJSONObject(it) }
 internal fun eventTime(event:JSONObject,timezone:String?):String {
     val start=event.optJSONObject("start")
     if(event.optBoolean("all_day")||!start?.optString("date").isNullOrBlank())return "All day"
     val raw=start?.optString("dateTime")?.takeIf(String::isNotBlank)?:event.optString("start")
     return runCatching {
-        val zone=ZoneId.of(timezone?.takeIf(String::isNotBlank)?:"UTC")
+        val zone=timezone?.takeIf(String::isNotBlank)?.let(ZoneId::of)?:ZoneId.systemDefault()
         val instant=runCatching { OffsetDateTime.parse(raw).toInstant() }.getOrElse {
             LocalDateTime.parse(raw).atZone(ZoneId.of(start?.optString("timeZone")?.takeIf(String::isNotBlank)?:zone.id)).toInstant()
         }
@@ -129,5 +245,5 @@ internal fun followupTime(item:JSONObject,timezone:String?):String? {
     if(item.isNull("due"))return null
     val due=item.optDouble("due")
     if(!due.isFinite())return null
-    return runCatching { Instant.ofEpochMilli((due*1000).toLong()).atZone(ZoneId.of(timezone?.takeIf(String::isNotBlank)?:"UTC")).format(DateTimeFormatter.ofPattern("EEE, MMM d · h:mm a")) }.getOrNull()
+    return runCatching { Instant.ofEpochMilli((due*1000).toLong()).atZone(timezone?.takeIf(String::isNotBlank)?.let(ZoneId::of)?:ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("EEE, MMM d · h:mm a")) }.getOrNull()
 }

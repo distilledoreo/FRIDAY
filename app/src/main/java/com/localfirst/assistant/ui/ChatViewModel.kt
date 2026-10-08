@@ -71,6 +71,8 @@ private const val MEMORY_PAGE_MAX = 200 // the PC caps one request at 200
 data class ChatUiState(
     val dashboard: DashboardState = DashboardState(),
     val voiceError: String? = null,
+    /** Listening for one spoken message to type into the composer. */
+    val dictating: Boolean = false,
     /** Null until the first message of a new chat is saved. */
     val conversationId: String? = null,
     val privacy: ChatPrivacy = ChatPrivacy(),
@@ -409,6 +411,33 @@ class ChatViewModel(
     fun pauseVoiceFromChat() { voice?.pause("Voice paused. Resume when you're ready.") }
     fun toggleVoice() { if(voice?.active == true) closeVoice() else startVoice() }
 
+    private var dictationJob: Job? = null
+
+    /** Speaks one message into the composer with the same speech recognition as voice mode; tap again to stop. */
+    fun toggleDictation() {
+        if (dictationJob?.isActive == true) { dictationJob?.cancel(); return }
+        val engines = voiceEngines ?: return
+        if (_state.value.busy || voice?.active == true) return
+        dictationJob = viewModelScope.launch {
+            _state.update { it.copy(dictating = true) }
+            var io: com.localfirst.assistant.voice.VoiceIo? = null
+            try {
+                io = engines.select(_state.value.settings).io
+                if (!io.ensureMicrophone()) { _state.update { it.copy(error = "Dictation needs microphone access.") }; return@launch }
+                io.focus.acquire()
+                when (val heard = io.input.listen({}, {})) {
+                    is com.localfirst.assistant.voice.ListenResult.Heard ->
+                        _state.update { s -> s.copy(draft = listOf(s.draft.trimEnd(), heard.text.trim()).filter(String::isNotBlank).joinToString(" ")) }
+                    is com.localfirst.assistant.voice.ListenResult.Failed -> _state.update { it.copy(error = heard.message) }
+                    com.localfirst.assistant.voice.ListenResult.Silence -> Unit
+                }
+            } finally {
+                io?.focus?.release()
+                _state.update { it.copy(dictating = false) }
+            }
+        }
+    }
+
     /** Called when the app goes to the background, where Android blocks the mic. */
     fun pauseVoice() {
         if (!VoiceForegroundService.active.value && voice?.active == true) voice.pause("Paused while the app was in the background. Tap to talk.")
@@ -458,7 +487,7 @@ class ChatViewModel(
     private fun carReply(state: ChatUiState): String {
         val lastUser = state.messages.indexOfLast { it is Message.User }
         val reply = SpeechText.fromMarkdown(
-            state.messages.drop(lastUser + 1).filterIsInstance<Message.Assistant>().joinToString("\n\n") { it.content },
+            com.localfirst.assistant.presentation.UiBlocks.plainText(state.messages.drop(lastUser + 1).filterIsInstance<Message.Assistant>().joinToString("\n\n") { it.content }),
         ).trim()
         return when {
             reply.isEmpty() -> state.error?.let { "Sorry, that didn't work: $it" } ?: "Sorry, I didn't get an answer."

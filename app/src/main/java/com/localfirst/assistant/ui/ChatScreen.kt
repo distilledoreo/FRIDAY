@@ -235,21 +235,36 @@ fun ChatScreen(viewModel: ChatViewModel) {
                 topBar = {
                     Row(Modifier.fillMaxWidth().background(if(state.privacy.incognito)androidx.compose.ui.graphics.Color(0xFF1B1B1E)else MaterialTheme.colorScheme.background).statusBarsPadding().height(64.dp).padding(horizontal=12.dp),verticalAlignment=Alignment.CenterVertically) {
                         Spacer(Modifier.weight(1f))
-                        if (!state.privacy.incognito) FridayStatusButton(state) { viewModel.openFriday() }
-                            MoreActions(buildList {
-                                add("Personal dashboard" to { dashboardOpen = true; viewModel.refreshDashboard() })
-                                if (state.privacy.incognito) add("Exit incognito" to viewModel::newChat) else add("Start incognito chat" to { viewModel.startIncognito() })
-                                if (state.privacy.incognito) add((if (state.privacy.freshSlate) "Use saved memories (new incognito chat)" else "Fresh slate (new incognito chat)") to { viewModel.startIncognito(!state.privacy.freshSlate) })
-                                add((if (state.projectId == null) "Choose project" else "Project details") to {
-                                    state.projectId?.let(viewModel::openProject) ?: viewModel.openWorkspace(WorkspaceDestination.PROJECTS)
-                                })
-                                if (state.projectId != null) add("Remove from project" to { viewModel.selectProject(null) })
-                                if (state.conversationId != null) add("Export chat" to { viewModel.openWorkspace(WorkspaceDestination.DATA) })
-                            },contentColor=if(state.privacy.incognito)androidx.compose.ui.graphics.Color(0xFFF2F1EE)else MaterialTheme.colorScheme.onSurfaceVariant)
-                            if (state.privacy.incognito) TextButton(shape = MaterialTheme.shapes.small, onClick = viewModel::newChat, enabled = !state.workspaceBusy,colors=androidx.compose.material3.ButtonDefaults.textButtonColors(contentColor=com.localfirst.assistant.ui.theme.readableAccent(palette.accent,androidx.compose.ui.graphics.Color(0xFF1B1B1E)))) { Text("Exit") }
-                            else if (state.messages.isNotEmpty() || state.draft.isNotBlank() || state.draftAttachments.isNotEmpty() || state.projectId != null) IconButton(onClick = viewModel::newChat, enabled = !state.busy) {
-                                Icon(Icons.Filled.Create, contentDescription = "New chat")
+                        val menu = buildList {
+                            add("Personal dashboard" to { dashboardOpen = true; viewModel.refreshDashboard() })
+                            if (state.privacy.incognito) add("Exit incognito" to viewModel::newChat) else add("Start incognito chat" to { viewModel.startIncognito() })
+                            if (state.privacy.incognito) add((if (state.privacy.freshSlate) "Use saved memories (new incognito chat)" else "Fresh slate (new incognito chat)") to { viewModel.startIncognito(!state.privacy.freshSlate) })
+                            add((if (state.projectId == null) "Choose project" else "Project details") to {
+                                state.projectId?.let(viewModel::openProject) ?: viewModel.openWorkspace(WorkspaceDestination.PROJECTS)
+                            })
+                            if (state.projectId != null) add("Remove from project" to { viewModel.selectProject(null) })
+                            if (state.conversationId != null) add("Export chat" to { viewModel.openWorkspace(WorkspaceDestination.DATA) })
+                            add("Appearance" to { viewModel.openWorkspace(WorkspaceDestination.APPEARANCE) })
+                            add("Settings" to { viewModel.openWorkspace(WorkspaceDestination.SETTINGS) })
+                        }
+                        if (state.privacy.incognito) {
+                            MoreActions(menu, contentColor = androidx.compose.ui.graphics.Color(0xFFF2F1EE))
+                            TextButton(shape = MaterialTheme.shapes.small, onClick = viewModel::newChat, enabled = !state.workspaceBusy,colors=androidx.compose.material3.ButtonDefaults.textButtonColors(contentColor=com.localfirst.assistant.ui.theme.readableAccent(palette.accent,androidx.compose.ui.graphics.Color(0xFF1B1B1E)))) { Text("Exit") }
+                        } else {
+                            val needsYou = state.agentTasks.any { it.optString("status") in FRIDAY_NEEDS_YOU }
+                            val working = state.agentTasks.any { it.optString("status") in FRIDAY_WORKING }
+                            if (state.messages.isNotEmpty() || state.draft.isNotBlank() || state.draftAttachments.isNotEmpty() || state.projectId != null) {
+                                HeaderCircleButton("New chat", { if (!state.busy) viewModel.newChat() }) { Icon(Icons.Filled.Create, contentDescription = null, modifier = Modifier.size(19.dp)) }
+                                Spacer(Modifier.width(6.dp))
                             }
+                            HeaderCircleButton(
+                                "FRIDAY. " + when { needsYou -> "Needs your attention"; working -> "Working"; else -> "Her computer and activity" },
+                                { viewModel.openFriday() },
+                                dot = when { needsYou -> palette.warning; working -> palette.accent; else -> null },
+                            ) { DotsGridIcon() }
+                            Spacer(Modifier.width(6.dp))
+                            ProfileButton(com.localfirst.assistant.ui.theme.LocalAppearance.current.displayName, null, menu)
+                        }
                     }
                 },
             ) { padding ->
@@ -261,6 +276,10 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     if(!state.privacy.incognito && (state.messages.isNotEmpty()||state.projectId!=null))Text(state.knowledge.projects.firstOrNull { it.id==state.projectId }?.name?:state.title,Modifier.align(Alignment.TopCenter).padding(horizontal=20.dp,vertical=8.dp),style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
                     if (state.privacy.incognito) Text("Incognito · ${if(state.privacy.freshSlate) "Fresh slate" else "Won’t be saved"}", style=MaterialTheme.typography.labelMedium, color=MaterialTheme.colorScheme.onSurfaceVariant, modifier=Modifier.align(Alignment.TopCenter).padding(top=8.dp))
                     FridayAmbient(voice?.phase,voice?.level?:0f,state.busy,Modifier.fillMaxSize().alpha(if(conversation).14f else 1f))
+                    if(!conversation&&!keyboardOpen&&!state.privacy.incognito) Box(Modifier.fillMaxSize().pointerInput(Unit) {
+                        var dragged=0f
+                        detectVerticalDragGestures(onDragStart={dragged=0f},onDragEnd={ if(dragged < -56.dp.toPx()) { dashboardOpen=true;viewModel.refreshDashboard() } }) { change,amount -> dragged+=amount;change.consume() }
+                    })
                     if(items.isNotEmpty()||state.error!=null||state.voiceError!=null) {
                     LazyColumn(
                         reverseLayout = true,
@@ -298,6 +317,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                                     actionsEnabled = !state.busy,
                                     onCopy = ::copy,
                                     onRegenerate = viewModel::regenerate,
+                                    onChoose = viewModel::sendSuggestion,
                                 )
                                 is TranscriptItem.ToolActivity -> ToolActivityCard(item, viewModel::loadImage, viewModel::openArtifact) { FridayTaskCard(it, state, viewModel) }
                                 TranscriptItem.Thinking -> ThinkingIndicator()
@@ -311,7 +331,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                         voice?.let { InlineVoice(it,viewModel::pauseVoiceFromChat,viewModel::startVoice,viewModel::interruptVoice,viewModel::closeVoice) }
                         state.groundingStatus?.let { status ->
                             Text(status, Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelSmall)
-                            if (state.groundingResearchAvailable) TextButton(shape = MaterialTheme.shapes.small, onClick = viewModel::proposeGroundedResearch, enabled = !state.busy && !state.workspaceBusy) { Text("Propose deeper research in Activity") }
+                            if (state.groundingResearchAvailable) TextButton(shape = MaterialTheme.shapes.small, onClick = viewModel::proposeGroundedResearch, enabled = !state.busy && !state.workspaceBusy) { Text("Have FRIDAY research this deeper") }
                             if (state.groundingSources.isNotEmpty()) androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).horizontalScroll(rememberScrollState())) {
                                 state.groundingSources.take(5).forEach { source -> TextButton(shape = MaterialTheme.shapes.small, onClick = { defaultUriHandler.openUri(source.url) }) { Text(source.title.take(35), maxLines = 1) } }
                             }
@@ -338,6 +358,8 @@ fun ChatScreen(viewModel: ChatViewModel) {
                             onCancelEdit = viewModel::cancelEditing,
                             onVoice = viewModel::toggleVoice,
                             voiceActive = voice != null,
+                            onDictate = viewModel::toggleDictation,
+                            dictating = state.dictating,
                             sendEnabled = state.canSend,
                             attachments = state.draftAttachments,
                             editingHasAttachments = (state.messages.getOrNull(state.editingIndex ?: -1) as? Message.User)
@@ -388,8 +410,8 @@ fun ChatScreen(viewModel: ChatViewModel) {
                         }
                         }
                     }
-                    if(!conversation&&!keyboardOpen) {
-                        TextButton(shape = MaterialTheme.shapes.small, onClick={dashboardOpen=true;viewModel.refreshDashboard()},modifier=Modifier.align(Alignment.BottomCenter).height(48.dp).width(120.dp)
+                    if(!conversation&&!keyboardOpen&&!state.privacy.incognito) {
+                        TextButton(shape = MaterialTheme.shapes.small, onClick={dashboardOpen=true;viewModel.refreshDashboard()},modifier=Modifier.align(Alignment.BottomCenter).padding(bottom=12.dp).height(48.dp).width(120.dp)
                             .semantics { contentDescription="Open personal dashboard" }
                             .pointerInput(Unit) { var dragged=0f;detectVerticalDragGestures(onDragStart={dragged=0f},onDragEnd={if(dragged < -24.dp.toPx()){dashboardOpen=true;viewModel.refreshDashboard()}}) { change,amount -> dragged+=amount;change.consume() } }) {
                             Box(Modifier.width(32.dp).height(3.dp).background(MaterialTheme.colorScheme.outlineVariant,RoundedCornerShape(2.dp)))

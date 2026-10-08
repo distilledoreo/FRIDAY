@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.automirrored.filled.List
 import com.localfirst.assistant.conversation.AssistantProject
@@ -94,10 +95,10 @@ internal fun ChatDrawer(
             LazyColumn(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
                 if (query.isBlank()) {
                     item { NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text("New chat") }, icon = { Icon(Icons.Filled.Create, null) }, selected = false, onClick = onNewChat) }
-                    item { NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text("Incognito · won’t be saved") }, icon = { Icon(Icons.Filled.Create, null) }, selected = false, onClick = onIncognito) }
+                    item { NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text("Incognito chat") }, icon = { Icon(Icons.Filled.Lock, null) }, selected = false, onClick = onIncognito) }
                     item { NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text("FRIDAY") }, icon = { Icon(AppIcons.Computer, null) }, selected = false, onClick = onActivity) }
-                    item { NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text("Library") }, icon = { Icon(Icons.AutoMirrored.Filled.List, null) }, selected = false, onClick = onFiles) }
-                    item { NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text("Images") }, icon = { Icon(Icons.Filled.Create, null) }, selected = false, onClick = onImages) }
+                    item { NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text("Library") }, icon = { Icon(AppIcons.Folder, null) }, selected = false, onClick = onFiles) }
+                    item { NavigationDrawerItem(shape = MaterialTheme.shapes.small, label = { Text("Images") }, icon = { Icon(AppIcons.Image, null) }, selected = false, onClick = onImages) }
 
 
                     item { TextButton(shape = MaterialTheme.shapes.small, onClick = onProjects, modifier = Modifier.padding(top = 12.dp)) { Text("Projects") } }

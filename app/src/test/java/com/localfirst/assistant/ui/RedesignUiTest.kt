@@ -46,7 +46,7 @@ class RedesignUiTest {
     @Test fun microphoneRemainsVisibleWhenTextIsReadyAndPlusMenuPreservesFeatures() {
         stable()
         compose.onNodeWithText("Message FRIDAY…").performTextInput("Draft kept while using voice")
-        compose.onNodeWithContentDescription("Start voice conversation").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Dictate a message").assertIsDisplayed()
         compose.onNodeWithContentDescription("Send").assertIsDisplayed()
         capture("composer-text")
         compose.onNodeWithContentDescription("Attachments and tools").performClick()
@@ -70,17 +70,25 @@ class RedesignUiTest {
     }
     @Test fun dashboardStartsCollapsedAndCanExpandCollapseAndDismissWithoutGestures() {
         stable()
+        compose.onNodeWithContentDescription("Close dashboard").assertDoesNotExist()
         compose.onNodeWithContentDescription("Open personal dashboard").performClick()
-        compose.onNodeWithText("Your dashboard").assertIsDisplayed()
-        compose.waitUntil(5000) { compose.onAllNodesWithText("Dashboard unavailable").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("Close dashboard").assertIsDisplayed()
+        compose.waitUntil(5000) { compose.onAllNodesWithText("Try again").fetchSemanticsNodes().isNotEmpty() }
         capture("dashboard-unavailable-partial")
-        compose.onNodeWithText("Expand",substring=false).performClick()
-        compose.onNodeWithText("Collapse",substring=false).assertIsDisplayed()
-        capture("dashboard-unavailable-expanded")
-        compose.onNodeWithText("Collapse",substring=false).performClick()
-        compose.onNodeWithText("Expand",substring=false).assertIsDisplayed()
-        compose.onNodeWithText("Close",substring=false).performClick()
-        compose.onNodeWithText("Your dashboard").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Close dashboard").performClick()
+        compose.onNodeWithContentDescription("Close dashboard").assertDoesNotExist()
+    }
+    @Test fun swipingUpAnywhereOnTheHomeScreenOpensTheDashboard() {
+        stable()
+        compose.onNodeWithContentDescription("Close dashboard").assertDoesNotExist()
+        // Well above the bottom edge, where Android's own home gesture lives.
+        compose.onRoot().performTouchInput { swipe(androidx.compose.ui.geometry.Offset(width/2f,height*.45f),androidx.compose.ui.geometry.Offset(width/2f,height*.25f),250) }
+        compose.onNodeWithContentDescription("Close dashboard").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Close dashboard").performClick()
+        compose.onNodeWithContentDescription("Close dashboard").assertDoesNotExist()
+        // A short or downward drag does nothing.
+        compose.onRoot().performTouchInput { swipe(androidx.compose.ui.geometry.Offset(width/2f,height*.3f),androidx.compose.ui.geometry.Offset(width/2f,height*.4f),250) }
+        compose.onNodeWithContentDescription("Close dashboard").assertDoesNotExist()
     }
     @Test fun allExistingWorkspaceDestinationsUseNativeScreensAndAppearancePersists() {
         stable()
@@ -116,7 +124,7 @@ class RedesignUiTest {
             compose.activity.window.decorView.dispatchApplyWindowInsets(insets)
         }
         compose.waitForIdle()
-        val mic=compose.onNodeWithContentDescription("Start voice conversation").fetchSemanticsNode().boundsInRoot
+        val mic=compose.onNodeWithContentDescription("Dictate a message").fetchSemanticsNode().boundsInRoot
         org.junit.Assert.assertTrue("Composer must sit above the 300px keyboard: $mic",mic.bottom<=591f)
         compose.onNodeWithContentDescription("Send").assertIsDisplayed()
         capture("composer-keyboard-insets")
@@ -124,7 +132,7 @@ class RedesignUiTest {
     @Test fun incognitoRetainsItsExplicitExitAndDarkHeaderInLightMode() {
         stable(ThemeMode.LIGHT)
         compose.onNodeWithContentDescription("FRIDAY. Open navigation").performClick()
-        compose.onNodeWithText("Incognito · won’t be saved").performClick()
+        compose.onNodeWithText("Incognito chat").performClick()
         compose.onNodeWithText("Exit",substring=false).assertIsDisplayed()
         compose.onNodeWithText("Incognito · Won’t be saved").assertIsDisplayed()
         compose.runOnIdle { org.junit.Assert.assertFalse(androidx.core.view.WindowCompat.getInsetsController(compose.activity.window,compose.activity.window.decorView).isAppearanceLightStatusBars) }
@@ -153,22 +161,22 @@ class RedesignUiTest {
         compose.onNodeWithText("Search chats").assertIsDisplayed()
         compose.onNodeWithContentDescription("FRIDAY. Close navigation").performClick()
         compose.onNodeWithContentDescription("Open personal dashboard").performClick()
-        compose.onNodeWithText("Your dashboard").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Close dashboard").assertIsDisplayed()
         capture("dashboard-native-motion-compact")
-        compose.onNodeWithText("Close",substring=false).performClick()
-        compose.onNodeWithText("Your dashboard").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Close dashboard").performClick()
+        compose.waitUntil(5000) { compose.onAllNodesWithContentDescription("Close dashboard").fetchSemanticsNodes().isEmpty() }
     }
 
     @Test fun leavingTheDashboardForSettingsDoesNotReopenItOnReturn() {
         stable()
         compose.runOnIdle { AppearanceSettingsStore(compose.activity).useForTest { save(AppearanceSettings(reducedMotion=false)) } }
         compose.onNodeWithContentDescription("Open personal dashboard").performClick()
-        compose.waitUntil(5000) { compose.onAllNodesWithText("Dashboard unavailable").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(5000) { compose.onAllNodesWithText("Try again").fetchSemanticsNodes().isNotEmpty() }
         val settings=compose.onAllNodesWithText("Settings",substring=false)
         settings[settings.fetchSemanticsNodes().size-1].performClick()
         compose.onNodeWithText("Personalization").assertIsDisplayed()
         compose.onNodeWithContentDescription("Back",substring=false).performClick()
-        compose.onNodeWithText("Your dashboard").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Close dashboard").assertDoesNotExist()
         compose.onNodeWithContentDescription("Open personal dashboard").assertIsDisplayed()
     }
 

@@ -56,6 +56,12 @@ internal fun AppearancePage() {
                 }
             }
         }
+        AppearanceGroup("You") {
+            var name by remember(settings.displayName) { mutableStateOf(settings.displayName) }
+            OutlinedTextField(name,{ name=it.take(60) },label={Text("Your name")},singleLine=true,
+                supportingText={Text("Optional. Shows your initial on the profile button; stays on this phone.")},modifier=Modifier.fillMaxWidth())
+            TextButton(shape=MaterialTheme.shapes.small,onClick={save(settings.copy(displayName=name.trim()))},enabled=name.trim()!=settings.displayName) { Text("Save name") }
+        }
         AppearanceGroup("Motion") {
             Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) { Text("Reduce motion",style=MaterialTheme.typography.bodyLarge);Text("Static ambient light and instant transitions. Your Android motion setting is respected too.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }

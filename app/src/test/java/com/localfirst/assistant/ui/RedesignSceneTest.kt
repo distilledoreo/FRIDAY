@@ -97,7 +97,7 @@ class RedesignSceneTest {
             }
         }
         compose.onNodeWithText("Message FRIDAY…").performTextInput("A longer multiline draft still leaves all controls accessible")
-        compose.onNodeWithContentDescription("Start voice conversation").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Dictate a message").assertIsDisplayed()
         compose.onNodeWithContentDescription("Send").assertIsDisplayed()
         compose.onNodeWithContentDescription("FRIDAY. Open navigation").assertIsDisplayed()
         compose.onNodeWithTag("landscape").captureRoboImage("build/outputs/redesign/composer-narrow-landscape-large.png")
@@ -108,9 +108,9 @@ class RedesignSceneTest {
         compose.setContent { AssistantTheme(preferences=AppearanceSettings(reducedMotion=true)) { Surface(Modifier.fillMaxSize(),color=MaterialTheme.colorScheme.surfaceContainerLow) {
             PersonalDashboard(ChatUiState(dashboard=DashboardState(loaded=true,snapshot=snapshot)),vm,onClose={})
         } } }
-        compose.onNodeWithText("No events returned for today.").assertIsDisplayed()
-        compose.onNodeWithText("No saved follow-ups.").assertIsDisplayed()
-        compose.onNodeWithText("Nothing relevant to suggest right now.").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Nothing on your calendar today.").assertIsDisplayed()
+        compose.onNodeWithText("All caught up").assertIsDisplayed()
+        compose.onNodeWithText("No saved follow-ups.").assertDoesNotExist()
         capture("dashboard-connected-empty")
     }
 
@@ -145,15 +145,10 @@ class RedesignSceneTest {
                 PersonalDashboard(ChatUiState(dashboard=DashboardState(loaded=true,snapshot=snapshot)),vm,onClose=close,expanded=expanded,onToggle=toggle)
             }
         } }
-        compose.onNodeWithText("Expand",substring=false).assertIsDisplayed()
+        compose.onNodeWithText("Today").assertIsDisplayed()
         capture("dashboard-native-motion-partial")
-        compose.onNodeWithText("Expand",substring=false).performClick()
-        compose.onNodeWithText("Collapse",substring=false).assertIsDisplayed()
-        capture("dashboard-native-motion-expanded")
-        compose.onNodeWithText("Collapse",substring=false).performClick()
-        compose.onNodeWithText("Expand",substring=false).assertIsDisplayed()
-        compose.onNodeWithText("Close",substring=false).performClick()
-        compose.onNodeWithText("Your dashboard").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Close dashboard").performClick()
+        compose.waitUntil(5000) { !visible }
     }
 
     @Test fun unsupportedInteractiveMarkupRemainsVisibleTextInsteadOfADeadWidget() {

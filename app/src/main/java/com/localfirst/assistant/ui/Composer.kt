@@ -1,6 +1,9 @@
 package com.localfirst.assistant.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -50,8 +53,12 @@ internal fun Composer(
     imageSummary: String = "Auto",
     onImageSettings: () -> Unit = {},
     onExitImageMode: () -> Unit = {},
+    onDictate: (() -> Unit)? = null,
+    dictating: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
+    val palette = com.localfirst.assistant.ui.theme.LocalFridayPalette.current
+    val accent = palette.accent
     Column(modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
         if (editing) {
             Row(
@@ -77,8 +84,19 @@ internal fun Composer(
         }
         if (attachments.isNotEmpty()) DraftAttachmentStrip(attachments, onRemoveAttachment)
         Surface(
-            shape = RoundedCornerShape(28.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            shape = RoundedCornerShape(30.dp),
+            color = if (palette.dark) Color(0xFF1E1E21) else Color.White,
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp,
+                androidx.compose.ui.graphics.Brush.horizontalGradient(
+                    listOf(
+                        MaterialTheme.colorScheme.outline.copy(alpha = if (palette.dark) .28f else .18f),
+                        MaterialTheme.colorScheme.outline.copy(alpha = if (palette.dark) .16f else .1f),
+                        accent.copy(alpha = if (palette.dark) .5f else .35f),
+                    ),
+                ),
+            ),
+            shadowElevation = if (palette.dark) 0.dp else 6.dp,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Column {
@@ -95,12 +113,14 @@ internal fun Composer(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
                 ) {
-                    IconButton(
+                    Surface(
                         onClick = onAttach,
                         enabled = !busy && !editing,
-                        modifier = Modifier.size(48.dp),
+                        shape = CircleShape,
+                        color = if (palette.dark) Color.White.copy(alpha = .07f) else Color.Black.copy(alpha = .05f),
+                        modifier = Modifier.padding(start = 4.dp).size(42.dp),
                     ) {
-                        Icon(Icons.Filled.Add, contentDescription = "Attachments and tools")
+                        Box(contentAlignment = Alignment.Center) { Icon(Icons.Filled.Add, contentDescription = "Attachments and tools", modifier = Modifier.size(22.dp)) }
                     }
                     TextField(
                         value = draft,
@@ -118,10 +138,23 @@ internal fun Composer(
                             disabledIndicatorColor = Color.Transparent,
                         ),
                     )
-                    if(onVoice!=null) IconButton(onClick=onVoice,enabled=!busy||voiceActive,modifier=Modifier.size(48.dp)) {
-                        Icon(AppIcons.Mic,contentDescription=if(voiceActive)"End voice conversation"else"Start voice conversation",tint=if(voiceActive)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.size(20.dp))
+                    if (onDictate != null && !voiceActive) IconButton(onClick = onDictate, enabled = !busy, modifier = Modifier.size(44.dp)) {
+                        Icon(AppIcons.Mic, contentDescription = if (dictating) "Stop dictation" else "Dictate a message",
+                            tint = if (dictating) accent else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(21.dp))
                     }
-                    if (busy) {
+                    val hasText = draft.isNotBlank() || attachments.isNotEmpty() || editing
+                    if (onVoice != null && !busy && !hasText && !voiceActive) {
+                        Surface(
+                            onClick = onVoice,
+                            shape = CircleShape,
+                            color = accent.copy(alpha = if (voiceActive) .9f else if (palette.dark) .26f else .16f),
+                            modifier = Modifier.padding(end = 2.dp).size(44.dp).semantics { contentDescription = if (voiceActive) "End voice conversation" else "Start voice conversation" },
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                WaveformIcon(18.dp, if (voiceActive) MaterialTheme.colorScheme.onPrimary else if (palette.dark) com.localfirst.assistant.ui.theme.readableAccent(accent, Color(0xFF1E1E21)) else com.localfirst.assistant.ui.theme.readableAccent(accent, Color.White))
+                            }
+                        }
+                    } else if (busy) {
                         FilledIconButton(
                             onClick = onStop,
                             shape = CircleShape,
@@ -133,7 +166,7 @@ internal fun Composer(
                         ) {
                             Icon(AppIcons.Stop, contentDescription = "Stop", modifier = Modifier.size(18.dp))
                         }
-                    } else if(draft.isNotBlank()||attachments.isNotEmpty()||editing) {
+                    } else if (hasText) {
                         FilledIconButton(
                             onClick = onSend,
                             enabled = sendEnabled,

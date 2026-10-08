@@ -133,6 +133,22 @@ internal fun FridayComputerCard(state: ChatUiState, vm: ChatViewModel, taskId: S
             val shot = live?.screenshotId?.takeIf(String::isNotBlank)
             if (shot != null) {
                 AgentScreenshot(live.taskId, JSONObject().put("id", shot).put("url", live.screenshotUrl), vm)
+            } else {
+                // Her screen when there's no page to show: dark like a monitor, with what she's doing.
+                val accent = com.localfirst.assistant.ui.theme.LocalFridayPalette.current.accent
+                Box(
+                    Modifier.fillMaxWidth().height(150.dp).padding(8.dp).clip(RoundedCornerShape(10.dp))
+                        .background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color(0xFF17171A), Color(0xFF221C1B)))),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(AppIcons.Computer, contentDescription = null, tint = accent.copy(alpha = if (working) 1f else .6f), modifier = Modifier.size(28.dp))
+                        Text(
+                            when { !state.agentReady -> "Offline"; working -> "Working · her screen appears when she opens a page"; else -> "Idle · ready for something to do" },
+                            style = MaterialTheme.typography.labelMedium, color = Color(0xFFB9B4AE),
+                        )
+                    }
+                }
             }
             Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 val ready = state.agentReady

@@ -230,9 +230,10 @@ class VoiceController(
     /** The assistant's text in the current turn: everything after the last user message. */
     private fun replyText(messages: List<Message>): String {
         val lastUser = messages.indexOfLast { it is Message.User }
-        return messages.drop(lastUser + 1)
+        // Components are spoken as plain sentences; one still streaming in waits until it's complete.
+        return com.localfirst.assistant.presentation.UiBlocks.plainText(messages.drop(lastUser + 1)
             .filterIsInstance<Message.Assistant>()
-            .joinToString("\n\n") { it.content }
+            .joinToString("\n\n") { it.content })
     }
 
     private fun onPartial(text: String) = _state.update { it?.copy(heard = text) }
