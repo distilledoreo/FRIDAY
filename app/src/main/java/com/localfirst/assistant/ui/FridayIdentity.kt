@@ -33,16 +33,17 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.math.sin
 import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.withStyle
 import androidx.compose.animation.core.withInfiniteAnimationFrameNanos
 import kotlin.math.PI
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.lerp
 
 /**
- * The F is the menu button. Closed, three lines stand in for it ("≡RIDAY"); as the sidebar opens
- * ([progress] 0 to 1) the top and middle lines become the F's arms and the bottom line swings up into
- * its stem, spelling FRIDAY. Lines and letters are drawn together from the same font metrics, so
- * they stay aligned at any density or font size, and "RIDAY" never moves.
+ * The F is the menu button. Closed, three lines stand in for it (the bottom one shorter); as the
+ * sidebar opens ([progress] 0 to 1) the top and middle lines become the F's arms and the bottom line
+ * swings up into its stem. The lines land exactly on the font's own F (measured proportions below)
+ * and hand over to the real glyph at the end, so the open word is simply "FRIDAY" in one typeface.
  */
 @Composable
 internal fun FridayBrand(progress:Float,onClick:()->Unit,modifier:Modifier=Modifier,foreground:Color=MaterialTheme.colorScheme.onBackground) {
@@ -51,30 +52,43 @@ internal fun FridayBrand(progress:Float,onClick:()->Unit,modifier:Modifier=Modif
     val scale=density.fontScale
     val measurer=androidx.compose.ui.text.rememberTextMeasurer()
     val style=androidx.compose.ui.text.TextStyle(fontWeight=FontWeight.Light,fontSize=(22f/scale).sp,letterSpacing=(5f/scale).sp,color=foreground)
-    val word=remember(style,measurer) { measurer.measure("RIDAY",style) }
-    val font=with(density) { (22f/scale).sp.toPx() }
-    val cap=font*.711f
-    val arm=cap*.62f
-    val textX=with(density) { 8.dp.toPx() }+arm+with(density) { (5f/scale).sp.toPx() }+font*.08f
+    // The whole word with an invisible F keeps R–Y exactly where the font puts them; the F is drawn separately.
+    val word=remember(style,measurer) {
+        measurer.measure(androidx.compose.ui.text.buildAnnotatedString {
+            withStyle(androidx.compose.ui.text.SpanStyle(color=Color.Transparent)) { append("F") };append("RIDAY")
+        },style)
+    }
+    val glyph=remember(style,measurer) { measurer.measure("F",style) }
+    val em=with(density) { (22f/scale).sp.toPx() }
     Row(modifier.height(56.dp).clickable(role=Role.Button,onClick=onClick)
          .clearAndSetSemantics { contentDescription=if(p>.5f)"FRIDAY. Close navigation"else "FRIDAY. Open navigation"; role=Role.Button;onClick { onClick();true } }
-         .padding(end=12.dp),verticalAlignment=Alignment.CenterVertically) {
-        Canvas(Modifier.height(56.dp).width(with(density) { (textX+word.size.width).toDp() })) {
-            val x0=8.dp.toPx()
-            val baseline=center.y+cap/2f
-            val top=baseline-cap
-            val middle=baseline-cap/2f
-            val width=(font*.068f).coerceAtLeast(1.2.dp.toPx())
-            val round=androidx.compose.ui.graphics.StrokeCap.Round
-            // Top line: the F's top arm in both states.
-            drawLine(foreground,Offset(x0,top),Offset(x0+arm,top),width,round)
-            // Middle line: shortens slightly into the F's middle arm.
-            drawLine(foreground,Offset(x0,middle),Offset(x0+arm*(1f-.2f*p),middle),width,round)
-            // Bottom line: swings up around its left end into the stem, growing to the full letter height.
+         .padding(start=8.dp,end=12.dp),verticalAlignment=Alignment.CenterVertically) {
+        Canvas(Modifier.height(56.dp).width(with(density) { word.size.width.toDp() })) {
+            val origin=Offset(0f,center.y-word.size.height/2f)
+            val baseline=origin.y+word.firstBaseline
+            // Light F proportions, in ems: stem x .09–.15, cap height .71, top arm to .53 (.05 thick),
+            // middle arm to .4825 (.0525 thick) centred at .507 of cap height.
+            val cap=.71f*em
+            val stemLeft=.09f*em;val stemWidth=.06f*em
+            val topRight=.53f*em
+            val line=.055f*em
+            val reveal=((p-.82f)/.18f).coerceIn(0f,1f).let { it*it*(3f-2f*it) }
+            val lines=foreground.copy(alpha=foreground.alpha*(1f-reveal))
+            val butt=androidx.compose.ui.graphics.StrokeCap.Butt
+            fun mix(a:Float,b:Float)=a+(b-a)*p
+            // Top line becomes the top arm.
+            val topY=baseline-cap+mix(line,.05f*em)/2f
+            drawLine(lines,Offset(stemLeft,topY),Offset(topRight,topY),mix(line,.05f*em),butt)
+            // Middle line becomes the slightly shorter middle arm.
+            val midY=baseline-cap*mix(.5f,.507f)
+            drawLine(lines,Offset(stemLeft,midY),Offset(mix(topRight,.4825f*em),midY),mix(line,.0525f*em),butt)
+            // Bottom line (shorter) swings up around its left end into the full-height stem.
             val angle=-PI.toFloat()/2f*p
-            val length=arm+(cap-arm)*p
-            drawLine(foreground,Offset(x0,baseline),Offset(x0+length*kotlin.math.cos(angle),baseline+length*sin(angle)),width,round)
-            drawText(word,topLeft=Offset(textX,baseline-word.firstBaseline))
+            val length=mix((topRight-stemLeft)*.6f,cap)
+            val pivot=Offset(mix(stemLeft,stemLeft+stemWidth/2f),baseline-mix(line/2f,0f))
+            drawLine(lines,pivot,pivot+Offset(length*kotlin.math.cos(angle),length*sin(angle)),mix(line,stemWidth),butt)
+            drawText(word,topLeft=origin)
+            if(reveal>0f)drawText(glyph,topLeft=origin,alpha=reveal)
         }
     }
 }

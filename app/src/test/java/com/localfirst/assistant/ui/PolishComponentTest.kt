@@ -3,6 +3,8 @@ package com.localfirst.assistant.ui
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.background
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.isRoot
@@ -114,11 +116,24 @@ class PolishComponentTest {
             com.localfirst.assistant.ui.theme.AssistantTheme(preferences = AppearanceSettings(reducedMotion = true)) {
                 androidx.compose.material3.Surface(color = androidx.compose.material3.MaterialTheme.colorScheme.background) {
                     androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.padding(16.dp)) {
-                        FridayBrand(0f, {}); FridayBrand(.5f, {}); FridayBrand(1f, {})
+                        FridayBrand(0f, {}); FridayBrand(.5f, {}); FridayBrand(.8f, {}); FridayBrand(1f, {})
+                        androidx.compose.material3.Text("FRIDAY", fontWeight = androidx.compose.ui.text.font.FontWeight.Light, fontSize = 22.sp, letterSpacing = 5.sp, modifier = androidx.compose.ui.Modifier.padding(start = 8.dp, top = 14.dp))
                     }
                 }
             }
         }
         capture("brand-stages")
+    }
+
+    @Test fun fGlyph() {
+        compose.setContent {
+            androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize().then(androidx.compose.ui.Modifier.padding(0.dp))) {
+                androidx.compose.material3.Text("F", fontWeight = androidx.compose.ui.text.font.FontWeight.Light,
+                    fontSize = 200.sp, color = androidx.compose.ui.graphics.Color.Black,
+                    modifier = androidx.compose.ui.Modifier.background(androidx.compose.ui.graphics.Color.White),
+                    onTextLayout = { l -> println("GLYPH baseline=" + l.firstBaseline + " width=" + l.size.width + " height=" + l.size.height + " advance=" + l.getHorizontalPosition(1, true)) })
+            }
+        }
+        capture("f-glyph")
     }
 }
