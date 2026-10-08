@@ -29,7 +29,11 @@ import java.time.*
 import java.time.format.DateTimeFormatter
 
 data class DashboardState(val scope:String="",val loading:Boolean=false,val loaded:Boolean=false,val error:String?=null,
-    val snapshot:JSONObject?=null,val followups:List<JSONObject> = emptyList(),val proposals:List<JSONObject> = emptyList(),val tasks:List<BackgroundTask> = emptyList(),val agentTasks:List<JSONObject> = emptyList())
+    val snapshot:JSONObject?=null,val followups:List<JSONObject> = emptyList(),val proposals:List<JSONObject> = emptyList(),val tasks:List<BackgroundTask> = emptyList(),val agentTasks:List<JSONObject> = emptyList(),
+    /** Today's events from the phone's own calendar, used when no PC calendar is connected. Null when not read. */
+    val phoneEvents:List<com.localfirst.assistant.tools.phone.CalendarEntry>?=null,
+    /** The phone calendar needs permission before it can be shown. */
+    val phoneCalendarNeedsPermission:Boolean=false)
 
 /** Eligibility comes from the host's opt-ins/evidence/quiet controls; this only changes selection. */
 fun dashboardProposalKinds(level:ProactivityLevel,kind:String)=kind in setOf("followup","situation")&&(level!=ProactivityLevel.CONSERVATIVE||kind=="followup")
@@ -81,7 +85,20 @@ internal fun PersonalDashboard(state:ChatUiState,vm:ChatViewModel,onClose:()->Un
                     }
                 }
                 HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant.copy(alpha=.5f))
+                val phone=data.phoneEvents
                 when {
+                    calendar?.optString("status")!="available"&&phone!=null -> {
+                        if(phone.isEmpty())DashMessage("Nothing on your calendar today.")
+                        phone.take(if(allEvents)30 else 4).forEachIndexed { index,event ->
+                            DashRow(onClick={vm.openPhoneCalendar()}) {
+                                Text(if(event.allDay)"All day" else event.start.format(DateTimeFormatter.ofPattern("h:mm a")),Modifier.width(76.dp),style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                                Box(Modifier.padding(end=14.dp).size(8.dp).clip(CircleShape).background(eventColor(index,com.localfirst.assistant.ui.theme.LocalFridayPalette.current.accent)))
+                                DashText(event.title,phoneEventDetail(event))
+                            }
+                        }
+                        if(phone.size>4)DashRow(onClick={allEvents=!allEvents}) { Text(if(allEvents)"Show fewer"else"Show all ${phone.size} events",style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant) }
+                    }
+                    calendar?.optString("status")!="available"&&data.phoneCalendarNeedsPermission -> DashRow(onClick=vm::allowPhoneCalendar) { DashText("Show your phone’s calendar","Allow calendar access") }
                     calendar?.optString("status")=="unavailable" -> DashRow(onClick={go(WorkspaceDestination.ACCOUNTS)}) { DashText("Your calendar couldn’t be checked","Open accounts") }
                     calendar?.optString("status")!="available" -> DashRow(onClick={go(WorkspaceDestination.BRIEF)}) { DashText("Connect a calendar to see your day","Choose sources") }
                     events.isEmpty() -> DashMessage("Nothing on your calendar today.")
@@ -184,6 +201,13 @@ private fun RowScope.DashText(title:String,detail:String?,modifier:Modifier=Modi
 
 /** Distinct, calm dot colors for consecutive events. */
 private fun eventColor(index:Int,accent:androidx.compose.ui.graphics.Color)=listOf(accent,androidx.compose.ui.graphics.Color(0xFF6F9BDE),androidx.compose.ui.graphics.Color(0xFF6DBE8B),androidx.compose.ui.graphics.Color(0xFFD9B26A),androidx.compose.ui.graphics.Color(0xFFA48BDB))[index%5]
+
+/** The same "1 hr · Place" line for an event from the phone's calendar. */
+internal fun phoneEventDetail(event:com.localfirst.assistant.tools.phone.CalendarEntry):String? {
+    val minutes=event.end?.let { Duration.between(event.start,it).toMinutes() }?.takeIf { !event.allDay&&it>0 }
+    val length=minutes?.let { when { it<60 -> "$it min"; it%60==0L -> "${it/60} hr"; else -> "${it/60} hr ${it%60} min" } }
+    return listOfNotNull(length,event.location?.takeIf(String::isNotBlank)).joinToString(" · ").ifBlank { null }
+}
 
 /** "30 min · Google Meet": length and place, when the event has them. */
 internal fun eventDetail(event:JSONObject):String? {

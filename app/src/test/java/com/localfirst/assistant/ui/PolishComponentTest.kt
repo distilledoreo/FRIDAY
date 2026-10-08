@@ -15,6 +15,7 @@ import com.github.takahirom.roborazzi.captureRoboImage
 import com.localfirst.assistant.settings.AppearanceSettings
 import com.localfirst.assistant.settings.ThemeMode
 import org.junit.Rule
+import androidx.compose.ui.test.onNodeWithText
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -167,5 +168,26 @@ class PolishComponentTest {
             compose.runOnIdle { dark = false }
             capture("brand-finalists-light")
         }
+    }
+
+    @Test fun dashboardPhoneCalendar() {
+        val vm = (org.robolectric.RuntimeEnvironment.getApplication() as com.localfirst.assistant.AssistantApp).chat()
+        val snapshot = org.json.JSONObject("""{"date":"2026-10-08","sections":[{"kind":"calendar","status":"not_configured"},{"kind":"weather","status":"available","temperature_2m_max":71,"conditions":"Partly cloudy"}]}""")
+        val day = java.time.LocalDate.of(2026, 10, 8)
+        val events = listOf(
+            com.localfirst.assistant.tools.phone.CalendarEntry("Meeting prep", day.atTime(9, 30), day.atTime(10, 0), false, null),
+            com.localfirst.assistant.tools.phone.CalendarEntry("Lunch with Sam", day.atTime(12, 15), day.atTime(13, 15), false, "Café Brazil"),
+            com.localfirst.assistant.tools.phone.CalendarEntry("Bible study", day.atTime(19, 0), day.atTime(20, 30), false, "Kingdom Hall"),
+        )
+        compose.setContent {
+            com.localfirst.assistant.ui.theme.AssistantTheme(preferences = AppearanceSettings(reducedMotion = true)) {
+                androidx.compose.material3.Surface(androidx.compose.ui.Modifier.fillMaxSize(), color = androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainerLow) {
+                    PersonalDashboard(ChatUiState(dashboard = DashboardState(loaded = true, snapshot = snapshot, phoneEvents = events)), vm, onClose = {})
+                }
+            }
+        }
+        compose.onNodeWithText("Lunch with Sam").assertExists()
+        compose.onNodeWithText("1 hr · Café Brazil").assertExists()
+        capture("dashboard-phone-calendar")
     }
 }

@@ -893,11 +893,46 @@ class ChatViewModel(
                     val agentTasks=jsonRows(JSONArray(client.request("/workspace/agent/tasks?limit=100")))
                     DashboardState(scope=selectedScope,loaded=true,snapshot=snapshot,followups=followups,proposals=proposals,tasks=(0 until jobs.length()).map { BackgroundTask.from(jobs.getJSONObject(it)) },agentTasks=agentTasks)
                 }
-                if(generation==dashboardGeneration)_state.update { if(!it.privacy.incognito&&it.projectId.orEmpty()==selectedScope)it.copy(dashboard=data) else it.copy(dashboard=DashboardState(scope=it.projectId.orEmpty())) }
+                // No calendar connected on the PC: show today from the phone's own calendar instead.
+                val pcCalendar=data.snapshot?.optJSONArray("sections")?.let { s -> (0 until s.length()).map { s.getJSONObject(it) } }?.firstOrNull { it.optString("kind")=="calendar" }
+                val withPhone=if(pcCalendar?.optString("status")=="available") data else phoneCalendarToday(data)
+                if(generation==dashboardGeneration)_state.update { if(!it.privacy.incognito&&it.projectId.orEmpty()==selectedScope)it.copy(dashboard=withPhone) else it.copy(dashboard=DashboardState(scope=it.projectId.orEmpty())) }
             } catch(e:CancellationException) { throw e }
             catch(e:Exception) { if(generation==dashboardGeneration)_state.update { if(!it.privacy.incognito&&it.projectId.orEmpty()==selectedScope)it.copy(dashboard=DashboardState(scope=selectedScope,error="Your sources could not be refreshed. Check the computer connection and selected account permissions."))else it.copy(dashboard=DashboardState(scope=it.projectId.orEmpty())) } }
         }
     }
+    private var askedForCalendar=false
+
+    /** Today's events from the phone's calendar. Asks for permission once; after that, waits for the user to tap. */
+    private suspend fun phoneCalendarToday(data:DashboardState):DashboardState {
+        val context=app?:return data
+        val granted=com.localfirst.assistant.phone.PermissionBroker.isGranted(context,android.Manifest.permission.READ_CALENDAR)
+        if(!granted&&askedForCalendar)return data.copy(phoneCalendarNeedsPermission=true)
+        askedForCalendar=true
+        return try {
+            val today=java.time.LocalDate.now().atStartOfDay()
+            data.copy(phoneEvents=com.localfirst.assistant.phone.AndroidPhoneActions(context).upcomingEvents(today,today.plusDays(1)))
+        } catch(e:CancellationException) { throw e }
+        catch(e:Exception) { data.copy(phoneCalendarNeedsPermission=true) }
+    }
+
+    /** From the dashboard: ask for calendar access, then show today's events. */
+    fun allowPhoneCalendar() {
+        val context=app?:return
+        viewModelScope.launch {
+            if(com.localfirst.assistant.phone.PermissionBroker.ensure(context,android.Manifest.permission.READ_CALENDAR))refreshDashboard()
+        }
+    }
+
+    /** Opens the phone's calendar app at today. */
+    fun openPhoneCalendar() {
+        val context=app?:return
+        runCatching {
+            val uri=android.content.ContentUris.withAppendedId(android.provider.CalendarContract.CONTENT_URI.buildUpon().appendPath("time").build(),System.currentTimeMillis())
+            context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW,uri).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+    }
+
     fun clearDashboard() { ++dashboardGeneration;dashboardJob?.cancel();dashboardJob=null;_state.update { it.copy(dashboard=DashboardState(scope=it.projectId.orEmpty())) } }
     fun completeDashboardFollowup(id:String) = workspaceAction {
         workspace?.request("/workspace/agent/briefing/followups/$id","PATCH",JSONObject().put("status","done"))?:error("Computer unavailable")
