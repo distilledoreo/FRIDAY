@@ -35,6 +35,12 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
     store = Approvals(Path(root) / 'agent.sqlite')
     if engine is not None and hasattr(engine, 'bind'): engine.bind(store)
     router = APIRouter(prefix='/workspace/agent', dependencies=auth)
+    from .review import OutgoingReview
+    try:
+        from .vault import Vault
+        vault = Vault(Path(root) / 'vault')
+    except ImportError: vault = None
+    reviewer = OutgoingReview(vault)
     running = {}
     scheduler = None
 
@@ -47,6 +53,11 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
         ready = engine is not None and (not hasattr(engine, 'available') or await engine.available())
         return {'ready': ready, 'gpu': False, 'outgoing_ready': False,
                 'detail': 'FRIDAY can research public pages and report back. Account actions are still being connected.' if ready else unavailable_detail or 'Cloud agent unavailable; proposals can be saved while its setup is checked'}
+
+    @router.get('/accounts')
+    async def accounts():
+        return {'accounts': vault.accounts() if vault else [], 'vault_installed': vault is not None,
+                'detail': 'Provider sign-in is still being connected. Credentials have no read/export API.'}
 
     @router.get('/tasks')
     async def tasks(limit: int = Query(default=50, ge=1, le=100)):
@@ -62,6 +73,8 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
     async def task(task_id: str):
         value = guarded(store.task, task_id)
         value['actions'] = store.actions(task_id)
+        for action in value['actions']:
+            action['review'] = reviewer.inspect(action['payload'])
         value['result'] = store.result(task_id)
         value['runs'] = store.runs(task_id)
         return value
@@ -121,6 +134,14 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
         for identifier in [task_id, *children]:
             if identifier in running: running[identifier].cancel()
         return store.task(task_id)
+
+    @router.get('/actions/{action_id}/review')
+    async def review_action(action_id: str):
+        with store.db() as db:
+            row = db.execute('SELECT task_id FROM actions WHERE id=?', (action_id,)).fetchone()
+        if row is None: raise HTTPException(404, 'Unknown action')
+        action = next(item for item in store.actions(row['task_id']) if item['id'] == action_id)
+        return reviewer.inspect(action['payload'])
 
     @router.post('/actions/{action_id}/approve')
     async def approve_action(action_id: str, body: Approval):

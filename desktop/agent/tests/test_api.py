@@ -78,6 +78,23 @@ class AgentApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.task(task['id'])['status'], 'cancelled')
         self.assertNotIn('result', [e['kind'] for e in self.store.events(task['id'])])
 
+    async def test_outgoing_review_is_read_only_authenticated_and_does_not_grant_approval(self):
+        task = await self.proposal()
+        self.store.approve_task(task['id'], task['fingerprint'])
+        self.store.start_task(task['id'], task['fingerprint'])
+        action = self.store.propose_action(task['id'], 'send', 'test@example.com', {'account_id':'a'*32,'to':'other@example.com','subject':'Draft','body':'Hello'})
+        path = '/workspace/agent/actions/' + action['id']
+        response = await self.client.get(path + '/review')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['fingerprint'], action['fingerprint'])
+        self.assertFalse(response.json()['allowed'])
+        self.assertFalse(response.json()['executable'])
+        self.assertEqual((await self.client.get(path + '/review', headers={'Authorization':''})).status_code, 401)
+        self.assertEqual((await self.client.post(path + '/approve', json={'fingerprint':action['fingerprint']})).status_code, 503)
+        self.assertEqual(self.store.actions(task['id'])[0]['status'], 'proposed')
+        accounts = (await self.client.get('/workspace/agent/accounts')).json()
+        self.assertEqual(accounts['accounts'], [])
+
     async def test_approved_schedule_runs_without_granting_action_approval(self):
         other = FastAPI()
         calls = []

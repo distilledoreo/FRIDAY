@@ -104,6 +104,15 @@ class Approvals:
         finally: db.close()
 
     def event(self, db, task_id, kind, data):
+        serialized = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
+        if len(serialized.encode()) > 2 * 1024 * 1024: raise ValueError('Event exceeds task audit limit')
+        if len(serialized.encode()) > 60000:
+            group = uuid.uuid4().hex
+            pieces = [serialized[i:i + 6000] for i in range(0, len(serialized), 6000)]
+            for index, piece in enumerate(pieces):
+                db.execute('INSERT INTO events(task_id,kind,data,created) VALUES(?,?,?,?)',
+                    (task_id, 'event_fragment', encode({'group': group, 'kind': kind, 'index': index, 'count': len(pieces), 'text': piece}), time.time()))
+            data = {'fragmented': True, 'group': group, 'count': len(pieces)}
         db.execute('INSERT INTO events(task_id,kind,data,created) VALUES(?,?,?,?)',
                    (task_id, kind, encode(data), time.time()))
 
@@ -260,7 +269,14 @@ class Approvals:
         self.task(task_id)
         with self.db() as db:
             row = db.execute("SELECT data FROM events WHERE task_id=? AND kind='result' ORDER BY seq DESC LIMIT 1", (task_id,)).fetchone()
-        return json.loads(row['data']) if row else None
+        if not row: return None
+        result = json.loads(row['data'])
+        if result.get('fragmented'):
+            with self.db() as db:
+                pieces = [json.loads(item['data']) for item in db.execute("SELECT data FROM events WHERE task_id=? AND kind='event_fragment' AND json_extract(data,'$.group')=? ORDER BY seq", (task_id, result['group']))]
+            if len(pieces) != result['count']: raise ValueError('Incomplete report audit')
+            result = json.loads(''.join(piece['text'] for piece in pieces))
+        return result
 
     def tasks(self, limit=50):
         if not 1 <= limit <= 100: raise ValueError('Limit must be 1–100')

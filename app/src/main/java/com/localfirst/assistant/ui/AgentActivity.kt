@@ -121,7 +121,7 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                     Column {
                         Text(event.optString("kind").replace('_', ' '), style = MaterialTheme.typography.labelLarge)
                         val data = event.getJSONObject("data")
-                        val summary = data.optString("text").ifBlank { data.optString("url").ifBlank { data.optString("message").ifBlank { "Details recorded" } } }
+                        val summary = agentEventSummary(event)
                         Text(summary, style = MaterialTheme.typography.bodySmall)
                         var expanded by remember(event.getLong("seq")) { mutableStateOf(false) }
                         TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "Hide details" else "Show details") }
@@ -148,7 +148,16 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
     }
     action?.let { exact ->
         AlertDialog(onDismissRequest = { action = null }, title = { Text("Approve this exact action?") },
-            text = { Text(exact.getJSONObject("payload").toString(2), Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) },
+            text = { Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
+                exact.optJSONObject("review")?.let { review ->
+                    Text(review.optString("reviewer"), style = MaterialTheme.typography.labelLarge)
+                    Text(if (review.optBoolean("allowed")) "Payload checks passed; executor still unavailable." else "Payload needs changes before it can run.")
+                    review.optJSONArray("issues")?.let { for (i in 0 until it.length()) Text("• ${it.getString(i)}", color = MaterialTheme.colorScheme.error) }
+                    review.optJSONObject("account")?.let { Text("Account: ${it.optString("label")} · ${it.optString("provider")}") }
+                    Text(review.optString("side_effect"))
+                }
+                Text(exact.getJSONObject("payload").toString(2))
+            } },
             confirmButton = { if (state.agentOutgoingReady) TextButton(onClick = { task?.let { vm.approveAgentAction(it.getString("id"), exact.getString("id"), exact.getString("fingerprint")) }; action = null }) { Text("Approve action") } else Text("Account actions are still being connected.", style = MaterialTheme.typography.bodySmall) },
             dismissButton = { TextButton(onClick = { action = null }) { Text("Back") } })
     }
@@ -226,4 +235,18 @@ private fun AgentScheduleEditor(changed: (JSONObject?) -> Unit) {
         AlertDialog(onDismissRequest = { showTime = false }, title = { Text("Start time") }, text = { TimeInput(picker) },
             confirmButton = { TextButton(onClick = { hour = picker.hour; minute = picker.minute; showTime = false }) { Text("Done") } }, dismissButton = { TextButton(onClick = { showTime = false }) { Text("Cancel") } })
     }
+}
+
+private fun agentEventSummary(event: JSONObject): String {
+    val data = event.getJSONObject("data")
+    return when (event.optString("kind")) {
+        "event_fragment" -> "Complete ${data.optString("kind").replace('_', ' ')} record · part ${data.optInt("index") + 1} of ${data.optInt("count")}. Open details to read this part."
+        "broker_model" -> "Cloud model request ${data.optInt("request")} · ${data.optString("model")}"
+        "broker_read_page" -> "Read ${data.optString("url")} · ${data.optInt("chars")} characters"
+        "opencode_event" -> data.optJSONObject("part")?.let { part ->
+            part.optString("text").ifBlank { part.optString("tool").ifBlank { data.optString("type").replace('_', ' ') } }
+        } ?: data.optString("type").replace('_', ' ')
+        "result" -> "Report saved. Read it above or discuss it in chat."
+        else -> data.optString("text").ifBlank { data.optString("url").ifBlank { data.optString("message").ifBlank { "Details recorded" } } }
+    }.take(600)
 }

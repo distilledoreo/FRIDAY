@@ -78,7 +78,7 @@ class OpenCodeEngine:
             async with UnixBroker(Path(stage) / 'broker.sock', broker):
                 process = await asyncio.create_subprocess_exec(*self.command(name, Path(stage) / 'broker.sock'),
                     stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-                    limit=128 * 1024)
+                    limit=MAX_LOG + 1)
                 text = []
                 async def consume():
                     payload = json.dumps({'approved_task': task['proposal']}, ensure_ascii=False).encode()
@@ -101,14 +101,11 @@ class OpenCodeEngine:
                         kind = event.get('type', 'event')
                         part = event.get('part', {})
                         if kind == 'text' and isinstance(part, dict): text.append(part.get('text', ''))
-                        if len(line) > 60000:
-                            await report('opencode_event', {'type': kind, 'truncated': True})
-                        else:
-                            await report('opencode_event', event)
+                        await report('opencode_event', event)
                     status = await process.wait()
                     if status != 0: raise RuntimeError('OpenCode exited unsuccessfully')
                     if not text: raise RuntimeError('OpenCode returned no report')
-                    return {'text': '\n'.join(text)[:50000], 'engine': 'OpenCode', 'gpu': False}
+                    return {'text': '\n'.join(text)[:50000], 'truncated': len('\n'.join(text)) > 50000, 'complete_text_in_events': True, 'engine': 'OpenCode', 'gpu': False}
                 try:
                     return await asyncio.wait_for(consume(), timeout=self.timeout)
                 finally:
