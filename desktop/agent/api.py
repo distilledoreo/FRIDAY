@@ -41,6 +41,8 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
         vault = Vault(Path(root) / 'vault')
     except ImportError: vault = None
     reviewer = OutgoingReview(vault)
+    from .accounts import Accounts, AccountError
+    accounts = Accounts(vault) if vault else None
     running = {}
     scheduler = None
 
@@ -54,10 +56,72 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
         return {'ready': ready, 'gpu': False, 'outgoing_ready': False,
                 'detail': 'FRIDAY can research public pages and report back. Account actions are still being connected.' if ready else unavailable_detail or 'Cloud agent unavailable; proposals can be saved while its setup is checked'}
 
+    class OAuthConfig(BaseModel):
+        client_id: str = Field(max_length=300)
+        client_secret: str | None = Field(default=None, max_length=500)
+
+    class OAuthStart(BaseModel):
+        provider: str
+        features: list[str] = Field(default_factory=lambda: ['mail_read','calendar_read'], max_length=3)
+
+    class OAuthFinish(BaseModel):
+        flow_id: str = Field(max_length=100)
+        state: str = Field(max_length=128)
+        code: str = Field(min_length=1, max_length=8192)
+
+    async def account_call(method, *args):
+        if accounts is None: raise HTTPException(503, 'Install and unlock the desktop credential vault first')
+        try: return await method(*args)
+        except ValueError as error: raise HTTPException(409, str(error)) from None
+        except AccountError as error: raise HTTPException(502, str(error)) from None
+        except Exception: raise HTTPException(503, 'Account access unavailable; unlock the vault or reconnect the account') from None
+
+    @router.get('/accounts/providers')
+    async def account_providers():
+        return accounts.status() if accounts else []
+
+    @router.post('/accounts/config/{provider}')
+    async def configure_provider(provider: str, body: OAuthConfig):
+        if accounts is None: raise HTTPException(503, 'Credential vault unavailable')
+        try: accounts.configure(provider, body.model_dump(exclude_none=True))
+        except ValueError as error: raise HTTPException(409, str(error)) from None
+        except Exception: raise HTTPException(503, 'Unlock the desktop credential vault first') from None
+        return {'provider':provider,'configured':True}
+
+    @router.post('/accounts/oauth/start')
+    async def start_sign_in(body: OAuthStart):
+        return await account_call(accounts.begin if accounts else None, body.provider, body.features)
+
+    @router.post('/accounts/oauth/complete')
+    async def complete_sign_in(body: OAuthFinish):
+        return await account_call(accounts.complete if accounts else None, body.flow_id, body.state, body.code)
+
+    @router.post('/accounts/oauth/{flow_id}/cancel')
+    async def cancel_sign_in(flow_id: str):
+        return await account_call(accounts.cancel_sign_in if accounts else None, flow_id)
+
+    @router.delete('/accounts/{account_id}')
+    async def remove_account(account_id: str):
+        if vault is None: raise HTTPException(503, 'Credential vault unavailable')
+        guarded(vault.remove, account_id)
+        return {'removed':True,'detail':'Removed from FRIDAY. Provider grants can also be revoked in its account settings.'}
+
+    @router.get('/accounts/{account_id}/mail')
+    async def read_mail(account_id: str, query: str = Query(default='',max_length=500), limit: int = Query(default=10,ge=1,le=20)):
+        return await account_call(accounts.read_messages if accounts else None, account_id, query, limit)
+
+    @router.get('/accounts/{account_id}/mail/{message_id:path}')
+    async def read_message(account_id: str, message_id: str):
+        return await account_call(accounts.read_message if accounts else None, account_id, message_id)
+
+    @router.get('/accounts/{account_id}/calendar')
+    async def read_calendar(account_id: str, start: str, end: str, limit: int = Query(default=30,ge=1,le=100)):
+        return await account_call(accounts.read_calendar if accounts else None, account_id, start, end, limit)
+
     @router.get('/accounts')
-    async def accounts():
+    async def list_accounts():
         return {'accounts': vault.accounts() if vault else [], 'vault_installed': vault is not None,
-                'detail': 'Provider sign-in is still being connected. Credentials have no read/export API.'}
+                'detail': 'Google/Microsoft backend OAuth and bounded mail/calendar readers are connected; phone sign-in and actual accounts still require setup. Credentials have no read/export API.'}
 
     @router.get('/tasks')
     async def tasks(limit: int = Query(default=50, ge=1, le=100)):
@@ -169,6 +233,7 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
         for future in pending: future.cancel()
         for future in pending:
             with contextlib.suppress(asyncio.CancelledError): await future
+        if accounts: await accounts.close()
 
     app.router.add_event_handler('startup', recover)
     app.router.add_event_handler('shutdown', stop)

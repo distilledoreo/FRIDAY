@@ -61,6 +61,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 private const val MEMORY_PAGE = 50
@@ -84,6 +85,13 @@ data class ChatUiState(
     val workspaceBusy: Boolean = false,
     val workspaceStatus: String? = null,
     val tasks: List<BackgroundTask> = emptyList(),
+    val connectedAccounts: List<JSONObject> = emptyList(),
+    val accountProviders: List<JSONObject> = emptyList(),
+    val oauthFlow: JSONObject? = null,
+    val oauthLaunched: Boolean = false,
+    val oauthCompleting: Boolean = false,
+    val oauthResolutionFlow: String? = null,
+    val accountContent: JSONObject? = null,
     val agentTasks: List<JSONObject> = emptyList(),
     val agentTask: JSONObject? = null,
     val agentEvents: List<JSONObject> = emptyList(),
@@ -726,7 +734,7 @@ class ChatViewModel(
     fun openWorkspace(destination: WorkspaceDestination = WorkspaceDestination.SETTINGS) {
         if (destination == WorkspaceDestination.PROJECTS) searchHistory("")
         _state.update { it.copy(showWorkspace = true, workspaceDestination = destination, knowledge = runCatching { knowledgeStore?.load() }.getOrNull() ?: Knowledge()) }
-        if (destination == WorkspaceDestination.ACTIVITY) refreshAgentActivity() else refreshWorkspace()
+        when (destination) { WorkspaceDestination.ACTIVITY -> refreshAgentActivity(); WorkspaceDestination.ACCOUNTS -> refreshAccounts(); else -> refreshWorkspace() }
         if (destination in listOf(WorkspaceDestination.MEMORY, WorkspaceDestination.IMPORT_CHATGPT, WorkspaceDestination.MEMORY_REVIEW, WorkspaceDestination.MEMORY_ARCHIVE)) refreshMemory()
     }
     fun dismissWorkspace() { _state.update { it.copy(showWorkspace = false) } }
@@ -746,6 +754,86 @@ class ChatViewModel(
         ) }
     }
     fun refreshAgentActivity(taskId: String? = null, after: Long? = null) = workspaceAction(allowDuringChat = true) { loadAgentActivity(taskId, after); "Activity updated." }
+    private suspend fun loadAccounts() {
+        val client = workspace ?: error("Computer unavailable.")
+        val accounts = JSONObject(client.request("/workspace/agent/accounts")).getJSONArray("accounts")
+        val providers = JSONArray(client.request("/workspace/agent/accounts/providers"))
+        _state.update { it.copy(connectedAccounts = (0 until accounts.length()).map { index -> accounts.getJSONObject(index) },
+            accountProviders = (0 until providers.length()).map { index -> providers.getJSONObject(index) }) }
+    }
+    fun refreshAccounts() {
+        viewModelScope.launch {
+            repeat(100) { if (!_state.value.workspaceBusy) { workspaceAction(allowDuringChat = true) { loadAccounts(); "Accounts updated." }; return@launch }; delay(100) }
+        }
+    }
+    fun configureAccountProvider(provider: String, clientId: String, clientSecret: String?) = workspaceAction {
+        val body = JSONObject().put("client_id", clientId.trim()).apply { clientSecret?.takeIf(String::isNotBlank)?.let { put("client_secret", it) } }
+        workspace?.request("/workspace/agent/accounts/config/$provider", "POST", body) ?: error("Computer unavailable.")
+        loadAccounts(); "Provider configured on the PC."
+    }
+    fun beginAccountSignIn(provider: String, features: List<String>) = workspaceAction {
+        val value = JSONObject(workspace?.request("/workspace/agent/accounts/oauth/start", "POST", JSONObject().put("provider", provider).put("features", JSONArray(features))) ?: error("Computer unavailable."))
+        _state.update { it.copy(oauthFlow = value, oauthLaunched = false, oauthCompleting = false, oauthResolutionFlow = null) }; "Continue in the provider’s sign-in screen."
+    }
+    fun consumeAccountLaunch(id: String): Boolean {
+        if (_state.value.oauthLaunched || _state.value.privacy.incognito || _state.value.oauthFlow?.optString("flow_id") != id) return false
+        _state.update { it.copy(oauthLaunched = true) }; return true
+    }
+    fun activeAccountFlow(id: String?): Boolean = id != null && !_state.value.privacy.incognito && _state.value.oauthFlow?.optString("flow_id") == id
+    fun markAccountResolution(id: String) { if (activeAccountFlow(id)) _state.update { it.copy(oauthResolutionFlow = id) } }
+    fun googleAccountResult(code: String?) {
+        val expected = _state.value.oauthResolutionFlow
+        if (!activeAccountFlow(expected)) return
+        if (code.isNullOrBlank()) failAccountSignIn() else finishAccountSignIn(code, expectedFlowId = expected)
+    }
+    fun finishAccountSignIn(code: String, returnedState: String? = null, expectedFlowId: String? = null) {
+        val flow = _state.value.oauthFlow ?: return
+        if (expectedFlowId != null && flow.optString("flow_id") != expectedFlowId) return
+        if (_state.value.privacy.incognito || (returnedState != null && returnedState != flow.optString("state"))) { failAccountSignIn("Sign-in state did not match; start again."); return }
+        if (_state.value.oauthCompleting) return
+        _state.update { it.copy(oauthCompleting = true) }
+        viewModelScope.launch {
+            repeat(300) {
+                if (_state.value.oauthFlow?.optString("flow_id") != flow.optString("flow_id")) return@launch
+                if (_state.value.privacy.incognito) { failAccountSignIn("Leave incognito before connecting accounts."); return@launch }
+                if (!_state.value.workspaceBusy && !_state.value.busy) {
+                    _state.update { it.copy(oauthFlow = null, oauthLaunched = false, oauthCompleting = false, oauthResolutionFlow = null) }
+                    workspaceAction {
+            workspace?.request("/workspace/agent/accounts/oauth/complete", "POST", JSONObject().put("flow_id", flow.getString("flow_id")).put("state", flow.getString("state")).put("code", code)) ?: error("Computer unavailable.")
+            loadAccounts(); "Account connected."
+                    }; return@launch
+                }
+                delay(100)
+            }
+            failAccountSignIn("Sign-in could not finish; start again when chat is idle.")
+        }
+    }
+    fun handleAccountCallback(uri: Uri?) {
+        if (uri?.scheme != "msauth" || uri.host != "com.localfirst.assistant" || uri.path != "/k+71zY1PlQ+a2Hd9Wur3tSmBEcI=") return
+        if (_state.value.oauthFlow?.optString("provider") != "microsoft") { failAccountSignIn("No active Microsoft sign-in; start again."); return }
+        val code = uri.getQueryParameter("code")
+        val state = uri.getQueryParameter("state")
+        if (code.isNullOrBlank() || state.isNullOrBlank()) failAccountSignIn("Microsoft sign-in was canceled or failed.") else finishAccountSignIn(code, state)
+        openWorkspace(WorkspaceDestination.ACCOUNTS)
+    }
+    fun failAccountSignIn(message: String = "Sign-in canceled or unavailable. Check the app registration and try again.") {
+        val flow = _state.value.oauthFlow
+        _state.update { it.copy(oauthFlow = null, oauthLaunched = false, oauthCompleting = false, oauthResolutionFlow = null, error = message) }
+        if (flow != null && !_state.value.privacy.incognito) viewModelScope.launch { runCatching { workspace?.request("/workspace/agent/accounts/oauth/${flow.optString("flow_id")}/cancel", "POST") } }
+    }
+    fun removeAccount(id: String) = workspaceAction {
+        workspace?.request("/workspace/agent/accounts/$id", "DELETE") ?: error("Computer unavailable.")
+        _state.update { it.copy(accountContent = null) }; loadAccounts(); "Account removed from FRIDAY."
+    }
+    fun readAccountMail(id: String) = workspaceAction { _state.update { it.copy(accountContent = JSONObject(workspace?.request("/workspace/agent/accounts/$id/mail") ?: error("Computer unavailable."))) }; "Inbox preview loaded." }
+    fun readAccountMessage(id: String, message: String) = workspaceAction {
+        _state.update { it.copy(accountContent = JSONObject(workspace?.request("/workspace/agent/accounts/$id/mail/${Uri.encode(message)}") ?: error("Computer unavailable."))) }; "Message loaded."
+    }
+    fun readAccountCalendar(id: String) = workspaceAction {
+        val start = java.time.OffsetDateTime.now().toString(); val end = java.time.OffsetDateTime.now().plusDays(7).toString()
+        _state.update { it.copy(accountContent = JSONObject(workspace?.request("/workspace/agent/accounts/$id/calendar?start=${Uri.encode(start)}&end=${Uri.encode(end)}") ?: error("Computer unavailable."))) }; "Calendar loaded."
+    }
+
     fun discussAgentReport(id: String) {
         if (_state.value.privacy.incognito || _state.value.busy || !id.matches(Regex("[a-f0-9]{32}"))) return
         if (_state.value.draft.isNotBlank() || _state.value.draftAttachments.isNotEmpty()) {

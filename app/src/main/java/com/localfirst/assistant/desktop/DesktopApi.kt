@@ -19,6 +19,7 @@ internal fun desktopRequest(
 ): Pair<Int, ByteArray> {
     val url = URI(baseUrl.trim().trimEnd('/') + path).toURL()
     val connection = (url.openConnection() as HttpURLConnection).apply {
+        instanceFollowRedirects = false
         requestMethod = method
         connectTimeout = 8_000
         readTimeout = timeoutMs

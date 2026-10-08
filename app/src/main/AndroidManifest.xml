@@ -56,6 +56,12 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="msauth" android:host="com.localfirst.assistant" android:path="/k+71zY1PlQ+a2Hd9Wur3tSmBEcI=" />
+            </intent-filter>
             <!-- Lets the user pick this app as the default digital assistant (long-press power). -->
             <intent-filter>
                 <action android:name="android.intent.action.ASSIST" />
