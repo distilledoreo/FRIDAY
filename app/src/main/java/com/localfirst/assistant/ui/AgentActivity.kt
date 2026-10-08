@@ -38,8 +38,8 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
     var calendarScopes by remember { mutableStateOf(setOf<String>()) }
     val task = state.agentTask?.takeIf { it.optString("id") == selected }
     LaunchedEffect(selected) { cursors = listOf(0L); vm.refreshAgentActivity(selected, 0) }
-    LaunchedEffect(selected, state.agentTasks.any { it.optString("status") in listOf("running", "approved") }) {
-        while (state.agentTasks.any { it.optString("status") in listOf("running", "approved") }) {
+    LaunchedEffect(selected, state.agentOutgoingBusy, state.agentTasks.any { it.optString("status") in listOf("running", "approved") }) {
+        while (state.agentOutgoingBusy || state.agentTasks.any { it.optString("status") in listOf("running", "approved") }) {
             delay(3000)
             vm.refreshAgentActivity(selected)
         }
@@ -133,12 +133,12 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                         TextButton(onClick = { vm.discussAgentReport(current.getString("id")) }, enabled = !state.busy) { Text("Discuss in chat") }
                     }
                 }
-                val pending = current.optJSONArray("actions")?.let { values -> (0 until values.length()).map { values.getJSONObject(it) }.filter { it.optString("status") == "proposed" } }.orEmpty()
-                items(pending, key = { it.getString("id") }) { pendingAction ->
+                val outgoing = current.optJSONArray("actions")?.let { values -> (0 until values.length()).map { values.getJSONObject(it) } }.orEmpty()
+                items(outgoing, key = { it.getString("id") }) { pendingAction ->
                     OutlinedCard(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp)) {
-                            Text("Approval needed: ${pendingAction.getJSONObject("payload").optString("kind")}")
-                            TextButton(onClick = { action = pendingAction }, enabled = !state.workspaceBusy) { Text("Review exact action") }
+                            Text("${pendingAction.getJSONObject("payload").optString("kind")} · ${outgoingStatus(pendingAction.optString("status"))}")
+                            if (pendingAction.optString("status") == "proposed") TextButton(onClick = { action = pendingAction }, enabled = !state.workspaceBusy) { Text("Review exact action") }
                         }
                     }
                 }
@@ -176,16 +176,31 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
             text = { Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
                 exact.optJSONObject("review")?.let { review ->
                     Text(review.optString("reviewer"), style = MaterialTheme.typography.labelLarge)
-                    Text(if (review.optBoolean("allowed")) "Payload checks passed; executor still unavailable." else "Payload needs changes before it can run.")
+                    Text(if (review.optBoolean("allowed")) review.optString("detail") else "Payload needs changes before it can run.")
                     review.optJSONArray("issues")?.let { for (i in 0 until it.length()) Text("• ${it.getString(i)}", color = MaterialTheme.colorScheme.error) }
                     review.optJSONObject("account")?.let { Text("Account: ${it.optString("label")} · ${it.optString("provider")}") }
+                    review.optJSONObject("identity")?.let { identity ->
+                        Text("Sender: ${identity.optString("sender")}")
+                        if (identity.has("server")) Text("SMTP: ${identity.optString("server")}:${identity.optInt("port")} · login ${identity.optString("login")}")
+                    }
                     Text(review.optString("side_effect"))
                 }
                 Text(exact.getJSONObject("payload").toString(2))
+                Text("Submit once. Cancellation cannot recall an action already submitted. A timeout or interrupted receipt requires checking provider records before another proposal.", style = MaterialTheme.typography.bodySmall)
             } },
-            confirmButton = { if (state.agentOutgoingReady) TextButton(onClick = { task?.let { vm.approveAgentAction(it.getString("id"), exact.getString("id"), exact.getString("fingerprint")) }; action = null }) { Text("Approve action") } else Text("Account actions are still being connected.", style = MaterialTheme.typography.bodySmall) },
+            confirmButton = { if (state.agentOutgoingReady && exact.optJSONObject("review")?.optBoolean("executable") == true) TextButton(onClick = { task?.let { vm.approveAgentAction(it.getString("id"), exact.getString("id"), exact.getString("fingerprint"), exact.getJSONObject("review").getString("review_fingerprint")) }; action = null }) { Text("Approve exact action once") } else Text("Outgoing activation or account permission is unavailable.", style = MaterialTheme.typography.bodySmall) },
             dismissButton = { TextButton(onClick = { action = null }) { Text("Back") } })
     }
+}
+
+private fun outgoingStatus(status: String): String = when (status) {
+    "proposed" -> "Needs exact approval"
+    "approved", "claimed" -> "Submitting once · receipt pending"
+    "accepted" -> "Provider accepted · delivery not confirmed"
+    "rejected" -> "Rejected · create a new reviewed proposal"
+    "uncertain" -> "Outcome uncertain · check provider records before another proposal"
+    "cancelled" -> "Canceled before submission"
+    else -> status
 }
 
 private fun agentStatus(status: String): String = when (status) {
@@ -196,7 +211,7 @@ private fun agentStatus(status: String): String = when (status) {
     "failed" -> "Failed"
     "cancelled" -> "Cancelled"
     "interrupted" -> "Interrupted · review needed"
-    "awaiting_setup" -> "Account setup needed"
+    "awaiting_setup" -> "Outgoing review or setup needed"
     "scheduled" -> "Scheduled"
     else -> status.replace('_', ' ').replaceFirstChar(Char::uppercase)
 }

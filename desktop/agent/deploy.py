@@ -37,11 +37,16 @@ def main():
             raise RuntimeError('Gateway must be idle with background inference paused')
         if not (server / 'workspace-data/background-inference.paused').is_file():
             raise RuntimeError('Persistent GPU maintenance pause is required')
+        agent_health=client.get('/workspace/agent/health')
+        if agent_health.status_code==200 and agent_health.json().get('active_outgoing',0):
+            raise RuntimeError('Account/outgoing host work is active; defer deployment until it finishes')
         agent_db = server / 'workspace-data/agent/agent.sqlite'
         if agent_db.exists():
             with sqlite3.connect(f'file:{agent_db}?mode=ro', uri=True) as db:
                 if db.execute("SELECT COUNT(*) FROM tasks WHERE status IN ('approved','running')").fetchone()[0]:
                     raise RuntimeError('Agent work is active; defer deployment until it finishes')
+                if db.execute("SELECT COUNT(*) FROM actions WHERE status IN ('approved','claimed')").fetchone()[0]:
+                    raise RuntimeError('Outgoing approval/submission is active; defer deployment until it finishes')
         # Validate the pinned image and credential configuration before gateway edits.
         from .engine import OpenCodeEngine, docker_command
         engine = OpenCodeEngine(args.image, lambda: None)

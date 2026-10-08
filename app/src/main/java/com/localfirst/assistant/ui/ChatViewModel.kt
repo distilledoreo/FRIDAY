@@ -98,6 +98,7 @@ data class ChatUiState(
     val agentEventAfter: Long = 0,
     val agentReady: Boolean = false,
     val agentOutgoingReady: Boolean = false,
+    val agentOutgoingBusy: Boolean = false,
     val agentDetail: String = "Connecting to FRIDAY’s computer…",
     val workspaceFiles: List<WorkspaceFile> = emptyList(),
     val syncConflicts: List<SyncConflict> = emptyList(),
@@ -749,6 +750,7 @@ class ChatViewModel(
         _state.update { it.copy(
             agentReady = health.optBoolean("ready"), agentDetail = health.optString("detail"),
             agentOutgoingReady = health.optBoolean("outgoing_ready"),
+            agentOutgoingBusy = health.optInt("active_outgoing") > 0,
             agentTasks = (0 until tasks.length()).map { tasks.getJSONObject(it) },
             agentTask = task, agentEventAfter = cursor, agentEvents = events?.let { e -> (0 until e.length()).map { e.getJSONObject(it) } }.orEmpty(),
         ) }
@@ -866,9 +868,9 @@ class ChatViewModel(
         workspace?.request("/workspace/agent/tasks/$id/cancel", "POST") ?: error("Computer unavailable.")
         loadAgentActivity(id); "Task cancelled."
     }
-    fun approveAgentAction(taskId: String, id: String, fingerprint: String) = workspaceAction {
-        workspace?.request("/workspace/agent/actions/$id/approve", "POST", JSONObject().put("fingerprint", fingerprint)) ?: error("Computer unavailable.")
-        loadAgentActivity(taskId); "Exact action approved."
+    fun approveAgentAction(taskId: String, id: String, fingerprint: String, reviewFingerprint: String) = workspaceAction {
+        workspace?.request("/workspace/agent/actions/$id/approve", "POST", JSONObject().put("fingerprint", fingerprint).put("review_fingerprint", reviewFingerprint)) ?: error("Computer unavailable.")
+        loadAgentActivity(taskId); "Exact action approved for one submission. Check its receipt in Activity."
     }
     suspend fun loadAgentScreenshot(taskId: String, id: String): File = withContext(Dispatchers.IO) {
         require(!_state.value.privacy.incognito) { "Activity is unavailable in incognito." }

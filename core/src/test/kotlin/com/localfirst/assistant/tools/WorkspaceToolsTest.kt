@@ -68,10 +68,24 @@ class WorkspaceToolsTest {
             registry.execute(call, ToolConfirmer { true })
             assertEquals("/workspace/agent/accounts/$account/mail?query=project+%26+limit%3D999&limit=2", gateway.path)
             assertTrue(tools.filter { it.name.startsWith("read_account_") }.all { it.requiresConfirmation })
-            assertFalse(tools.any { it.name.contains("send_account") || it.name.contains("account_password") })
+            assertFalse(tools.any { it.name.contains("send_account") || it.name.contains("account_password") || it.name.contains("approve_outgoing") })
             try { tools.first { it.name == "read_account_message" }.execute(buildJsonObject { put("account_id", account); put("message_id", "../approve") }); fail("Path injection accepted") } catch (_: IllegalArgumentException) { }
             try { tools.first { it.name == "read_account_calendar" }.execute(buildJsonObject { put("account_id", account); put("start", "2026-10-08T00:00:00Z"); put("end", "2026-12-08T00:00:00Z") }); fail("Unbounded calendar accepted") } catch (_: IllegalArgumentException) { }
             assertEquals("/workspace/agent/accounts/$account/mail?query=project+%26+limit%3D999&limit=2", gateway.path)
+        } finally { dir.deleteRecursively() }
+    }
+    @Test fun outgoingToolSavesOnlyAnExactDraftForSeparateReview() = runBlocking {
+        val dir = Files.createTempDirectory("outgoing-draft").toFile()
+        try {
+            val gateway = FakeGateway()
+            val tools = workspaceTools(gateway, KnowledgeStore(dir.resolve("knowledge.json")), FileConversationStore(dir.resolve("chats")))
+            val args = buildJsonObject {
+                put("kind", "send"); put("destination", "recipient@example.com")
+                putJsonObject("payload") { put("account_id", "a".repeat(32)); put("to", "recipient@example.com"); put("subject", "Exact draft"); put("body", "Exact body") }
+            }
+            tools.first { it.name == "propose_outgoing_action" }.execute(args)
+            assertEquals("/workspace/agent/outgoing/drafts", gateway.path); assertEquals(args, Json.parseToJsonElement(gateway.body!!))
+            assertFalse(tools.any { it.name.contains("approve") || it.name == "send_email" })
         } finally { dir.deleteRecursively() }
     }
     @Test fun memoryIsSavedOnlyAfterConfirmationAndCanBeForgotten() = runBlocking {

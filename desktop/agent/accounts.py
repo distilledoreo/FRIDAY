@@ -12,12 +12,13 @@ import uuid
 
 import httpx
 
-FEATURES = frozenset({'mail_read', 'calendar_read', 'mail_send'})
+FEATURES = frozenset({'mail_read', 'calendar_read', 'mail_send', 'calendar_write'})
 SCOPES = {
     'google': {'mail_read': 'https://www.googleapis.com/auth/gmail.readonly',
                'calendar_read': 'https://www.googleapis.com/auth/calendar.readonly',
-               'mail_send': 'https://www.googleapis.com/auth/gmail.send'},
-    'microsoft': {'mail_read': 'Mail.Read', 'calendar_read': 'Calendars.Read', 'mail_send': 'Mail.Send'},
+               'mail_send': 'https://www.googleapis.com/auth/gmail.send',
+               'calendar_write': 'https://www.googleapis.com/auth/calendar.events'},
+    'microsoft': {'mail_read': 'Mail.Read', 'calendar_read': 'Calendars.Read', 'mail_send': 'Mail.Send', 'calendar_write':'Calendars.ReadWrite'},
 }
 TOKEN = {'google': 'https://oauth2.googleapis.com/token',
          'microsoft': 'https://login.microsoftonline.com/common/oauth2/v2.0/token'}
@@ -319,3 +320,31 @@ class Accounts:
             events = [{'id':str(e.get('id',''))[:1024], 'title':str(e.get('subject',''))[:2000], 'start':e.get('start',{}), 'end':e.get('end',{}), 'location':str(e.get('location',{}).get('displayName',''))[:2000]} for e in listing.get('value',[])[:limit]]
         self.vault.metadata(identifier)
         return {'account_id':identifier,'events':events,'untrusted':True,'detail':'Primary calendar, bounded date window'}
+
+    async def read_calendar_event(self, identifier, event_id, feature='calendar_read'):
+        event_id = self._message_id(event_id)
+        provider, token = await self.token(identifier, feature)
+        headers = {'Authorization':'Bearer '+token}
+        if provider == 'google':
+            value = await request_json(self.client,'GET','https://www.googleapis.com/calendar/v3/calendars/primary/events/'+quote(event_id,safe=''),headers=headers)
+            event = {'id':event_id, 'version':value.get('etag'), 'title':str(value.get('summary',''))[:2000],
+                'description':str(value.get('description',''))[:20000], 'start':value.get('start'), 'end':value.get('end'),
+                'location':str(value.get('location',''))[:2000], 'organizer_self':value.get('organizer',{}).get('self') is True,
+                'single_event':not value.get('recurringEventId') and not value.get('recurrence') and value.get('eventType','default')=='default',
+                'attendees':[entry.get('email','') for entry in value.get('attendees',[])[:21]],
+                'attendee_roles':{str(entry.get('email','')).lower():('resource' if entry.get('resource') else 'optional' if entry.get('optional') else 'required') for entry in value.get('attendees',[])[:21]},
+                'truncated':len(str(value.get('description','')))>20000 or len(value.get('attendees',[]))>20}
+        else:
+            headers['Prefer']='outlook.timezone="UTC"'
+            value = await request_json(self.client,'GET','https://graph.microsoft.com/v1.0/me/events/'+quote(event_id,safe=''),headers=headers)
+            from .container_bridge import page_text
+            body = value.get('body',{}).get('content','')
+            if value.get('body',{}).get('contentType','').lower()=='html': body=page_text(body)
+            event = {'id':event_id, 'version':value.get('@odata.etag'), 'title':str(value.get('subject',''))[:2000],
+                'description':body[:20000], 'start':value.get('start'), 'end':value.get('end'),
+                'location':str(value.get('location',{}).get('displayName',''))[:2000], 'organizer_self':value.get('isOrganizer') is True,
+                'single_event':value.get('type')=='singleInstance', 'attendees':[entry.get('emailAddress',{}).get('address','') for entry in value.get('attendees',[])[:21]],
+                'attendee_roles':{str(entry.get('emailAddress',{}).get('address','')).lower():entry.get('type','required') for entry in value.get('attendees',[])[:21]},
+                'truncated':len(str(value.get('body',{}).get('content','')))>20000 or len(value.get('attendees',[]))>20}
+        self.vault.metadata(identifier)
+        return {'account_id':identifier,'event':event,'untrusted':True,'detail':'Primary-calendar source. Conditional updates require its exact version and existing attendee list.'}

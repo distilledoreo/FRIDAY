@@ -17,7 +17,7 @@ import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import math
 
-ACTION_KINDS = frozenset({'submit', 'send', 'login', 'buy', 'delete'})
+ACTION_KINDS = frozenset({'submit', 'send', 'login', 'buy', 'delete', 'calendar_create', 'calendar_update'})
 
 
 def encode(value):
@@ -247,6 +247,35 @@ class Approvals:
     def approve_action(self, action_id, fingerprint):
         self._action_transition(action_id, fingerprint, 'proposed', 'approved')
 
+    def propose_outgoing(self, action):
+        if not isinstance(action,dict) or set(action)!={'kind','destination','payload'} or action['kind'] not in ('send','calendar_create','calendar_update'):
+            raise ValueError('Choose a supported exact outgoing draft')
+        body=encode(action);action_id=uuid.uuid4().hex;task_id=uuid.uuid4().hex;fp=digest(body)
+        proposal=encode({'prompt':'Review exact outgoing draft','plan':['Review account, destination and complete payload before approving'],'outgoing_review_only':True})
+        with self.db() as db:
+            db.execute('INSERT INTO tasks VALUES(?,?,?,?,?,?)',(task_id,proposal,digest(proposal),'awaiting_setup',time.time(),time.time()))
+            db.execute('INSERT INTO actions VALUES(?,?,?,?,?)',(action_id,task_id,body,fp,'proposed'))
+            self.event(db,task_id,'action_proposed',{'id':action_id,'fingerprint':fp,'draft_only':True})
+        return {'task_id':task_id,'id':action_id,'fingerprint':fp,'status':'proposed','detail':'Draft saved for separate exact approval; no task inference or outgoing action ran'}
+
+    def action(self, action_id):
+        with self.db() as db:row=db.execute('SELECT * FROM actions WHERE id=?',(action_id,)).fetchone()
+        if row is None:raise ValueError('Unknown action')
+        return dict(row,payload=json.loads(row['payload']))
+
+    def finish_action(self, action_id, outcome, receipt):
+        if outcome not in ('accepted','rejected','uncertain'):raise ValueError('Invalid outgoing receipt state')
+        with self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row=db.execute("SELECT task_id FROM actions WHERE id=? AND status='claimed'",(action_id,)).fetchone()
+            if not row:raise ValueError('Action is no longer claimed')
+            db.execute('UPDATE actions SET status=? WHERE id=?',(outcome,action_id))
+            self.event(db,row['task_id'],'action_'+outcome,{'id':action_id,'receipt':receipt,'automatic_retry':False})
+            pending=db.execute("SELECT COUNT(*) FROM actions WHERE task_id=? AND status IN ('proposed','approved','claimed','uncertain')",(row['task_id'],)).fetchone()[0]
+            if not pending:
+                failed=db.execute("SELECT COUNT(*) FROM actions WHERE task_id=? AND status='rejected'",(row['task_id'],)).fetchone()[0]
+                db.execute("UPDATE tasks SET status=?,updated=? WHERE id=? AND status='awaiting_setup'",('failed' if failed else 'done',time.time(),row['task_id']))
+
     def claim_action(self, action_id, exact_action):
         # Claim before side effects. A failed/uncertain external operation is never
         # blindly retried with the same approval. A new proposal is required.
@@ -258,7 +287,7 @@ class Approvals:
             action = db.execute('SELECT * FROM actions WHERE id=?', (action_id,)).fetchone()
             if not action: raise ValueError('Unknown action')
             task = db.execute('SELECT status FROM tasks WHERE id=?', (action['task_id'],)).fetchone()
-            if task['status'] != 'running': raise ValueError('Task is not running')
+            if task['status'] not in ('running','awaiting_setup'): raise ValueError('Task is not awaiting an outgoing review')
             changed = db.execute('UPDATE actions SET status=? WHERE id=? AND fingerprint=? AND status=?',
                                  (new, action_id, fingerprint, old)).rowcount
             if changed != 1: raise ValueError('Action state or payload has changed')
@@ -313,6 +342,11 @@ class Approvals:
                 db.execute("UPDATE tasks SET status='interrupted', updated=? WHERE id=?", (time.time(), row['id']))
                 db.execute("UPDATE actions SET status='cancelled' WHERE task_id=? AND status IN ('proposed','approved')", (row['id'],))
                 self.event(db, row['id'], 'task_interrupted', {'reason': 'Service restarted; review before resuming'})
+            for row in db.execute("SELECT id,task_id,status FROM actions WHERE status IN ('approved','claimed')").fetchall():
+                status='uncertain' if row['status']=='claimed' else 'cancelled'
+                db.execute('UPDATE actions SET status=? WHERE id=?',(status,row['id']))
+                db.execute("UPDATE tasks SET status='interrupted',updated=? WHERE id=? AND status='awaiting_setup'",(time.time(),row['task_id']))
+                self.event(db,row['task_id'],'action_'+status,{'id':row['id'],'reason':'Service restarted; never automatically replay an outgoing approval','automatic_retry':False})
 
     def events(self, task_id, after=0, limit=100):
         if after < 0 or not 1 <= limit <= 200: raise ValueError('Invalid event page')

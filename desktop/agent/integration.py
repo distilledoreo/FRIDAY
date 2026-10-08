@@ -26,4 +26,11 @@ def enable(app, auth, root, search):
             engine = OpenCodeEngine(value['image'], lambda: FreeCloud(key, model=model), search=research)
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             detail = 'Cloud agent unavailable: check its runtime configuration and OpenRouter credential. Local chat is unaffected.'
-    return install(app, auth, root, engine, unavailable_detail=detail)
+    outgoing_enabled=False
+    outgoing_config=root/'outgoing.json'
+    if outgoing_config.is_file():
+        try:
+            outgoing=json.loads(outgoing_config.read_text())
+            outgoing_enabled=set(outgoing)=={'enabled','phone_and_provider_verified'} and outgoing['enabled'] is True and outgoing['phone_and_provider_verified'] is True
+        except (OSError,ValueError,TypeError):pass
+    return install(app, auth, root, engine, unavailable_detail=detail,outgoing_enabled=outgoing_enabled)

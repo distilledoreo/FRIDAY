@@ -39,6 +39,7 @@ internal fun AccountsPage(state: ChatUiState, vm: ChatViewModel) {
     var mailRead by remember { mutableStateOf(true) }
     var calendarRead by remember { mutableStateOf(true) }
     var mailSend by remember { mutableStateOf(false) }
+    var calendarWrite by remember { mutableStateOf(false) }
     var mailSetup by remember { mutableStateOf(false) }
     val resolution = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         if (result.resultCode != Activity.RESULT_OK || result.data == null) vm.googleAccountResult(null)
@@ -81,6 +82,7 @@ internal fun AccountsPage(state: ChatUiState, vm: ChatViewModel) {
             Row { Text("Read email", Modifier.weight(1f)); Switch(mailRead, { mailRead = it }) }
             Row { Text("Read calendar", Modifier.weight(1f)); Switch(calendarRead, { calendarRead = it }) }
             Row { Text("Allow approved sending", Modifier.weight(1f)); Switch(mailSend, { mailSend = it }) }
+            Row { Text("Allow approved calendar changes", Modifier.weight(1f)); Switch(calendarWrite, { calendarWrite = it }) }
             Text("Sending is not connected yet. You can choose its provider permission now; it still requires a later exact-payload approval.", style = MaterialTheme.typography.bodySmall)
         }
         items(listOf("google", "microsoft")) { provider ->
@@ -90,7 +92,7 @@ internal fun AccountsPage(state: ChatUiState, vm: ChatViewModel) {
                 Column(Modifier.padding(16.dp)) {
                     Text(title, style = MaterialTheme.typography.titleMedium)
                     if (!configured) Text("OAuth app registration needed before sign-in.")
-                    Button(onClick = { vm.beginAccountSignIn(provider, listOfNotNull("mail_read".takeIf { mailRead }, "calendar_read".takeIf { calendarRead }, "mail_send".takeIf { mailSend })) }, enabled = configured && (mailRead || calendarRead || mailSend) && flow == null && !state.workspaceBusy) { Text("Sign in with $title") }
+                    Button(onClick = { vm.beginAccountSignIn(provider, listOfNotNull("mail_read".takeIf { mailRead }, "calendar_read".takeIf { calendarRead }, "mail_send".takeIf { mailSend }, "calendar_write".takeIf { calendarWrite })) }, enabled = configured && (mailRead || calendarRead || mailSend || calendarWrite) && flow == null && !state.workspaceBusy) { Text("Sign in with $title") }
                     TextButton(onClick = { setup = provider; clientId = ""; secret = "" }, enabled = flow == null && !state.workspaceBusy) { Text("Configure OAuth application") }
                 }
             }

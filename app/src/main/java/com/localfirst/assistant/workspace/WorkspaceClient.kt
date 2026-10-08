@@ -76,7 +76,8 @@ class WorkspaceClient(private val context: Context, private val settings: () -> 
     val serverIdentity: String get() = settings().searchBaseUrl.trim().trimEnd('/')
     suspend fun request(path: String, method: String = "GET", body: JSONObject? = null, timeoutMs: Int = 120000): String = withContext(Dispatchers.IO) {
         val s = settings()
-        if (path.startsWith("/workspace/agent/accounts")) {
+        val privateAccountAction = path.startsWith("/workspace/agent/accounts") || path.startsWith("/workspace/agent/outgoing") || path.startsWith("/workspace/agent/actions")
+        if (privateAccountAction) {
             val endpoint = java.net.URI(s.searchBaseUrl)
             val host = endpoint.host.orEmpty()
             val parts = host.split('.').mapNotNull(String::toIntOrNull)
@@ -86,10 +87,10 @@ class WorkspaceClient(private val context: Context, private val settings: () -> 
         val (code, bytes) = desktopRequest(s.searchBaseUrl, s.searchApiKey, method, privatePath(path),
             body?.toString()?.toByteArray(), "application/json", timeoutMs = timeoutMs)
         if (code !in 200..299) {
-            if (path.startsWith("/workspace/agent/accounts")) throw IOException("Account request failed (HTTP $code). Check registration, permissions, the PC connection and its unlocked vault.")
+            if (privateAccountAction) throw IOException("Private account/action request failed (HTTP $code). Check exact review, activation, permissions, the PC connection and its unlocked vault.")
             throw IOException("Computer returned HTTP $code: ${bytes.toString(Charsets.UTF_8).take(500)}")
         }
-        if (method == "POST" && (path == "/workspace/jobs" || path.matches(Regex("/workspace/agent/tasks/[a-f0-9]{32}/approve")))) TaskNotifications.enable(context)
+        if (method == "POST" && (path == "/workspace/jobs" || path.matches(Regex("/workspace/agent/(tasks|actions)/[a-f0-9]{32}/approve")))) TaskNotifications.enable(context)
         bytes.toString(Charsets.UTF_8)
     }
 

@@ -35,19 +35,31 @@ class Approval(BaseModel):
     fingerprint: str = Field(pattern=r'^[a-f0-9]{64}$')
 
 
+class ActionApproval(Approval):
+    model_config = ConfigDict(extra='forbid')
+    review_fingerprint: str | None = Field(default=None,pattern=r'^[a-f0-9]{64}$')
+
+
+class OutgoingDraft(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    kind: str = Field(max_length=40)
+    destination: str = Field(max_length=2048)
+    payload: dict
+
+
 class PrivateAccountRoute(APIRoute):
     def get_route_handler(self):
         handler = super().get_route_handler()
         async def private_errors(request):
             try: return await handler(request)
             except RequestValidationError:
-                if request.url.path.startswith('/workspace/agent/accounts'):
-                    return JSONResponse(status_code=422, content={'detail':'Invalid account request; check required fields and limits'})
+                if request.url.path.startswith(('/workspace/agent/accounts','/workspace/agent/outgoing','/workspace/agent/actions')):
+                    return JSONResponse(status_code=422, content={'detail':'Invalid private account/action request; check required fields and limits'})
                 raise
         return private_errors
 
 
-def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=30):
+def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=30, outgoing_enabled=False, outgoing_factory=None):
     store = Approvals(Path(root) / 'agent.sqlite')
     if engine is not None and hasattr(engine, 'bind'): engine.bind(store)
     router = APIRouter(prefix='/workspace/agent', dependencies=auth, route_class=PrivateAccountRoute)
@@ -56,10 +68,13 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
         from .vault import Vault
         vault = Vault(Path(root) / 'vault')
     except ImportError: vault = None
-    reviewer = OutgoingReview(vault)
     from .accounts import Accounts, AccountError
     accounts = Accounts(vault) if vault else None
+    from .outgoing import Executors, EffectRejected, EffectUncertain
+    executors=(outgoing_factory or Executors)(accounts,outgoing_enabled) if accounts else None
+    reviewer = OutgoingReview(vault,executors)
     running = {}
+    outgoing_running = {}
     scheduler = None
 
     def guarded(function, *args):
@@ -69,8 +84,9 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
     @router.get('/health')
     async def health():
         ready = engine is not None and (not hasattr(engine, 'available') or await engine.available())
-        return {'ready': ready, 'gpu': False, 'outgoing_ready': False,
-                'detail': 'FRIDAY can research public pages and report back. Account actions are still being connected.' if ready else unavailable_detail or 'Cloud agent unavailable; proposals can be saved while its setup is checked'}
+        return {'ready': ready, 'gpu': False, 'outgoing_ready':bool(executors and executors.enabled),
+                'active_outgoing':len(outgoing_running)+(len(accounts.mail_tasks) if accounts else 0),
+                'detail': ('FRIDAY can research and review outgoing drafts. Exact outgoing approval is available for configured accounts.' if executors and executors.enabled else 'FRIDAY can research and review outgoing drafts. Outgoing activation remains off until account/device verification and explicit setup.') if ready else unavailable_detail or 'Cloud agent unavailable; proposals can be saved while its setup is checked'}
 
     class OAuthConfig(BaseModel):
         model_config = ConfigDict(extra='forbid')
@@ -80,7 +96,7 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
     class OAuthStart(BaseModel):
         model_config = ConfigDict(extra='forbid')
         provider: str
-        features: list[str] = Field(default_factory=lambda: ['mail_read','calendar_read'], max_length=3)
+        features: list[str] = Field(default_factory=lambda: ['mail_read','calendar_read'], max_length=4)
 
     class OAuthFinish(BaseModel):
         model_config = ConfigDict(extra='forbid')
@@ -157,6 +173,19 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
     async def read_calendar(account_id: str, start: str, end: str, limit: int = Query(default=30,ge=1,le=100)):
         return await account_call(accounts.read_calendar if accounts else None, account_id, start, end, limit)
 
+    @router.get('/accounts/{account_id}/calendar/events/{event_id:path}')
+    async def read_calendar_event(account_id: str,event_id: str):
+        return await account_call(accounts.read_calendar_event if accounts else None,account_id,event_id)
+
+    @router.post('/outgoing/drafts')
+    async def outgoing_draft(body: OutgoingDraft):
+        action=body.model_dump()
+        review=guarded(reviewer.inspect,action)
+        if not review['allowed']:raise HTTPException(409,{'detail':'Outgoing payload needs changes','issues':review['issues']})
+        value=guarded(store.propose_outgoing,action)
+        value['review']=review
+        return value
+
     @router.get('/accounts')
     async def list_accounts():
         return {'accounts': vault.accounts() if vault else [], 'vault_installed': vault is not None,
@@ -216,7 +245,7 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
                 await report('account_scopes_read', {'reads':len(scopes), 'untrusted':True, 'public_web_disabled':True})
             result = await engine(selected, report)
             await report('result', result)
-            if any(action['status'] == 'proposed' for action in store.actions(task_id)):
+            if any(action['status'] in ('proposed','approved','claimed','uncertain') for action in store.actions(task_id)):
                 store.await_setup(task_id, fingerprint)
             else:
                 store.finish_task(task_id, fingerprint)
@@ -245,21 +274,48 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
         children = guarded(store.cancel_task, task_id)
         for identifier in [task_id, *children]:
             if identifier in running: running[identifier].cancel()
+        for action_id,future in list(outgoing_running.items()):
+            if store.action(action_id)['task_id'] in [task_id,*children]:future.cancel()
         return store.task(task_id)
 
     @router.get('/actions/{action_id}/review')
     async def review_action(action_id: str):
-        with store.db() as db:
-            row = db.execute('SELECT task_id FROM actions WHERE id=?', (action_id,)).fetchone()
-        if row is None: raise HTTPException(404, 'Unknown action')
-        action = next(item for item in store.actions(row['task_id']) if item['id'] == action_id)
+        action=guarded(store.action,action_id)
         return reviewer.inspect(action['payload'])
 
+    async def execute_action(action_id,review_fingerprint):
+        try:
+            action=store.action(action_id)
+            def guard():
+                current=store.action(action_id)
+                if current['status']!='claimed' or store.task(current['task_id'])['status'] not in ('running','awaiting_setup'):
+                    raise EffectRejected('Action canceled or interrupted before submission')
+                check=reviewer.inspect(current['payload'])
+                if not check['executable'] or check['review_fingerprint']!=review_fingerprint:
+                    raise EffectRejected('Account/review changed before submission; create a new proposal')
+            receipt=await executors.execute(action['payload'],action_id,guard)
+            store.finish_action(action_id,'accepted',receipt)
+        except EffectRejected as error:
+            store.finish_action(action_id,'rejected',{'detail':str(error),'automatic_retry':False})
+        except asyncio.CancelledError:
+            store.finish_action(action_id,'uncertain',{'detail':'Canceled/interrupted during submission; inspect provider records before proposing again','automatic_retry':False})
+            raise
+        except Exception:
+            store.finish_action(action_id,'uncertain',{'detail':'No reliable provider receipt; inspect provider records before proposing again','automatic_retry':False})
+        finally:outgoing_running.pop(action_id,None)
+
     @router.post('/actions/{action_id}/approve')
-    async def approve_action(action_id: str, body: Approval):
-        # No executor is installed yet. Do not record an unusable approval or
-        # imply that a saved proposal has actually submitted/sent/logged in.
-        raise HTTPException(503, 'This action cannot run until its account/executor and outgoing review are connected; no approval recorded')
+    async def approve_action(action_id: str, body: ActionApproval):
+        if executors is None or not executors.enabled:raise HTTPException(503,'Outgoing activation is off; no approval recorded')
+        action=guarded(store.action,action_id)
+        review=guarded(reviewer.inspect,action['payload'])
+        if not review['allowed']:raise HTTPException(409,'Outgoing review failed; no approval recorded')
+        if not review['executable']:raise HTTPException(503,'Account/permission is unavailable; no approval recorded')
+        if body.fingerprint!=review['fingerprint'] or body.review_fingerprint!=review['review_fingerprint']:raise HTTPException(409,'Exact payload/account review changed; review it again before approving')
+        guarded(store.approve_action,action_id,body.fingerprint)
+        guarded(store.claim_action,action_id,action['payload'])
+        outgoing_running[action_id]=asyncio.create_task(execute_action(action_id,body.review_fingerprint))
+        return store.action(action_id)
 
     async def schedule_loop():
         while True:
@@ -277,7 +333,7 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
         scheduler = asyncio.create_task(schedule_loop())
 
     async def stop():
-        pending = list(running.values()) + ([scheduler] if scheduler else [])
+        pending = list(running.values()) + list(outgoing_running.values()) + ([scheduler] if scheduler else [])
         for future in pending: future.cancel()
         for future in pending:
             with contextlib.suppress(asyncio.CancelledError): await future
