@@ -5,6 +5,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import android.graphics.BitmapFactory
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -42,8 +48,8 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                 OutlinedTextField(prompt, { prompt = it.take(8000) }, label = { Text("What should FRIDAY work on?") }, minLines = 2, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(plan, { plan = it.take(12000) }, label = { Text("Plan · one step per line") }, minLines = 3, modifier = Modifier.fillMaxWidth())
                 Button(onClick = { vm.proposeAgentTask(prompt.trim(), plan.lines().map(String::trim).filter(String::isNotBlank)); prompt = "" }, enabled = prompt.isNotBlank() && plan.isNotBlank() && !state.workspaceBusy) { Text("Save plan for review") }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("All", "In progress", "Done").forEach { label ->
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("All", "In progress", "Scheduled", "Done").forEach { label ->
                         FilterChip(selected = category == label, onClick = { category = label }, label = { Text(label) })
                     }
                 }
@@ -51,6 +57,7 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
             val visible = state.agentTasks.filter {
                 when (category) {
                     "In progress" -> it.optString("status") in listOf("approved", "running")
+                    "Scheduled" -> it.optString("status") == "scheduled"
                     "Done" -> it.optString("status") in listOf("done", "failed", "cancelled", "interrupted")
                     else -> true
                 }
@@ -60,7 +67,7 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                 OutlinedCard(onClick = { selected = entry.getString("id") }, modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
                         Text(entry.getJSONObject("proposal").optString("prompt"), style = MaterialTheme.typography.titleSmall)
-                        Text(entry.optString("status").replaceFirstChar(Char::uppercase), style = MaterialTheme.typography.bodySmall)
+                        Text(agentStatus(entry.optString("status")), style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
@@ -72,10 +79,10 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                     Text(proposal.optString("prompt"), style = MaterialTheme.typography.titleMedium)
                     val steps = proposal.optJSONArray("plan")
                     steps?.let { for (i in 0 until it.length()) Text("${i + 1}. ${it.getString(i)}") }
-                    Text("Status: ${current.optString("status")}")
+                    Text(agentStatus(current.optString("status")))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (current.optString("status") == "proposed") Button(onClick = { confirming = current }, enabled = state.agentReady && !state.workspaceBusy) { Text("Review and approve") }
-                        if (current.optString("status") in listOf("proposed", "approved", "running")) OutlinedButton(onClick = { vm.cancelAgentTask(current.getString("id")) }, enabled = !state.workspaceBusy) { Text("Cancel task") }
+                        if (current.optString("status") in listOf("proposed", "approved", "running", "awaiting_setup")) OutlinedButton(onClick = { vm.cancelAgentTask(current.getString("id")) }, enabled = !state.workspaceBusy) { Text("Cancel task") }
                     }
                 }
                 val pending = current.optJSONArray("actions")?.let { values -> (0 until values.length()).map { values.getJSONObject(it) }.filter { it.optString("status") == "proposed" } }.orEmpty()
@@ -91,6 +98,7 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                     Column {
                         Text(event.optString("kind").replace('_', ' '), style = MaterialTheme.typography.labelLarge)
                         Text(event.getJSONObject("data").toString(2), style = MaterialTheme.typography.bodySmall)
+                        if (event.optString("kind") == "screenshot") AgentScreenshot(current.getString("id"), event.getJSONObject("data"), vm)
                         HorizontalDivider(Modifier.padding(top = 8.dp))
                     }
                 }
@@ -106,14 +114,38 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
     }
     confirming?.let { exact ->
         AlertDialog(onDismissRequest = { confirming = null }, title = { Text("Approve this task?") },
-            text = { Text("${exact.getJSONObject("proposal").toString(2)}\n\nThis permits public browsing and reading within the plan. Other actions require another approval.", Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) },
+            text = { Text("${exact.getJSONObject("proposal").toString(2)}\n\nThis approved task and gathered public sources go to a free cloud model via OpenRouter. This permits public browsing and reading within the plan. Other actions require another approval.", Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) },
             confirmButton = { TextButton(onClick = { vm.approveAgentTask(exact.getString("id"), exact.getString("fingerprint")); confirming = null }) { Text("Approve") } },
             dismissButton = { TextButton(onClick = { confirming = null }) { Text("Back") } })
     }
     action?.let { exact ->
         AlertDialog(onDismissRequest = { action = null }, title = { Text("Approve this exact action?") },
             text = { Text(exact.getJSONObject("payload").toString(2), Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) },
-            confirmButton = { TextButton(onClick = { task?.let { vm.approveAgentAction(it.getString("id"), exact.getString("id"), exact.getString("fingerprint")) }; action = null }) { Text("Approve action") } },
+            confirmButton = { if (state.agentOutgoingReady) TextButton(onClick = { task?.let { vm.approveAgentAction(it.getString("id"), exact.getString("id"), exact.getString("fingerprint")) }; action = null }) { Text("Approve action") } else Text("Account actions are still being connected.", style = MaterialTheme.typography.bodySmall) },
             dismissButton = { TextButton(onClick = { action = null }) { Text("Back") } })
     }
+}
+
+private fun agentStatus(status: String): String = when (status) {
+    "proposed" -> "Needs approval"
+    "approved" -> "Queued"
+    "running" -> "In progress"
+    "done" -> "Done"
+    "failed" -> "Failed"
+    "cancelled" -> "Cancelled"
+    "interrupted" -> "Interrupted · review needed"
+    "awaiting_setup" -> "Account setup needed"
+    "scheduled" -> "Scheduled"
+    else -> status.replace('_', ' ').replaceFirstChar(Char::uppercase)
+}
+
+@Composable
+private fun AgentScreenshot(taskId: String, data: JSONObject, vm: ChatViewModel) {
+    val id = data.optString("id")
+    var bitmap by remember(taskId, id) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    LaunchedEffect(taskId, id) {
+        bitmap = runCatching { withContext(Dispatchers.IO) { BitmapFactory.decodeFile(vm.loadAgentScreenshot(taskId, id).absolutePath) } }.getOrNull()
+    }
+    bitmap?.let { Image(it.asImageBitmap(), "Page preview: ${data.optString("url")}", Modifier.fillMaxWidth().heightIn(max = 350.dp)) }
+        ?: Text("Page preview loading or unavailable", style = MaterialTheme.typography.bodySmall)
 }

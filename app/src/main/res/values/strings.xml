@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Assistant</string>
+    <string name="app_name">FRIDAY</string>
     <string name="friday_voice">FRIDAY voice</string>
     <string name="friday_voice_start">Start FRIDAY voice</string>
 </resources>

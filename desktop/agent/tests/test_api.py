@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 import tempfile
 import unittest
+import base64
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -85,3 +86,27 @@ class AgentApiTests(unittest.IsolatedAsyncioTestCase):
         self.store.interrupt_running()
         self.assertEqual(self.store.task(task['id'])['status'], 'interrupted')
         self.assertEqual(self.calls, [])
+
+    async def test_screenshots_are_authenticated_task_scoped_and_not_cached(self):
+        task = await self.proposal()
+        self.store.approve_task(task['id'], task['fingerprint'])
+        self.store.start_task(task['id'], task['fingerprint'])
+        encoded = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j4WQAAAAASUVORK5CYII='
+        shot = self.store.save_screenshot(task['id'], 'https://example.com', encoded)
+        path = '/workspace/agent/tasks/' + task['id'] + '/screenshots/' + shot['id']
+        response = await self.client.get(path)
+        self.assertEqual(response.content, base64.b64decode(encoded))
+        self.assertEqual(response.headers['cache-control'], 'no-store')
+        self.assertEqual((await self.client.get(path, headers={'Authorization': ''})).status_code, 401)
+        other = await self.proposal()
+        self.assertEqual((await self.client.get('/workspace/agent/tasks/' + other['id'] + '/screenshots/' + shot['id'])).status_code, 409)
+        with self.assertRaises(ValueError): self.store.save_screenshot(task['id'], 'https://example.com', base64.b64encode(b'not a PNG').decode())
+
+    async def test_unconnected_outgoing_action_never_records_approval(self):
+        task = await self.proposal()
+        self.store.approve_task(task['id'], task['fingerprint'])
+        self.store.start_task(task['id'], task['fingerprint'])
+        action = self.store.propose_action(task['id'], 'send', 'person@example.com', {'text': 'Example draft'})
+        response = await self.client.post('/workspace/agent/actions/' + action['id'] + '/approve', json={'fingerprint': action['fingerprint']})
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(self.store.actions(task['id'])[0]['status'], 'proposed')

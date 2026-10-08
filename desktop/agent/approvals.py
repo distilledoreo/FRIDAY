@@ -10,6 +10,10 @@ from pathlib import Path
 import sqlite3
 import time
 import uuid
+import base64
+import shutil
+import struct
+import re
 
 ACTION_KINDS = frozenset({'submit', 'send', 'login', 'buy', 'delete'})
 
@@ -29,6 +33,8 @@ class Approvals:
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.screenshots = self.path.parent / 'screenshots'
+        self.screenshots.mkdir(exist_ok=True, mode=0o700)
         with self.db() as db:
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS tasks (
@@ -40,8 +46,47 @@ class Approvals:
                 CREATE TABLE IF NOT EXISTS events (
                     seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
                     kind TEXT NOT NULL, data TEXT NOT NULL, created REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS screenshots (
+                    id TEXT PRIMARY KEY, task_id TEXT NOT NULL, url TEXT NOT NULL,
+                    size INTEGER NOT NULL, created REAL NOT NULL);
             ''')
         self.path.chmod(0o600)
+
+    def save_screenshot(self, task_id, url, encoded):
+        if not isinstance(encoded, str) or len(encoded) > 1400000: raise ValueError('Screenshot too large')
+        if not isinstance(url, str) or not url.startswith('https://') or len(url) > 4096: raise ValueError('Invalid source URL')
+        raw = base64.b64decode(encoded, validate=True)
+        if len(raw) < 24 or len(raw) > 1024 * 1024 or raw[:8] != b'\x89PNG\r\n\x1a\n' or raw[12:16] != b'IHDR':
+            raise ValueError('Invalid PNG screenshot')
+        width, height = struct.unpack('!II', raw[16:24])
+        if not (1 <= width <= 2000 and 1 <= height <= 2000): raise ValueError('Screenshot dimensions exceed limits')
+        if shutil.disk_usage(self.screenshots).free < 2 * 1024**3: raise ValueError('Screenshot storage low')
+        identifier = uuid.uuid4().hex
+        with self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            task = db.execute('SELECT status FROM tasks WHERE id=?', (task_id,)).fetchone()
+            if not task or task['status'] != 'running': raise ValueError('Task is not running')
+            total = db.execute('SELECT COALESCE(SUM(size),0) FROM screenshots').fetchone()[0]
+            count = db.execute('SELECT COUNT(*) FROM screenshots WHERE task_id=?', (task_id,)).fetchone()[0]
+            if total + len(raw) > 256 * 1024**2 or count >= 200: raise ValueError('Screenshot storage quota reached')
+            target = self.screenshots / (identifier + '.png')
+            target.write_bytes(raw)
+            target.chmod(0o600)
+            try:
+                db.execute('INSERT INTO screenshots VALUES(?,?,?,?,?)', (identifier, task_id, url, len(raw), time.time()))
+                self.event(db, task_id, 'screenshot', {'id': identifier, 'url': url, 'preview': 'Static source preview; scripts and external assets disabled'})
+            except BaseException:
+                target.unlink(missing_ok=True)
+                raise
+        return {'id': identifier, 'url': url}
+
+    def screenshot(self, task_id, identifier):
+        if not re.fullmatch(r'[a-f0-9]{32}', identifier): raise ValueError('Invalid screenshot id')
+        with self.db() as db:
+            row = db.execute('SELECT * FROM screenshots WHERE task_id=? AND id=?', (task_id, identifier)).fetchone()
+        target = self.screenshots / (identifier + '.png')
+        if not row or not target.is_file(): raise ValueError('Screenshot not found')
+        return target
 
     @contextlib.contextmanager
     def db(self):
@@ -84,10 +129,13 @@ class Approvals:
     def finish_task(self, task_id, fingerprint, success=True):
         self.transition(task_id, fingerprint, 'running', 'done' if success else 'failed')
 
+    def await_setup(self, task_id, fingerprint):
+        self.transition(task_id, fingerprint, 'running', 'awaiting_setup')
+
     def cancel_task(self, task_id):
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
-            changed = db.execute("UPDATE tasks SET status='cancelled', updated=? WHERE id=? AND status IN ('proposed','approved','running')",
+            changed = db.execute("UPDATE tasks SET status='cancelled', updated=? WHERE id=? AND status IN ('proposed','approved','running','awaiting_setup')",
                                  (time.time(), task_id)).rowcount
             if changed != 1: raise ValueError('Task cannot be cancelled')
             db.execute("UPDATE actions SET status='cancelled' WHERE task_id=? AND status IN ('proposed','approved')", (task_id,))

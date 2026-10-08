@@ -89,6 +89,7 @@ data class ChatUiState(
     val agentEvents: List<JSONObject> = emptyList(),
     val agentEventAfter: Long = 0,
     val agentReady: Boolean = false,
+    val agentOutgoingReady: Boolean = false,
     val agentDetail: String = "Connecting to FRIDAY’s computer…",
     val workspaceFiles: List<WorkspaceFile> = emptyList(),
     val syncConflicts: List<SyncConflict> = emptyList(),
@@ -725,7 +726,7 @@ class ChatViewModel(
     fun openWorkspace(destination: WorkspaceDestination = WorkspaceDestination.SETTINGS) {
         if (destination == WorkspaceDestination.PROJECTS) searchHistory("")
         _state.update { it.copy(showWorkspace = true, workspaceDestination = destination, knowledge = runCatching { knowledgeStore?.load() }.getOrNull() ?: Knowledge()) }
-        refreshWorkspace()
+        if (destination == WorkspaceDestination.ACTIVITY) refreshAgentActivity() else refreshWorkspace()
         if (destination in listOf(WorkspaceDestination.MEMORY, WorkspaceDestination.IMPORT_CHATGPT, WorkspaceDestination.MEMORY_REVIEW, WorkspaceDestination.MEMORY_ARCHIVE)) refreshMemory()
     }
     fun dismissWorkspace() { _state.update { it.copy(showWorkspace = false) } }
@@ -739,11 +740,12 @@ class ChatViewModel(
         val events = taskId?.let { JSONArray(client.request("/workspace/agent/tasks/$it/events?limit=200&after=$cursor")) }
         _state.update { it.copy(
             agentReady = health.optBoolean("ready"), agentDetail = health.optString("detail"),
+            agentOutgoingReady = health.optBoolean("outgoing_ready"),
             agentTasks = (0 until tasks.length()).map { tasks.getJSONObject(it) },
             agentTask = task, agentEventAfter = cursor, agentEvents = events?.let { e -> (0 until e.length()).map { e.getJSONObject(it) } }.orEmpty(),
         ) }
     }
-    fun refreshAgentActivity(taskId: String? = null, after: Long? = null) = workspaceAction { loadAgentActivity(taskId, after); "Activity updated." }
+    fun refreshAgentActivity(taskId: String? = null, after: Long? = null) = workspaceAction(allowDuringChat = true) { loadAgentActivity(taskId, after); "Activity updated." }
     fun proposeAgentTask(prompt: String, plan: List<String>) = workspaceAction {
         val client = workspace ?: error("Computer unavailable.")
         client.request("/workspace/agent/tasks", "POST", JSONObject().put("prompt", prompt).put("plan", JSONArray(plan)))
@@ -761,9 +763,18 @@ class ChatViewModel(
         workspace?.request("/workspace/agent/actions/$id/approve", "POST", JSONObject().put("fingerprint", fingerprint)) ?: error("Computer unavailable.")
         loadAgentActivity(taskId); "Exact action approved."
     }
+    suspend fun loadAgentScreenshot(taskId: String, id: String): File = withContext(Dispatchers.IO) {
+        require(!_state.value.privacy.incognito) { "Activity is unavailable in incognito." }
+        require(taskId.matches(Regex("[a-f0-9]{32}")) && id.matches(Regex("[a-f0-9]{32}")))
+        val directory = File(app?.cacheDir ?: error("App storage unavailable."), "agent-previews").apply { mkdirs() }
+        val target = File(directory, "$taskId-$id.png")
+        if (!target.isFile) workspace?.downloadAgentScreenshot(taskId, id, target) ?: error("Computer unavailable.")
+        directory.listFiles()?.sortedByDescending { it.lastModified() }?.drop(20)?.filter { it != target }?.forEach(File::delete)
+        target
+    }
 
-    private fun workspaceAction(action: suspend () -> String) {
-        if (_state.value.workspaceBusy || _state.value.busy) return
+    private fun workspaceAction(allowDuringChat: Boolean = false, action: suspend () -> String) {
+        if (_state.value.workspaceBusy || _state.value.busy && !allowDuringChat) return
         if (_state.value.privacy.incognito) { _state.update { it.copy(error = "Leave incognito before managing saved workspace data.") }; return }
         _state.update { it.copy(workspaceBusy = true, workspaceStatus = null) }
         viewModelScope.launch {

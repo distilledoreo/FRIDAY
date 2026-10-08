@@ -130,6 +130,17 @@ class WorkspaceClient(private val context: Context, private val settings: () -> 
         target
     }
 
+    suspend fun downloadAgentScreenshot(taskId: String, id: String, target: File): File = withContext(Dispatchers.IO) {
+        require(taskId.matches(Regex("[a-f0-9]{32}")) && id.matches(Regex("[a-f0-9]{32}"))) { "Invalid activity screenshot." }
+        val s = settings()
+        val path = privatePath("/workspace/agent/tasks/$taskId/screenshots/$id")
+        val (code, bytes) = desktopRequest(s.searchBaseUrl, s.searchApiKey, "GET", path, timeoutMs = 30000)
+        require(code == 200 && bytes.size <= 1024 * 1024) { "Activity screenshot unavailable." }
+        target.parentFile?.mkdirs()
+        target.writeBytes(bytes)
+        target
+    }
+
     suspend fun installUpdate(): String = withContext(Dispatchers.IO) {
         val manifest = JSONObject(request("/workspace/release"))
         val pm = context.packageManager

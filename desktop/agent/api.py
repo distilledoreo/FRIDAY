@@ -8,6 +8,7 @@ import contextlib
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from .approvals import Approvals
@@ -22,8 +23,9 @@ class Approval(BaseModel):
     fingerprint: str = Field(pattern=r'^[a-f0-9]{64}$')
 
 
-def install(app, auth, root, engine=None):
+def install(app, auth, root, engine=None, unavailable_detail=None):
     store = Approvals(Path(root) / 'agent.sqlite')
+    if engine is not None and hasattr(engine, 'bind'): engine.bind(store)
     router = APIRouter(prefix='/workspace/agent', dependencies=auth)
     running = {}
 
@@ -33,8 +35,9 @@ def install(app, auth, root, engine=None):
 
     @router.get('/health')
     async def health():
-        return {'ready': engine is not None, 'gpu': False,
-                'detail': 'Cloud engine ready' if engine else 'Cloud agent setup is in progress; proposals can be saved'}
+        ready = engine is not None and (not hasattr(engine, 'available') or await engine.available())
+        return {'ready': ready, 'gpu': False, 'outgoing_ready': False,
+                'detail': 'FRIDAY can research public pages and report back. Account actions are still being connected.' if ready else unavailable_detail or 'Cloud agent unavailable; proposals can be saved while its setup is checked'}
 
     @router.get('/tasks')
     async def tasks(limit: int = Query(default=50, ge=1, le=100)):
@@ -57,6 +60,11 @@ def install(app, auth, root, engine=None):
         guarded(store.task, task_id)
         return store.events(task_id, after, limit)
 
+    @router.get('/tasks/{task_id}/screenshots/{identifier}')
+    async def screenshot(task_id: str, identifier: str):
+        target = guarded(store.screenshot, task_id, identifier)
+        return FileResponse(target, media_type='image/png', headers={'Cache-Control': 'no-store'})
+
     async def execute(task_id, fingerprint):
         try:
             store.start_task(task_id, fingerprint)
@@ -66,7 +74,10 @@ def install(app, auth, root, engine=None):
                 with store.db() as db: store.event(db, task_id, kind, data)
             result = await engine(store.task(task_id), report)
             await report('result', result)
-            store.finish_task(task_id, fingerprint)
+            if any(action['status'] == 'proposed' for action in store.actions(task_id)):
+                store.await_setup(task_id, fingerprint)
+            else:
+                store.finish_task(task_id, fingerprint)
         except asyncio.CancelledError:
             # Cancellation has already revoked pending action approvals.
             if store.task(task_id)['status'] == 'running': store.cancel_task(task_id)
@@ -80,7 +91,8 @@ def install(app, auth, root, engine=None):
 
     @router.post('/tasks/{task_id}/approve')
     async def approve(task_id: str, body: Approval):
-        if engine is None: raise HTTPException(503, 'Cloud agent is not ready; no approval was recorded')
+        if engine is None or hasattr(engine, 'available') and not await engine.available():
+            raise HTTPException(503, 'Cloud agent is not ready; no approval was recorded')
         guarded(store.approve_task, task_id, body.fingerprint)
         running[task_id] = asyncio.create_task(execute(task_id, body.fingerprint))
         return store.task(task_id)
@@ -93,8 +105,9 @@ def install(app, auth, root, engine=None):
 
     @router.post('/actions/{action_id}/approve')
     async def approve_action(action_id: str, body: Approval):
-        guarded(store.approve_action, action_id, body.fingerprint)
-        return {'status': 'approved'}
+        # No executor is installed yet. Do not record an unusable approval or
+        # imply that a saved proposal has actually submitted/sent/logged in.
+        raise HTTPException(503, 'This action cannot run until its account/executor and outgoing review are connected; no approval recorded')
 
     async def recover(): store.interrupt_running()
 
