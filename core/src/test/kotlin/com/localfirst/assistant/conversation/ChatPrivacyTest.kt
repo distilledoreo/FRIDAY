@@ -51,7 +51,7 @@ class ChatPrivacyTest {
         assertFalse(privacy.allowsTool("propose_agent_task"))
         assertFalse(privacy.allowsTool("list_agent_activity"))
         assertFalse(privacy.allowsTool("get_agent_report"))
-        listOf("list_connected_accounts", "read_account_inbox", "read_account_message", "read_account_calendar", "read_account_calendar_event", "propose_outgoing_action").forEach { assertFalse(privacy.allowsTool(it)) }
+        listOf("list_connected_accounts", "read_account_inbox", "read_account_message", "read_account_calendar", "read_account_calendar_event", "propose_outgoing_action", "read_daily_brief", "list_followups", "save_followup").forEach { assertFalse(privacy.allowsTool(it)) }
     }
     @Test fun normalChatStillCheckpoints() = runBlocking {
         var writes = 0; ChatPrivacy().checkpoint { writes++ }; assertEquals(1, writes)

@@ -92,6 +92,27 @@ class TaskPollService : JobService() {
                         sent++
                     }
                 }
+                val privacy = getSharedPreferences("brief-privacy", Context.MODE_PRIVATE)
+                if (manager.areNotificationsEnabled() && !privacy.getBoolean("incognito", false)) {
+                    // Proposals contain no account snapshot and cannot approve/start a task.
+                    val proposals = JSONObject(client.request("/workspace/agent/briefing/proposals/refresh", "POST", JSONObject().put("scope", "")))
+                    val items = proposals.getJSONArray("items")
+                    if (proposals.optBoolean("notify") && !privacy.getBoolean("incognito", false)) for (i in 0 until items.length()) {
+                        val item = items.getJSONObject(i)
+                        val key = "brief-${item.getString("id") }"
+                        if (prefs.contains(key) || sent >= 5 || privacy.getBoolean("incognito", false)) continue
+                        val open = PendingIntent.getActivity(this@TaskPollService, key.hashCode(),
+                            Intent(this@TaskPollService, MainActivity::class.java).setAction("com.localfirst.assistant.BRIEF"),
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                        val notification = NotificationCompat.Builder(this@TaskPollService, TaskNotifications.CHANNEL)
+                            .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("FRIDAY")
+                            .setContentText(if (item.optString("kind") == "morning") "Open FRIDAY for your morning brief." else "A check-in proposal is available. Open FRIDAY to review it.")
+                            .setContentIntent(open).setAutoCancel(true).build()
+                        manager.notify(key.hashCode(), notification)
+                        prefs.edit().putLong(key, System.currentTimeMillis()).apply(); sent++
+                    }
+                    prefs.all.filter { (key, value) -> key.startsWith("brief-") && value is Long && value < System.currentTimeMillis() - 30L * 86400000L }.keys.forEach { prefs.edit().remove(it).apply() }
+                }
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { /* Offline: leave seen state untouched and retry at the next scheduled poll. */ }
             finally { jobFinished(params, false) }

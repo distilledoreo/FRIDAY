@@ -2,6 +2,9 @@
 import json
 import time
 import uuid
+import sqlite3
+from datetime import datetime, time as day_time
+from zoneinfo import ZoneInfo
 from .store import terms, safe_fact
 
 DAY=86400
@@ -47,9 +50,27 @@ def apply_updates(store,sid,values,now=None):
             db.execute('INSERT INTO situation_events VALUES(?,?,?,?,?,?,?)',(uuid.uuid4().hex,ident,summary,status,sid,quote,source['updated']))
             db.execute('DELETE FROM situation_events WHERE id IN (SELECT id FROM situation_events WHERE situation_id=? ORDER BY created DESC LIMIT -1 OFFSET 20)',(ident,))
 
+def checkin_window(store,now):
+    """Apply explicit daily-brief quiet/cadence controls to legacy chat offers too."""
+    path=store.root.parent/'agent/briefing.sqlite'
+    if not path.is_file():return True,3*DAY
+    try:
+        with sqlite3.connect(f'file:{path}?mode=ro',uri=True,timeout=2) as db:
+            row=db.execute('SELECT value FROM brief_settings WHERE id=1').fetchone()
+            if not row:return True,3*DAY
+            value=json.loads(row[0]);cooldown=value['cadence_hours']*3600
+            local=datetime.fromtimestamp(now,ZoneInfo(value['timezone'])).time().replace(tzinfo=None)
+            start,end=(day_time.fromisoformat(value[key]) for key in ('quiet_start','quiet_end'))
+            silent=start==end or (start<=local<end if start<end else local>=start or local<end)
+            state=db.execute('SELECT last_offer FROM notice_state WHERE id=1').fetchone()
+            if state and now-state[0]<cooldown:silent=True
+            return not silent,max(3*DAY,cooldown)
+    except (sqlite3.Error,ValueError,KeyError,TypeError):return False,3*DAY
+
 def recall(store,query,scope,current_id,now=None):
     now=time.time() if now is None else now
     tokens=set(terms(query));notes=[];refs=[]
+    offer_window,cooldown=checkin_window(store,now)
     # Greetings permit one recent check-in. Specific unrelated questions permit none.
     greeting=query.strip().lower().strip('!.?') in ('hi','hello','hey','good morning','good evening','how are you','hey there')
     rows=list_situations(store,scope,now);ranked=[]
@@ -63,11 +84,11 @@ def recall(store,query,scope,current_id,now=None):
     for _,_,row in ranked[:1 if greeting else 3]:
         age=max(0,int((now-row['updated'])/DAY))
         note=f"Recent situation [{row['id']}] ({age} days ago; {row['status']}; tentative machine summary, not an established personality fact): {row['summary']}. User evidence: {row['quote']}"
-        can_offer=store.settings()['allow_checkins'] and row['status']=='open' and now-row['updated']<=7*DAY and now-row['last_offered']>=3*DAY
+        can_offer=offer_window and store.settings()['allow_checkins'] and row['status']=='open' and now-row['updated']<=7*DAY and now-row['last_offered']>=cooldown
         if can_offer:
             # Transaction prevents concurrent turns offering the same check-in twice.
             with store.db() as db:
-                changed=db.execute('UPDATE situations SET last_offered=? WHERE id=? AND last_offered<=?',(now,row['id'],now-3*DAY)).rowcount
+                changed=db.execute('UPDATE situations SET last_offered=? WHERE id=? AND last_offered<=?',(now,row['id'],now-cooldown)).rowcount
             if changed:note+=' You may briefly ask whether this is resolved if it fits naturally; prioritize the current request. Do not assume the earlier emotion persists. This optional offer is rate-limited; do not force a check-in.'
         else:note+=' Use silently when relevant; do not initiate a check-in about this situation.'
         notes.append(note);refs.append({'id':row['id'],'kind':'situation','title':row['topic'],'excerpt':row['summary'],'source_id':row['source_id']})

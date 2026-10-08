@@ -49,6 +49,7 @@ class MainActivity : ComponentActivity() {
     private fun handleLaunch(intent: Intent?) {
         when (intent?.action) {
             Intent.ACTION_VIEW -> { viewModel.handleAccountCallback(intent.data); intent.data = null }
+            "com.localfirst.assistant.BRIEF" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.BRIEF)
             "com.localfirst.assistant.ACTIVITY" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.ACTIVITY)
             "com.localfirst.assistant.TASKS" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.TASKS)
             Intent.ACTION_ASSIST, Intent.ACTION_VOICE_COMMAND -> viewModel.startAssistantSession()

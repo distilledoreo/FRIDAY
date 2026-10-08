@@ -64,7 +64,9 @@ class WorkspaceClient(private val context: Context, private val settings: () -> 
     override suspend fun toolRequest(path: String, method: String, body: String?): String {
         val payload = body?.let(::JSONObject)
         if (path == "/workspace/images" && method == "POST" && payload != null) imageSettings.apply(payload, serverIdentity)
-        val target = if (path.startsWith("/workspace/memory/tool-search?")) path + "&scope=" + java.net.URLEncoder.encode(memoryScope, "UTF-8") else path
+        if (path in listOf("/workspace/agent/briefing/build", "/workspace/agent/briefing/followups") && method == "POST") payload?.put("scope", memoryScope)
+        val scopedPath = if (path == "/workspace/agent/briefing/followups" && method == "GET") path + "?scope=" + java.net.URLEncoder.encode(memoryScope, "UTF-8") else path
+        val target = if (path.startsWith("/workspace/memory/tool-search?")) path + "&scope=" + java.net.URLEncoder.encode(memoryScope, "UTF-8") else scopedPath
         val result = request(target, method, payload)
         if (path.startsWith("/workspace/images/") && method == "GET") {
             val job = JSONObject(result)
@@ -76,7 +78,7 @@ class WorkspaceClient(private val context: Context, private val settings: () -> 
     val serverIdentity: String get() = settings().searchBaseUrl.trim().trimEnd('/')
     suspend fun request(path: String, method: String = "GET", body: JSONObject? = null, timeoutMs: Int = 120000): String = withContext(Dispatchers.IO) {
         val s = settings()
-        val privateAccountAction = path.startsWith("/workspace/agent/accounts") || path.startsWith("/workspace/agent/outgoing") || path.startsWith("/workspace/agent/actions")
+        val privateAccountAction = path.startsWith("/workspace/agent/accounts") || path.startsWith("/workspace/agent/outgoing") || path.startsWith("/workspace/agent/actions") || path.startsWith("/workspace/agent/briefing")
         if (privateAccountAction) {
             val endpoint = java.net.URI(s.searchBaseUrl)
             val host = endpoint.host.orEmpty()

@@ -53,7 +53,7 @@ class PrivateAccountRoute(APIRoute):
         async def private_errors(request):
             try: return await handler(request)
             except RequestValidationError:
-                if request.url.path.startswith(('/workspace/agent/accounts','/workspace/agent/outgoing','/workspace/agent/actions')):
+                if request.url.path.startswith(('/workspace/agent/accounts','/workspace/agent/outgoing','/workspace/agent/actions','/workspace/agent/briefing')):
                     return JSONResponse(status_code=422, content={'detail':'Invalid private account/action request; check required fields and limits'})
                 raise
         return private_errors
@@ -73,6 +73,9 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
     from .outgoing import Executors, EffectRejected, EffectUncertain
     executors=(outgoing_factory or Executors)(accounts,outgoing_enabled) if accounts else None
     reviewer = OutgoingReview(vault,executors)
+    from .briefing import Briefing, routes as briefing_routes
+    briefing=Briefing(root,accounts)
+    briefing_routes(router,briefing)
     running = {}
     outgoing_running = {}
     scheduler = None
@@ -85,7 +88,7 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
     async def health():
         ready = engine is not None and (not hasattr(engine, 'available') or await engine.available())
         return {'ready': ready, 'gpu': False, 'outgoing_ready':bool(executors and executors.enabled),
-                'active_outgoing':len(outgoing_running)+(len(accounts.mail_tasks) if accounts else 0),
+                'active_outgoing':len(outgoing_running)+(len(accounts.mail_tasks) if accounts else 0)+briefing.busy,
                 'detail': ('FRIDAY can research and review outgoing drafts. Exact outgoing approval is available for configured accounts.' if executors and executors.enabled else 'FRIDAY can research and review outgoing drafts. Outgoing activation remains off until account/device verification and explicit setup.') if ready else unavailable_detail or 'Cloud agent unavailable; proposals can be saved while its setup is checked'}
 
     class OAuthConfig(BaseModel):
@@ -338,6 +341,7 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
         for future in pending:
             with contextlib.suppress(asyncio.CancelledError): await future
         if accounts: await accounts.close()
+        await briefing.weather.close()
 
     app.router.add_event_handler('startup', recover)
     app.router.add_event_handler('shutdown', stop)

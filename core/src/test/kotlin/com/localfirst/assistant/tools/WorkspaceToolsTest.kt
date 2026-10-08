@@ -74,6 +74,22 @@ class WorkspaceToolsTest {
             assertEquals("/workspace/agent/accounts/$account/mail?query=project+%26+limit%3D999&limit=2", gateway.path)
         } finally { dir.deleteRecursively() }
     }
+    @Test fun dailyBriefAndFollowupsRequireConfirmationAndNeverActivateOrExecute() = runBlocking {
+        val dir = Files.createTempDirectory("brief-tools").toFile()
+        try {
+            val gateway = FakeGateway()
+            val tools = workspaceTools(gateway, KnowledgeStore(dir.resolve("knowledge.json")), FileConversationStore(dir.resolve("chats")))
+            val registry = ToolRegistry().apply { tools.forEach(::register) }
+            val call = ToolCall("brief", "read_daily_brief", "{}")
+            registry.execute(call, ToolConfirmer { false }); assertEquals("", gateway.path)
+            registry.execute(call, ToolConfirmer { true }); assertEquals("/workspace/agent/briefing/build", gateway.path)
+            assertEquals("{}", gateway.body)
+            assertTrue(tools.filter { it.name in listOf("read_daily_brief", "list_followups", "save_followup") }.all { it.requiresConfirmation })
+            tools.first { it.name == "save_followup" }.execute(buildJsonObject { put("title", "Explicit follow-up"); put("due", "2026-10-09T08:00:00-04:00") })
+            assertEquals("/workspace/agent/briefing/followups", gateway.path)
+            assertFalse(tools.any { it.name.contains("activate") || it.name.contains("approve") || it.name == "enable_checkins" })
+        } finally { dir.deleteRecursively() }
+    }
     @Test fun outgoingToolSavesOnlyAnExactDraftForSeparateReview() = runBlocking {
         val dir = Files.createTempDirectory("outgoing-draft").toFile()
         try {

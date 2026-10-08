@@ -29,7 +29,7 @@ import java.time.*
 import java.time.format.DateTimeFormatter
 
 enum class WorkspaceDestination(val title: String) {
-    SETTINGS("Settings"), ACCOUNTS("Accounts"), MEMORY("Memory"), ACTIVITY("Activity"), PROJECTS("Projects"), PROJECT("Project"),
+    SETTINGS("Settings"), BRIEF("Daily brief"), ACCOUNTS("Accounts"), MEMORY("Memory"), ACTIVITY("Activity"), PROJECTS("Projects"), PROJECT("Project"),
     EDIT_PROJECT("Project settings"), TASKS("Tasks"), TASK("Task"), NEW_TASK("New task"),
     FILES("Library"), DATA("Data controls"), NEW_MEMORY("Add memory"), IMAGES("Images"), IMPORT_CHATGPT("Import ChatGPT"), MEMORY_REVIEW("Review memories"), MEMORY_ARCHIVE("PC archive"), MEMORY_SOURCE("Source chat"), MEMORY_CONTEXT("Recall context")
 }
@@ -98,11 +98,13 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                     if (state.workspaceBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
                     state.workspaceStatus?.takeIf { !it.startsWith("Computer online") }?.let { Text(it, Modifier.padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall) }
                     when (page) {
+                        WorkspaceDestination.BRIEF -> DailyBriefPage(state, vm)
                         WorkspaceDestination.ACCOUNTS -> AccountsPage(state, vm)
                         WorkspaceDestination.ACTIVITY -> AgentActivity(state, vm)
                         WorkspaceDestination.IMAGES -> ImageJobs(state, vm)
                         WorkspaceDestination.SETTINGS -> ScreenList {
                             item { SectionLabel("Personalization") }
+                            item { SettingsRow("Daily brief", "Calendar, weather and follow-up proposals") { parent = page; page = WorkspaceDestination.BRIEF } }
                             item { SettingsRow("Accounts", "Email and calendar sign-in") { parent = page; page = WorkspaceDestination.ACCOUNTS } }
                             item { SettingsRow("Memory", "Manage what the assistant remembers") { parent = page; page = WorkspaceDestination.MEMORY } }
                             item { SettingsRow("Data controls", "Sync, export and backups") { parent = page; page = WorkspaceDestination.DATA } }

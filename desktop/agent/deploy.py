@@ -66,6 +66,16 @@ friday_agent_store = enable_friday_agent(app, auth,
     FridayAgentPath(__file__).resolve().parent.parent / "workspace-data" / "agent", search)
 '''
         ast.parse(source)
+        # Quiet/cadence controls share one narrowly owned memory helper. Refuse
+        # replacing a concurrent edit instead of overwriting the memory module.
+        continuity_source=Path(__file__).parent.parent/'memory/continuity.py'
+        continuity_target=server/'api/memory/continuity.py'
+        if continuity_source.is_file() and continuity_target.is_file():
+            current=hashlib.sha256(continuity_target.read_bytes()).hexdigest()
+            wanted=hashlib.sha256(continuity_source.read_bytes()).hexdigest()
+            previous='4055a0010aa1e22610f6b8d82b16feec898347e83a8574b3d00c77e06d9f4b1b'
+            if current not in (previous,wanted):raise RuntimeError('Situation helper changed concurrently; preserve and reconcile it before deployment')
+
         backup = server / 'api' / ('before-cloud-agent-' + str(time.time_ns()))
         backup.mkdir(mode=0o700)
         shutil.copy2(gateway, backup / 'app.py')
@@ -74,6 +84,10 @@ friday_agent_store = enable_friday_agent(app, auth,
         target.mkdir(exist_ok=True, mode=0o700)
         for file in Path(__file__).parent.glob('*.py'):
             if file.name not in ('build_image.py', 'deploy.py'): shutil.copy2(file, target / file.name)
+        if continuity_source.is_file() and continuity_target.is_file():
+            if hashlib.sha256(continuity_target.read_bytes()).hexdigest()!=current:raise RuntimeError('Situation helper changed during deployment; do not restart')
+            shutil.copy2(continuity_target,backup/'memory-continuity.py')
+            shutil.copy2(continuity_source,continuity_target)
         data = server / 'workspace-data/agent'
         data.mkdir(exist_ok=True, mode=0o700)
         runtime = data / 'runtime.json'
