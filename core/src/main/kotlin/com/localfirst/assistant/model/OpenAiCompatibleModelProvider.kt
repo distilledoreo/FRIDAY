@@ -147,6 +147,24 @@ class OpenAiCompatibleModelProvider(
         else -> ModelProviderException(e.message ?: "Model request failed.", e)
     }
 
+    /** Sends the opening of a new chat, built exactly like a real request, marked as a prime; failures are ignored. */
+    override suspend fun prime(messages: List<Message>, tools: List<ToolDefinition>) {
+        if (incognito) return
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                val connection = (URI(resolveChatCompletionsUrl(config.baseUrl)).toURL().openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"; connectTimeout = config.connectTimeoutMillis; readTimeout = 15_000; doOutput = true
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    setRequestProperty("X-Assistant-Prime", "1")
+                    config.apiKey?.trim()?.takeIf { it.isNotEmpty() }?.let { setRequestProperty("Authorization", "Bearer $it") }
+                }
+                connection.outputStream.use { it.write(payload(messages, tools, stream = true).toByteArray()) }
+                connection.responseCode
+                connection.disconnect()
+            }
+        }
+    }
+
     private fun payload(messages: List<Message>, tools: List<ToolDefinition>, stream: Boolean): String {
         val body = buildChatCompletionRequest(
             model = config.model,

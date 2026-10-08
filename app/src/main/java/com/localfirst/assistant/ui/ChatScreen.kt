@@ -220,6 +220,10 @@ fun ChatScreen(viewModel: ChatViewModel) {
                 }
             },
         ) {
+            // Prepare a new chat's opening on the PC before the first message (no-op if it's already prepared).
+            LaunchedEffect(state.messages.isEmpty(), state.projectId, state.privacy.incognito, state.settings) {
+                if (state.messages.isEmpty() && !state.privacy.incognito) viewModel.primeOpening()
+            }
             val fridayBusy = state.agentTasks.any { it.optString("status") in FRIDAY_WORKING || it.optString("status") in FRIDAY_NEEDS_YOU }
             FridayVisibleEffect(fridayBusy, state.privacy.incognito) {
                 if (!state.privacy.incognito) while (true) {

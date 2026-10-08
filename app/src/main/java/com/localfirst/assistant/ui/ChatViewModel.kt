@@ -542,7 +542,7 @@ class ChatViewModel(
     private fun runTurn(block: suspend (onUpdate: (List<Message>) -> Unit) -> TurnOutcome) {
         val isFirstExchange = session.snapshot().none { it is Message.Assistant }
         val now = ZonedDateTime.now()
-        session.systemPrompt = try { AssistantPrompts.system(now) + (if (_state.value.privacy.freshSlate) "" else knowledgeStore?.context(_state.value.projectId, includeMemories = workspace == null).orEmpty()) }
+        session.systemPrompt = try { openingPrompt(now) }
         catch (e: Exception) { _state.update { it.copy(error = "Couldn't read saved knowledge: ${e.message}") }; return }
         (provider as? com.localfirst.assistant.model.OpenAiCompatibleModelProvider)?.incognito = _state.value.privacy.incognito
         session.latestUserNote = AssistantPrompts.timeNote(now)
@@ -794,6 +794,27 @@ class ChatViewModel(
             }
             if (_state.value.historyQuery != query) return@launch
             _state.update { it.copy(conversations = list) }
+        }
+    }
+
+    /** The system prompt a turn starts from (before recalled memories), shared with [primeOpening] so they always match. */
+    private fun openingPrompt(now: ZonedDateTime): String =
+        AssistantPrompts.system(now) + (if (_state.value.privacy.freshSlate) "" else knowledgeStore?.context(_state.value.projectId, includeMemories = workspace == null).orEmpty())
+
+    private var primeJob: Job? = null
+
+    /**
+     * Sends a new chat's opening (system prompt and tools) to the PC ahead of the first message, so it
+     * can prepare its snapshot while you're still typing. The PC ignores openings it already has.
+     */
+    fun primeOpening() {
+        if (workspace == null || _state.value.privacy.incognito || _state.value.messages.isNotEmpty() || primeJob?.isActive == true) return
+        primeJob = viewModelScope.launch {
+            runCatching {
+                val opening = newSession(emptyList())
+                opening.systemPrompt = openingPrompt(ZonedDateTime.now())
+                opening.primeOpening()
+            }
         }
     }
 

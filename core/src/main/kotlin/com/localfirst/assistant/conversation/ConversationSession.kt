@@ -42,6 +42,9 @@ class ConversationSession(
 
     fun snapshot(): List<Message> = messages.toList()
 
+    /** Lets the server prepare this chat's opening (system prompt and tools) before the first message. */
+    suspend fun primeOpening() = modelProvider.prime(engine.outboundMessages(systemPrompt, emptyList()), toolRegistry.definitions().filter { it.name !in blockedTools })
+
     suspend fun submitUserMessage(
         text: String,
         attachments: List<Attachment> = emptyList(),
