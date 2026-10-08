@@ -56,6 +56,8 @@ data class ToolStep(
     val detail: String? = null,
     val sources: List<SourceLink> = emptyList(),
     val imageResult: String? = null,
+    /** The task FRIDAY proposed (JSON from propose_agent_task), shown as a card with Start and live status. */
+    val agentTask: String? = null,
 )
 
 enum class ToolStepState { RUNNING, DONE, FAILED }
@@ -145,6 +147,7 @@ object Transcript {
             detail = result?.takeIf { !it.success }?.content,
             sources = result?.sources.orEmpty(),
             imageResult = result?.takeIf { it.success && call.name == "generate_image" }?.content,
+            agentTask = result?.takeIf { it.success && call.name == "propose_agent_task" }?.content,
         )
     }
 }

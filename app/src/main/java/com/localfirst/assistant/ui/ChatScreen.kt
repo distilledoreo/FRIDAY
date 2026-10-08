@@ -67,6 +67,8 @@ import com.localfirst.assistant.presentation.Transcript
 import com.localfirst.assistant.presentation.TranscriptItem
 import com.localfirst.assistant.voice.VoicePhase
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import androidx.compose.runtime.LaunchedEffect
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -157,6 +159,15 @@ fun ChatScreen(viewModel: ChatViewModel) {
                 )
             },
         ) {
+            // FRIDAY's status for the pill and plan cards: often while she's busy, rarely otherwise.
+            val fridayBusy = state.agentTasks.any { it.optString("status") in FRIDAY_WORKING || it.optString("status") in FRIDAY_NEEDS_YOU }
+            LaunchedEffect(fridayBusy, state.privacy.incognito) {
+                if (state.privacy.incognito) return@LaunchedEffect
+                while (true) {
+                    viewModel.pollFriday()
+                    delay(if (fridayBusy) 3_000 else 60_000)
+                }
+            }
             Scaffold(
                 modifier = Modifier.fillMaxSize(),
                 snackbarHost = { SnackbarHost(snackbar) },
@@ -192,6 +203,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                             }
                         },
                         actions = {
+                            if (!state.privacy.incognito) FridayPill(state) { viewModel.openFriday() }
                             MoreActions(buildList {
                                 if (state.privacy.incognito) add("Exit incognito" to viewModel::newChat) else add("Start incognito chat" to { viewModel.startIncognito() })
                                 if (state.privacy.incognito) add((if (state.privacy.freshSlate) "Use saved memories (new incognito chat)" else "Fresh slate (new incognito chat)") to { viewModel.startIncognito(!state.privacy.freshSlate) })
@@ -217,7 +229,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     Column {
                         state.groundingStatus?.let { status ->
                             Text(status, Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelSmall)
-                            if (state.groundingResearchAvailable) TextButton(onClick = viewModel::proposeGroundedResearch, enabled = !state.busy && !state.workspaceBusy) { Text("Propose deeper research in Activity") }
+                            if (state.groundingResearchAvailable) TextButton(onClick = viewModel::proposeGroundedResearch, enabled = !state.busy && !state.workspaceBusy) { Text("Have FRIDAY research this deeper") }
                             if (state.groundingSources.isNotEmpty()) androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).horizontalScroll(rememberScrollState())) {
                                 state.groundingSources.take(5).forEach { source -> TextButton(onClick = { defaultUriHandler.openUri(source.url) }) { Text(source.title.take(35), maxLines = 1) } }
                             }
@@ -327,7 +339,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                                     onCopy = ::copy,
                                     onRegenerate = viewModel::regenerate,
                                 )
-                                is TranscriptItem.ToolActivity -> ToolActivityCard(item, viewModel::loadImage, viewModel::openArtifact)
+                                is TranscriptItem.ToolActivity -> ToolActivityCard(item, viewModel::loadImage, viewModel::openArtifact) { FridayTaskCard(it, state, viewModel) }
                                 TranscriptItem.Thinking -> ThinkingIndicator()
                             }
                         }

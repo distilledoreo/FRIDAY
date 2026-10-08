@@ -25,7 +25,8 @@ import java.time.format.DateTimeFormatter
 /** Approval controls are UI-only. Model tools can propose, never approve. */
 @Composable
 internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
-    var selected by rememberSaveable { mutableStateOf<String?>(null) }
+    var selected by rememberSaveable(state.fridayTaskId) { mutableStateOf(state.fridayTaskId) }
+    var writingPlan by rememberSaveable { mutableStateOf(false) }
     var prompt by rememberSaveable { mutableStateOf("") }
     var plan by rememberSaveable { mutableStateOf("Read public sources\nPrepare a cited report") }
     var confirming by remember { mutableStateOf<JSONObject?>(null) }
@@ -45,13 +46,34 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
         }
     }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item {
-            Text(state.agentDetail, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 16.dp))
-            Text("Tasks run after you approve their plan. Sending, submitting, logging in, buying and deleting need a separate approval.", style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = { vm.refreshAgentActivity(selected) }, enabled = !state.workspaceBusy) { Text("Refresh") }
-        }
         if (selected == null) {
             item {
+                Column(Modifier.padding(top = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    FridayComputerCard(state, vm)
+                    if (state.privacy.incognito) Text("FRIDAY isn’t available in incognito.", style = MaterialTheme.typography.bodySmall)
+                    else FridayAskBox(state, vm)
+                }
+            }
+            val groups = listOf(
+                "Needs your OK" to state.agentTasks.filter { it.optString("status") in FRIDAY_NEEDS_YOU },
+                "Working now" to state.agentTasks.filter { it.optString("status") in FRIDAY_WORKING },
+                "Scheduled" to state.agentTasks.filter { it.optString("status") == "scheduled" },
+                "Done" to state.agentTasks.filter { it.optString("status") in listOf("done", "failed", "cancelled") }.take(10),
+            )
+            if (groups.all { it.second.isEmpty() }) item {
+                Text("Nothing yet. Ask FRIDAY to look something up, compare prices, or keep an eye on something for you.", style = MaterialTheme.typography.bodyMedium)
+            }
+            groups.filter { it.second.isNotEmpty() }.forEach { (title, tasks) ->
+                item(key = "group-$title") { Text(title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp)) }
+                items(tasks, key = { "$title-${it.getString("id")}" }) { entry -> FridayTaskRow(entry, state) { selected = entry.getString("id") } }
+            }
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { vm.openWorkspace(WorkspaceDestination.TASKS) }) { Text("Scheduled chats") }
+                    TextButton(onClick = { writingPlan = !writingPlan }) { Text(if (writingPlan) "Hide plan editor" else "Write a plan yourself") }
+                }
+            }
+            if (writingPlan) item {
                 OutlinedTextField(prompt, { prompt = it.take(8000) }, label = { Text("What should FRIDAY work on?") }, minLines = 2, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(plan, { plan = it.take(12000) }, label = { Text("Plan · one step per line") }, minLines = 3, modifier = Modifier.fillMaxWidth())
                 Row { Text("Schedule", Modifier.weight(1f)); Switch(scheduled, { scheduled = it }) }
@@ -78,32 +100,10 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                     vm.proposeAgentTask(prompt.trim(), plan.lines().map(String::trim).filter(String::isNotBlank), if (scheduled) schedule else null, reads)
                     prompt = ""; mailScopes = emptySet(); calendarScopes = emptySet()
                 }, enabled = prompt.isNotBlank() && plan.isNotBlank() && (!scheduled || schedule != null) && mailScopes.size + calendarScopes.size <= 5 && !state.workspaceBusy) { Text("Save plan for review") }
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("All", "In progress", "Scheduled", "Done").forEach { label ->
-                        FilterChip(selected = category == label, onClick = { category = label }, label = { Text(label) })
-                    }
-                }
-            }
-            val visible = state.agentTasks.filter {
-                when (category) {
-                    "In progress" -> it.optString("status") in listOf("approved", "running")
-                    "Scheduled" -> it.optString("status") == "scheduled"
-                    "Done" -> it.optString("status") in listOf("done", "failed", "cancelled", "interrupted")
-                    else -> true
-                }
-            }
-            if (visible.isEmpty()) item { Text("No tasks here yet.") }
-            items(visible, key = { it.getString("id") }) { entry ->
-                OutlinedCard(onClick = { selected = entry.getString("id") }, modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text(entry.getJSONObject("proposal").optString("prompt"), style = MaterialTheme.typography.titleSmall)
-                        Text(agentStatus(entry.optString("status")), style = MaterialTheme.typography.bodySmall)
-                        if (entry.getJSONObject("proposal").has("schedule_origin")) Text("Scheduled run · ${agentTime(entry.optDouble("created"))}", style = MaterialTheme.typography.bodySmall)
-                    }
-                }
             }
         } else {
-            item { TextButton(onClick = { selected = null }) { Text("All activity") } }
+            item { TextButton(onClick = { selected = null }, modifier = Modifier.padding(top = 8.dp)) { Text("All of FRIDAY’s work") } }
+            task?.takeIf { it.optString("status") in FRIDAY_WORKING }?.let { item { FridayComputerCard(state, vm, it.getString("id")) } }
             task?.let { current ->
                 item {
                     val proposal = current.getJSONObject("proposal")
@@ -118,7 +118,7 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                         Text("${it.optInt("remaining")} runs left · " + if (it.optInt("remaining") > 0) "Next: ${agentTime(it.optDouble("next_run"))}" else "Waiting for the final run to finish", style = MaterialTheme.typography.bodySmall)
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (current.optString("status") == "proposed") Button(onClick = { confirming = current }, enabled = state.agentReady && !state.workspaceBusy) { Text("Review and approve") }
+                        if (current.optString("status") == "proposed") Button(onClick = { confirming = current }, enabled = state.agentReady && !state.workspaceBusy) { Text("Review and start") }
                         if (current.optString("status") in listOf("proposed", "approved", "running", "awaiting_setup", "scheduled")) OutlinedButton(onClick = { vm.cancelAgentTask(current.getString("id")) }, enabled = !state.workspaceBusy) { Text(if (proposal.has("schedule")) "Cancel schedule and active runs" else "Cancel task") }
                     }
                 }
@@ -166,9 +166,9 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
         item { Spacer(Modifier.height(24.dp)) }
     }
     confirming?.let { exact ->
-        AlertDialog(onDismissRequest = { confirming = null }, title = { Text("Approve this task?") },
-            text = { Text("${exact.getJSONObject("proposal").optJSONObject("schedule")?.let(::scheduleDescription).orEmpty()}\n\n${accountScopeDescription(exact.getJSONObject("proposal"))}\n\n${exact.getJSONObject("proposal").toString(2)}\n\nThis approved task goes to a free cloud model via OpenRouter. Selected account data is private, untrusted source material; it can appear in the saved report. Public browsing is available only when no account data scope is selected. Sending and other external actions require another exact approval.", Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) },
-            confirmButton = { TextButton(onClick = { vm.approveAgentTask(exact.getString("id"), exact.getString("fingerprint")); confirming = null }) { Text("Approve") } },
+        AlertDialog(onDismissRequest = { confirming = null }, title = { Text("Start this task?") },
+            text = { Text(plainApproval(exact.getJSONObject("proposal")), Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) },
+            confirmButton = { TextButton(onClick = { vm.approveAgentTask(exact.getString("id"), exact.getString("fingerprint")); confirming = null }) { Text("Start") } },
             dismissButton = { TextButton(onClick = { confirming = null }) { Text("Back") } })
     }
     action?.let { exact ->
@@ -203,8 +203,8 @@ private fun outgoingStatus(status: String): String = when (status) {
     else -> status
 }
 
-private fun agentStatus(status: String): String = when (status) {
-    "proposed" -> "Needs approval"
+internal fun agentStatus(status: String): String = when (status) {
+    "proposed" -> "Needs your OK"
     "approved" -> "Queued"
     "running" -> "In progress"
     "done" -> "Done"
@@ -217,7 +217,7 @@ private fun agentStatus(status: String): String = when (status) {
 }
 
 @Composable
-private fun AgentScreenshot(taskId: String, data: JSONObject, vm: ChatViewModel) {
+internal fun AgentScreenshot(taskId: String, data: JSONObject, vm: ChatViewModel) {
     val id = data.optString("id")
     var bitmap by remember(taskId, id) { mutableStateOf<android.graphics.Bitmap?>(null) }
     LaunchedEffect(taskId, id) {
@@ -227,9 +227,9 @@ private fun AgentScreenshot(taskId: String, data: JSONObject, vm: ChatViewModel)
         ?: Text("Page preview loading or unavailable", style = MaterialTheme.typography.bodySmall)
 }
 
-private fun agentTime(seconds: Double): String = Instant.ofEpochMilli((seconds * 1000).toLong()).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("EEE, MMM d · h:mm a z"))
+internal fun agentTime(seconds: Double): String = Instant.ofEpochMilli((seconds * 1000).toLong()).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("EEE, MMM d · h:mm a z"))
 
-private fun scheduleDescription(schedule: JSONObject): String {
+internal fun scheduleDescription(schedule: JSONObject): String {
     val interval = schedule.optInt("interval_seconds")
     val cadence = if (interval == 0) "One run" else "Every ${interval / 3600} hours · ${schedule.optInt("max_runs")} runs"
     return "$cadence · starts ${agentTime(schedule.optDouble("run_at"))}\nRepeats use elapsed time; daylight-saving changes can shift the local hour. Missed intervals do not run in a burst. Cancel the schedule to stop future and active runs."
@@ -292,7 +292,7 @@ private fun agentEventSummary(event: JSONObject): String {
     }.take(600)
 }
 
-private fun accountScopeDescription(proposal: JSONObject): String {
+internal fun accountScopeDescription(proposal: JSONObject): String {
     val scopes = proposal.optJSONArray("data_scopes")
     if (scopes == null || scopes.length() == 0) return "Account data: none. This task uses public sources."
     return "Private account data shared with OpenRouter/free cloud after approval:\n" + (0 until scopes.length()).joinToString("\n") { index ->

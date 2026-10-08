@@ -29,7 +29,7 @@ import java.time.*
 import java.time.format.DateTimeFormatter
 
 enum class WorkspaceDestination(val title: String) {
-    SETTINGS("Settings"), BRIEF("Daily brief"), ACCOUNTS("Accounts"), MEMORY("Memory"), ACTIVITY("Activity"), PROJECTS("Projects"), PROJECT("Project"),
+    SETTINGS("Settings"), BRIEF("Daily brief"), ACCOUNTS("Accounts"), MEMORY("Memory"), ACTIVITY("FRIDAY"), PROJECTS("Projects"), PROJECT("Project"),
     EDIT_PROJECT("Project settings"), TASKS("Tasks"), TASK("Task"), NEW_TASK("New task"),
     FILES("Library"), DATA("Data controls"), NEW_MEMORY("Add memory"), IMAGES("Images"), IMPORT_CHATGPT("Import ChatGPT"), MEMORY_REVIEW("Review memories"), MEMORY_ARCHIVE("PC archive"), MEMORY_SOURCE("Source chat"), MEMORY_CONTEXT("Recall context")
 }

@@ -102,6 +102,10 @@ data class ChatUiState(
     val agentOutgoingReady: Boolean = false,
     val agentOutgoingBusy: Boolean = false,
     val agentDetail: String = "Connecting to FRIDAY’s computer…",
+    /** Task to show when FRIDAY's screen opens; null shows her home. */
+    val fridayTaskId: String? = null,
+    /** What FRIDAY's computer is doing right now. */
+    val fridayLive: FridayLive? = null,
     val workspaceFiles: List<WorkspaceFile> = emptyList(),
     val syncConflicts: List<SyncConflict> = emptyList(),
     val briefPreferences: JSONObject? = null,
@@ -156,6 +160,9 @@ data class DraftAttachment(
     val attachment: Attachment? = null,
     val error: String? = null,
 )
+
+/** The running task's latest step and page, read from its events. */
+data class FridayLive(val taskId: String, val activity: String, val screenshotId: String?, val screenshotUrl: String?, val lastSeq: Long)
 
 data class PendingApproval(val toolName: String, val prompt: String)
 
@@ -933,7 +940,7 @@ class ChatViewModel(
         val query = pendingRecallQuery.trim()
         val grounding = com.localfirst.assistant.grounding.GroundingPrecheck
         if (_state.value.busy || _state.value.workspaceBusy || _state.value.privacy.incognito || query.isBlank() || grounding.blocksWeb(query) || grounding.privateRequest(query)) return
-        if (query.length > 7900) { _state.update { it.copy(error = "This research prompt exceeds the task limit. Use a focused public question in Activity.") }; return }
+        if (query.length > 7900) { _state.update { it.copy(error = "This research prompt exceeds the task limit. Use a focused public question.") }; return }
         proposeAgentTask("Research this public question: $query", listOf("Find primary authoritative sources", "Read relevant source passages and dates", "Check material claims, conflicting evidence and limits", "Cite supporting URLs and state uncertainty"))
         _state.update { it.copy(showWorkspace = true, workspaceDestination = WorkspaceDestination.ACTIVITY) }
     }
@@ -955,6 +962,66 @@ class ChatViewModel(
         workspace?.request("/workspace/agent/tasks/$id/approve", "POST", JSONObject().put("fingerprint", fingerprint)) ?: error("Computer unavailable.")
         loadAgentActivity(id); "Task approved."
     }
+    /** Opens FRIDAY's screen, at [taskId] when given. */
+    fun openFriday(taskId: String? = null) {
+        _state.update { it.copy(fridayTaskId = taskId) }
+        openWorkspace(WorkspaceDestination.ACTIVITY)
+    }
+
+    /** Starts a chat asking FRIDAY to take [request] on; she answers with a plan card to start. */
+    fun askFriday(request: String) {
+        val text = request.trim().take(4000)
+        if (text.isEmpty() || _state.value.busy || _state.value.workspaceBusy) return
+        viewModelScope.launch {
+            turnJob?.cancel()
+            turnJob?.join()
+            clearIncognito()
+            resetToNewChat()
+            _state.update { it.copy(projectId = null, showWorkspace = false, imageMode = false, draft = "Take this on with your computer: $text") }
+            send()
+        }
+    }
+
+    private var fridayPoll: Job? = null
+
+    /** Refreshes FRIDAY's tasks and what her computer is doing, quietly in the background. */
+    fun pollFriday() {
+        val client = workspace ?: return
+        if (fridayPoll?.isActive == true || _state.value.privacy.incognito) return
+        fridayPoll = viewModelScope.launch {
+            try {
+                val health = JSONObject(client.request("/workspace/agent/health"))
+                val tasks = JSONArray(client.request("/workspace/agent/tasks")).let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
+                val running = tasks.firstOrNull { it.optString("status") == "running" }
+                val live = running?.let { task ->
+                    val id = task.getString("id")
+                    val previous = _state.value.fridayLive?.takeIf { it.taskId == id }
+                    var after = previous?.lastSeq ?: 0L
+                    var activity = previous?.activity ?: "Getting started"
+                    var shotId = previous?.screenshotId
+                    var shotUrl = previous?.screenshotUrl
+                    while (true) {
+                        val events = JSONArray(client.request("/workspace/agent/tasks/$id/events?limit=200&after=$after"))
+                        for (i in 0 until events.length()) {
+                            val event = events.getJSONObject(i)
+                            after = event.getLong("seq")
+                            fridayActivity(event)?.let { activity = it }
+                            if (event.optString("kind") == "screenshot") event.optJSONObject("data")?.let { shotId = it.optString("id"); shotUrl = it.optString("url") }
+                        }
+                        if (events.length() < 200) break
+                    }
+                    FridayLive(id, activity, shotId, shotUrl, after)
+                }
+                _state.update { it.copy(
+                    agentReady = health.optBoolean("ready"), agentDetail = health.optString("detail"),
+                    agentOutgoingReady = health.optBoolean("outgoing_ready"), agentOutgoingBusy = health.optInt("active_outgoing") > 0,
+                    agentTasks = tasks, fridayLive = live,
+                ) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { /* The PC may be asleep; the next poll tries again. */ }
+        }
+    }
+
     fun cancelAgentTask(id: String) = workspaceAction {
         workspace?.request("/workspace/agent/tasks/$id/cancel", "POST") ?: error("Computer unavailable.")
         loadAgentActivity(id); "Task cancelled."
