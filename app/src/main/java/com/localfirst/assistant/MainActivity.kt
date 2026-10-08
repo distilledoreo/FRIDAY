@@ -37,7 +37,7 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         // Android blocks the mic for apps in the background.
-        if (!isChangingConfigurations) viewModel.pauseVoice()
+        if (!isChangingConfigurations) { viewModel.pauseVoice(); viewModel.onAppLeft() }
     }
 
     override fun onDestroy() {

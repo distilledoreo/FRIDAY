@@ -181,10 +181,10 @@ class MemoryStore:
         with self.db() as db:
             db.execute('UPDATE suggestions SET status=? WHERE id=?',('accepted' if accept else 'rejected',sid))
             if not accept:db.execute('INSERT OR IGNORE INTO rejected VALUES(?)',(row['fingerprint'],))
-    def context(self,query,scope='',current_id='',include_situations=True):
+    def context(self,query,scope='',current_id='',include_situations=True,include_history=True):
         settings=self.settings();tokens=terms(query);match=' OR '.join('"'+t+'"' for t in tokens)
         recalled=[];paragraphs=[]
-        semantic=self.semantic(query,scope,current_id) if tokens and self.encoder else {'memories':[],'history':[]}
+        semantic=self.semantic(query,scope,current_id,include_history) if tokens and self.encoder else {'memories':[],'history':[]}
         with self.db() as db:
             if settings['use_memories']:
                 rows=[]
@@ -198,7 +198,7 @@ class MemoryStore:
                     if row['id'] in seen:continue
                     seen.add(row['id']);paragraphs.append(f"Approved memory [{row['id']}]: {row['text']}")
                     recalled.append({'id':row['id'],'kind':'memory','title':row['source_title'] or row['category'],'excerpt':row['text'][:500]})
-            if settings['use_history'] and match:
+            if include_history and settings['use_history'] and match:
                 rows=db.execute("SELECT s.id,s.title,s.origin,s.updated,snippet(history_fts,2,'','',' … ',60) excerpt FROM history_fts f JOIN sources s ON s.id=f.id WHERE history_fts MATCH ? AND s.excluded=0 AND s.id<>? AND (s.scope='' OR s.scope=?) ORDER BY bm25(history_fts) LIMIT 4",(match,current_id,scope))
                 history=semantic['history']+list(rows)
                 seen=set()
@@ -221,7 +221,7 @@ class MemoryStore:
         with self.db() as db:
             for row,vector in zip(rows,vectors):db.execute('UPDATE chunks SET vector=? WHERE id=? AND text=?',(vector.tobytes(),row['id'],row['text']))
         return True
-    def semantic(self,query,scope,current_id):
+    def semantic(self,query,scope,current_id,include_history=True):
         import numpy as np
         vector=self.encoder.encode([query])[0]; memories=[];history=[]
         settings=self.settings()
@@ -231,7 +231,7 @@ class MemoryStore:
                 for row in rows:
                     score=float(np.frombuffer(row['vector'],dtype=np.float32)@vector)
                     if score>=0.45:memories.append((score,row['id']))
-            if settings['use_history']:
+            if include_history and settings['use_history']:
                 cursor=db.execute("SELECT c.source_id,c.text,c.vector,s.title,s.origin,s.updated FROM chunks c JOIN sources s ON s.id=c.source_id WHERE c.vector IS NOT NULL AND s.excluded=0 AND s.id<>? AND (s.scope='' OR s.scope=?) ORDER BY s.updated DESC LIMIT 100000",(current_id,scope))
                 best={}
                 while rows:=cursor.fetchmany(2048):

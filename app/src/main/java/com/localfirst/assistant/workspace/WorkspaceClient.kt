@@ -23,6 +23,42 @@ import org.json.JSONObject
 /** Uses the existing authenticated computer endpoint; no connected-service accounts. */
 class WorkspaceClient(private val context: Context, private val settings: () -> ServerSettings) : WorkspaceGateway {
     var memoryScope: String = ""
+    var incognito: Boolean = false
+    var freshSlate: Boolean = false
+    private var ephemeralId: String? = null
+    fun useEphemeralSession(id: String?) { ephemeralId = id }
+    private val ephemeralLock = kotlinx.coroutines.sync.Mutex()
+    suspend fun ephemeralSession(): String = withContext(Dispatchers.IO) {
+        ephemeralLock.lock()
+        try {
+            ephemeralId?.let { return@withContext it }
+            val s = settings()
+            val (code, bytes) = desktopRequest(s.searchBaseUrl, s.searchApiKey, "POST", "/workspace/incognito", "{}".toByteArray(), "application/json", timeoutMs = 15000)
+            require(code == 200) { "The computer does not support incognito files yet (HTTP $code)." }
+            return@withContext JSONObject(bytes.toString(Charsets.UTF_8)).getString("id").also { ephemeralId = it }
+        } finally { ephemeralLock.unlock() }
+    }
+    private suspend fun privatePath(path: String): String {
+        if (!incognito) return path
+        if (path.startsWith("/workspace/images") && path != "/workspace/images/health" || path.startsWith("/workspace/files") || path == "/workspace/create-file") {
+            return "/workspace/incognito/${ephemeralSession()}" + path.removePrefix("/workspace")
+        }
+        if (path.startsWith("/workspace/") && !(path == "/workspace/foreground" || path == "/workspace/memory/context" || path.startsWith("/workspace/memory/tool-search?kind=memory") && !freshSlate || path == "/workspace/images/health")) {
+            error("This workspace action is disabled in incognito; it would save data.")
+        }
+        return path
+    }
+    suspend fun endIncognito() = withContext(Dispatchers.IO) {
+        val id = ephemeralId
+        ephemeralId = null; incognito = false; freshSlate = false
+        try {
+            if (id != null) {
+                val s = settings()
+                val (code, _) = desktopRequest(s.searchBaseUrl, s.searchApiKey, "DELETE", "/workspace/incognito/$id", timeoutMs = 120000)
+                require(code in 200..299 || code == 410) { "Incognito cleanup will retry after expiry on the computer." }
+            }
+        } finally { File(context.cacheDir, "incognito").deleteRecursively() }
+    }
     val imageSettings = ImageSettingsStore(context)
     val imageStatus = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
     override suspend fun toolRequest(path: String, method: String, body: String?): String {
@@ -40,7 +76,7 @@ class WorkspaceClient(private val context: Context, private val settings: () -> 
     val serverIdentity: String get() = settings().searchBaseUrl.trim().trimEnd('/')
     suspend fun request(path: String, method: String = "GET", body: JSONObject? = null, timeoutMs: Int = 120000): String = withContext(Dispatchers.IO) {
         val s = settings()
-        val (code, bytes) = desktopRequest(s.searchBaseUrl, s.searchApiKey, method, path,
+        val (code, bytes) = desktopRequest(s.searchBaseUrl, s.searchApiKey, method, privatePath(path),
             body?.toString()?.toByteArray(), "application/json", timeoutMs = timeoutMs)
         if (code !in 200..299) throw IOException("Computer returned HTTP $code: ${bytes.toString(Charsets.UTF_8).take(500)}")
         if (path == "/workspace/jobs" && method == "POST") TaskNotifications.enable(context)
@@ -78,7 +114,7 @@ class WorkspaceClient(private val context: Context, private val settings: () -> 
     suspend fun upload(file: File, name: String = file.name): String = withContext(Dispatchers.IO) {
         require(file.length() <= 25 * 1024 * 1024) { "File exceeds 25 MB." }
         val s = settings()
-        val (code, bytes) = desktopRequest(s.searchBaseUrl, s.searchApiKey, "POST", "/workspace/files",
+        val (code, bytes) = desktopRequest(s.searchBaseUrl, s.searchApiKey, "POST", privatePath("/workspace/files"),
             file.readBytes(), java.net.URLConnection.guessContentTypeFromName(file.name) ?: "application/octet-stream", mapOf("X-File-Name" to java.net.URLEncoder.encode(name, "UTF-8")), 120000)
         if (code != 200) throw IOException("File upload failed (HTTP $code).")
         JSONObject(bytes.toString(Charsets.UTF_8)).getString("id")
@@ -87,7 +123,7 @@ class WorkspaceClient(private val context: Context, private val settings: () -> 
     suspend fun download(id: String, target: File): File = withContext(Dispatchers.IO) {
         require(id.matches(Regex("[a-f0-9]{32}"))) { "Invalid file id." }
         val s = settings()
-        val (code, bytes) = desktopRequest(s.searchBaseUrl, s.searchApiKey, "GET", "/workspace/files/$id", timeoutMs = 120000)
+        val (code, bytes) = desktopRequest(s.searchBaseUrl, s.searchApiKey, "GET", privatePath("/workspace/files/$id"), timeoutMs = 120000)
         if (code != 200) throw IOException("Download failed (HTTP $code).")
         target.parentFile?.mkdirs()
         target.writeBytes(bytes)
@@ -131,7 +167,7 @@ class WorkspaceClient(private val context: Context, private val settings: () -> 
         val info = (0 until metadata.length()).map { metadata.getJSONObject(it) }.firstOrNull { it.getString("id") == id }
             ?: throw IOException("That file is no longer available.")
         val name = File(info.getString("name")).name
-        val file = download(id, File(context.cacheDir, "downloads/$id/$name"))
+        val file = download(id, File(context.cacheDir, if (incognito) "incognito/downloads/$id/$name" else "downloads/$id/$name"))
         val content = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
         context.startActivity(Intent.createChooser(Intent(Intent.ACTION_VIEW).setDataAndType(content, info.getString("mime"))
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "Open file").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

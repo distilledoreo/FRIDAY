@@ -32,7 +32,7 @@ def enable(app, auth, workspace, raw_llm, gate, config_path):
 
     @router.get('/health')
     async def health():
-        return {'phase':gate.phase, 'error':gate.error, 'active_chat_requests':gate.readers, 'model':'Qwen Image 2.1'}
+        return {'phase':gate.phase, 'error':gate.error, 'active_chat_requests':gate.readers, 'maintenance_paused':gate.maintenance_paused(), 'model':'Qwen Image 2.1'}
 
     @router.get('')
     async def jobs():
@@ -67,4 +67,8 @@ def enable(app, auth, workspace, raw_llm, gate, config_path):
         await manager.stop()
 
     app.include_router(router)
+    from .foreground import enable as enable_foreground
+    enable_foreground(app, auth, gate, workspace.root)
+    from .incognito import enable as enable_incognito
+    manager.incognito = enable_incognito(app, auth, workspace, manager, ImageRequest)
     return manager

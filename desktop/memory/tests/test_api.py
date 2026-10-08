@@ -39,3 +39,11 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_legacy_migration_deduplicates(self):
         body={'memories':[{'text':'I prefer concise answers'},{'text':'I prefer concise answers'}]}
         r=await self.client.post('/workspace/memory/legacy',json=body);self.assertEqual(r.status_code,200);self.assertEqual(self.store.summary()['memories'],1)
+    async def test_incognito_recall_is_read_only_and_excludes_history(self):
+        await self.client.post('/workspace/memory/memories',json={'text':'I prefer concise answers','category':'preference'})
+        await self.client.post('/workspace/memory/chats',json={'id':'c'*32,'title':'Concise history','messages':[{'role':'user','content':'I prefer concise chat history'}]})
+        before=self.store.summary()
+        result=(await self.client.post('/workspace/memory/context',json={'query':'concise','incognito':True})).json()
+        self.assertTrue(result['sources']);self.assertTrue(all(x['kind']=='memory' for x in result['sources']))
+        after=self.store.summary()
+        self.assertEqual(before['sources'],after['sources']);self.assertEqual(before['memories'],after['memories']);self.assertEqual(before['suggestions'],after['suggestions'])

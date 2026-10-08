@@ -24,6 +24,7 @@ class Recall(BaseModel):
     query: str = Field(default='',max_length=4000)
     scope: str = Field(default='',max_length=100)
     current_id: str = Field(default='',max_length=100)
+    incognito: bool = False
 class Commit(BaseModel):
     extract: bool = True
 class Review(BaseModel):
@@ -86,7 +87,7 @@ def enable(app,auth,root,llm,gate):
             except (ValueError,KeyError,TypeError):skipped+=1
         return {'copied':copied,'skipped':skipped}
     @router.post('/context')
-    def context(body:Recall):return store.context(body.query,body.scope,body.current_id)
+    def context(body:Recall):return store.context(body.query,body.scope,body.current_id,include_situations=not body.incognito,include_history=not body.incognito)
     @router.get('/tool-search')
     def tool_search(q:str='',kind:str='memory',scope:str=''):
         if kind not in ('memory','history'):raise HTTPException(400,'Unknown search kind')
@@ -147,7 +148,7 @@ def enable(app,auth,root,llm,gate):
 
     async def extract_loop():
         while True:
-            if gate.readers or gate.exclusive:
+            if not gate.background_allowed():
                 await asyncio.sleep(3);continue
             try:
                 sid=await asyncio.to_thread(store.next_extraction)

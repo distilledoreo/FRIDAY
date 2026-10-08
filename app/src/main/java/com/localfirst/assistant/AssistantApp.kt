@@ -17,6 +17,7 @@ class AssistantApp : Application(), ViewModelStoreOwner {
 
     override fun onCreate() {
         super.onCreate()
+        java.io.File(cacheDir, "incognito").deleteRecursively()
         CarMessaging.watch(this) { ServerSettingsStore(this).load().androidAuto }
     }
 }

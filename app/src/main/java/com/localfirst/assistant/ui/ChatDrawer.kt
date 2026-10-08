@@ -54,6 +54,7 @@ internal fun ChatDrawer(
     conversations: List<ConversationSummary>,
     currentId: String?,
     onNewChat: () -> Unit,
+    onIncognito: () -> Unit,
     onOpen: (String) -> Unit,
     onRename: (String, String) -> Unit,
     onDelete: (String) -> Unit,
@@ -87,6 +88,7 @@ internal fun ChatDrawer(
             LazyColumn(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
                 if (query.isBlank()) {
                     item { NavigationDrawerItem(label = { Text("New chat") }, icon = { Icon(Icons.Filled.Create, null) }, selected = false, onClick = onNewChat) }
+                    item { NavigationDrawerItem(label = { Text("Incognito · won’t be saved") }, icon = { Icon(Icons.Filled.Create, null) }, selected = false, onClick = onIncognito) }
                     item { NavigationDrawerItem(label = { Text("Library") }, icon = { Icon(Icons.AutoMirrored.Filled.List, null) }, selected = false, onClick = onFiles) }
                     item { NavigationDrawerItem(label = { Text("Images") }, icon = { Icon(Icons.Filled.Create, null) }, selected = false, onClick = onImages) }
                     item { NavigationDrawerItem(label = { Text("Tasks") }, icon = { Icon(Icons.Filled.DateRange, null) }, selected = false, onClick = onTasks) }

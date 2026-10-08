@@ -41,7 +41,8 @@ class AttachmentImporter(context: Context) {
         }
     }.getOrNull() ?: uri.lastPathSegment?.substringAfterLast('/') ?: "file"
 
-    suspend fun importImage(uri: Uri, name: String = displayName(uri)): Attachment = withContext(Dispatchers.IO) {
+    suspend fun importImage(uri: Uri, name: String = displayName(uri), incognito: Boolean = false, ephemeralId: String? = null): Attachment = withContext(Dispatchers.IO) {
+        val dir = if (incognito) File(app.cacheDir, "incognito/attachments").apply { mkdirs() } else this@AttachmentImporter.dir
         val id = UUID.randomUUID().toString()
         val out = File(dir, "$id.jpg")
         val bitmap = decodeScaled(uri) ?: throw IOException("That image couldn't be opened.")
@@ -50,11 +51,13 @@ class AttachmentImporter(context: Context) {
         val workspace = com.localfirst.assistant.workspace.WorkspaceClient(app) {
             com.localfirst.assistant.settings.ServerSettingsStore(app).load()
         }
+        workspace.incognito = incognito
+        workspace.useEphemeralSession(ephemeralId)
         val remote = runCatching { workspace.upload(out, name) }.getOrNull()
         Attachment(id = id, kind = AttachmentKind.IMAGE, name = name, mimeType = "image/jpeg", path = out.absolutePath, remoteFileId = remote)
     }
 
-    suspend fun importDocument(uri: Uri, baseUrl: String, apiKey: String?): Attachment = withContext(Dispatchers.IO) {
+    suspend fun importDocument(uri: Uri, baseUrl: String, apiKey: String?, incognito: Boolean = false, ephemeralId: String? = null): Attachment = withContext(Dispatchers.IO) {
         if (baseUrl.isBlank()) throw IOException("Set the search service address to read documents on your computer.")
         val name = displayName(uri)
         val mime = app.contentResolver.getType(uri) ?: "application/octet-stream"
@@ -72,11 +75,14 @@ class AttachmentImporter(context: Context) {
         } catch (e: IOException) {
             throw IOException("Couldn't reach your computer to read $name.")
         }
+        val dir = if (incognito) File(app.cacheDir, "incognito/attachments").apply { mkdirs() } else this@AttachmentImporter.dir
         val original = File(dir, "${UUID.randomUUID()}-${name.replace(Regex("[^A-Za-z0-9._-]"), "_")}")
         original.writeBytes(bytes)
         val workspace = com.localfirst.assistant.workspace.WorkspaceClient(app) {
             com.localfirst.assistant.settings.ServerSettingsStore(app).load()
         }
+        workspace.incognito = incognito
+        workspace.useEphemeralSession(ephemeralId)
         val remoteId = runCatching { workspace.upload(original, name) }.getOrNull()
         val json = runCatching { JSONObject(String(body)) }.getOrNull()
         if (code != 200 || json == null) {

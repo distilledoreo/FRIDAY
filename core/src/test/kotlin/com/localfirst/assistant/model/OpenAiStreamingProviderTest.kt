@@ -20,6 +20,27 @@ import org.junit.Test
 
 class OpenAiStreamingProviderTest {
     @Test
+    fun incognitoHeaderAppliesToPrivateRequestsOnly() = runBlocking {
+        val header = AtomicReference<String?>()
+        val server = localServer { exchange ->
+            header.set(exchange.requestHeaders.getFirst("X-Assistant-Incognito"))
+            val bytes = """{"choices":[{"message":{"content":"fixture"}}]}""".toByteArray()
+            exchange.responseHeaders.add("Content-Type", "application/json")
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        try {
+            val privateProvider = provider(server)
+            privateProvider.incognito = true
+            privateProvider.sendConversation(listOf(Message.User("Private fixture")), emptyList())
+            assertEquals("1", header.get())
+            privateProvider.incognito = false
+            privateProvider.sendConversation(listOf(Message.User("Ordinary fixture")), emptyList())
+            assertEquals(null, header.get())
+        } finally { server.stop(0) }
+    }
+
+    @Test
     fun streamsDeltasAndAsksForAnEventStream() = runBlocking {
         val body = AtomicReference("")
         val accept = AtomicReference("")

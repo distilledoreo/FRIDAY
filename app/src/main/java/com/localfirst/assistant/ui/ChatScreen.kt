@@ -16,7 +16,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.FileProvider
 import android.net.Uri
 import java.io.File
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.TextButton
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -70,12 +75,15 @@ fun ChatScreen(viewModel: ChatViewModel) {
     var imageOptions by remember { mutableStateOf(false) }
     var cameraPath by rememberSaveable { mutableStateOf<String?>(null) }
     val photos = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        viewModel.setAttachmentPickerOpen(false)
         viewModel.addAttachments(uris)
     }
     val files = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        viewModel.setAttachmentPickerOpen(false)
         viewModel.addAttachments(uris)
     }
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { saved ->
+        viewModel.setAttachmentPickerOpen(false)
         cameraPath?.let { path ->
             val photo = File(path)
             if (saved) {
@@ -89,6 +97,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
     }
     val sharingScreen by ScreenContextService.active.collectAsState()
     val screenCapture = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        viewModel.setAttachmentPickerOpen(false)
         if (result.resultCode == Activity.RESULT_OK) result.data?.let { ScreenContextService.start(context, it) }
     }
     val state by viewModel.state.collectAsState()
@@ -138,6 +147,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     onImages = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.IMAGES) } },
                     currentId = state.conversationId,
                     onNewChat = { closeDrawerThen(viewModel::newChat) },
+                    onIncognito = { closeDrawerThen { viewModel.startIncognito() } },
                     onOpen = { id -> closeDrawerThen { viewModel.openConversation(id) } },
                     onRename = viewModel::renameConversation,
                     onDelete = viewModel::deleteConversation,
@@ -158,7 +168,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                         title = {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(
-                                    text = state.knowledge.projects.firstOrNull { it.id == state.projectId }?.name ?: if (state.messages.isEmpty()) "Local Assistant" else state.title,
+                                    text = if (state.privacy.incognito) "Incognito · won’t be saved" else state.knowledge.projects.firstOrNull { it.id == state.projectId }?.name ?: if (state.messages.isEmpty()) "Local Assistant" else state.title,
                                     style = MaterialTheme.typography.titleMedium,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
@@ -174,6 +184,8 @@ fun ChatScreen(viewModel: ChatViewModel) {
                         },
                         actions = {
                             MoreActions(buildList {
+                                add("Start incognito chat" to { viewModel.startIncognito() })
+                                if (state.privacy.incognito) add((if (state.privacy.freshSlate) "Use saved memories (new incognito chat)" else "Fresh slate (new incognito chat)") to { viewModel.startIncognito(!state.privacy.freshSlate) })
                                 add((if (state.projectId == null) "Choose project" else "Project details") to {
                                     state.projectId?.let(viewModel::openProject) ?: viewModel.openWorkspace(WorkspaceDestination.PROJECTS)
                                 })
@@ -187,7 +199,21 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     )
                 },
                 bottomBar = {
-                    Box {
+                    Column {
+                        state.groundingStatus?.let { status ->
+                            Text(status, Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelSmall)
+                            if (state.groundingSources.isNotEmpty()) androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).horizontalScroll(rememberScrollState())) {
+                                state.groundingSources.take(5).forEach { source -> TextButton(onClick = { defaultUriHandler.openUri(source.url) }) { Text(source.title.take(35), maxLines = 1) } }
+                            }
+                        }
+                        if (state.privacy.incognito) {
+                            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("Won’t be saved · Fresh slate", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
+                                androidx.compose.material3.Switch(state.privacy.freshSlate, { viewModel.startIncognito(it) }, enabled = !state.busy && !state.workspaceBusy)
+                            }
+                            Text(if (state.privacy.freshSlate) "No memories. Ends when you leave the app or start another chat." else "Saved memories are available. Ends when you leave the app or start another chat.", Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelSmall)
+                        }
+                        Box {
                         Composer(
                             draft = state.draft,
                             busy = state.busy,
@@ -217,31 +243,36 @@ fun ChatScreen(viewModel: ChatViewModel) {
                             })
                             DropdownMenuItem(text = { Text("Photos") }, onClick = {
                                 attachmentMenu = false
+                                viewModel.setAttachmentPickerOpen(true)
                                 photos.launch(arrayOf("image/*"))
                             })
                             DropdownMenuItem(text = { Text("Take photo") }, onClick = {
                                 attachmentMenu = false
                                 try {
-                                    val dir = File(context.cacheDir, "camera").apply { mkdirs() }
+                                    val dir = File(context.cacheDir, if (state.privacy.incognito) "incognito/camera" else "camera").apply { mkdirs() }
                                     val photo = File.createTempFile("photo-", ".jpg", dir)
                                     cameraPath = photo.absolutePath
+                                    viewModel.setAttachmentPickerOpen(true)
                                     camera.launch(FileProvider.getUriForFile(context, "${context.packageName}.files", photo))
                                 } catch (e: Exception) {
                                     cameraPath?.let { File(it).delete() }
                                     cameraPath = null
+                                    viewModel.setAttachmentPickerOpen(false)
                                     Toast.makeText(context, "Couldn't open a camera app.", Toast.LENGTH_SHORT).show()
                                 }
                             })
                             DropdownMenuItem(text = { Text(if (sharingScreen) "Stop screen context" else "Share screen context") }, onClick = {
                                 attachmentMenu = false
                                 if (sharingScreen) ScreenContextService.stop(context)
-                                else screenCapture.launch(context.getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent())
+                                else { viewModel.setAttachmentPickerOpen(true); screenCapture.launch(context.getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent()) }
                             })
                             DropdownMenuItem(text = { Text("Files") }, onClick = {
                                 attachmentMenu = false
+                                viewModel.setAttachmentPickerOpen(true)
                                 files.launch(arrayOf("*/*"))
                             })
                         }
+                    }
                     }
                 },
             ) { padding ->

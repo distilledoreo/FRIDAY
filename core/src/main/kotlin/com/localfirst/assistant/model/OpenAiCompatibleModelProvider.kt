@@ -26,6 +26,7 @@ import kotlinx.serialization.json.JsonElement
 class OpenAiCompatibleModelProvider(
     private val config: OpenAiCompatibleConfig,
 ) : ModelProvider {
+    @Volatile var incognito: Boolean = false
     override suspend fun sendConversation(
         messages: List<Message>,
         tools: List<ToolDefinition>,
@@ -182,6 +183,7 @@ class OpenAiCompatibleModelProvider(
             readTimeout = config.readTimeoutMillis
             doOutput = true
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            if (incognito) setRequestProperty("X-Assistant-Incognito", "1")
             setRequestProperty("Accept", if (stream) "text/event-stream" else "application/json")
             val key = config.apiKey?.trim().orEmpty()
             if (key.isNotEmpty()) {

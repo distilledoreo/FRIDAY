@@ -33,6 +33,14 @@ class GpuGate:
         self.exclusive = False
         self.phase = 'chat_ready'
         self.error = None
+        self.foreground = {}
+        self.maintenance_file = None
+
+    def maintenance_paused(self):
+        return bool(self.maintenance_file and self.maintenance_file.exists())
+
+    def background_allowed(self):
+        return not self.exclusive and self.readers == 0 and not self.maintenance_paused() and not any(deadline > time.monotonic() for deadline in self.foreground.values())
 
     async def acquire_chat(self):
         async with self.condition:
@@ -84,6 +92,10 @@ class GatedClient:
     async def wait_send(self, request):
         deadline = time.monotonic() + 600
         while True:
+            if not self.gate.background_allowed():
+                if self.gate.phase == "recovery_failed":raise HTTPException(503, 'Chat recovery failed')
+                await asyncio.sleep(.25)
+                continue
             try:
                 return await self.send(request)
             except HTTPException as error:
@@ -280,6 +292,7 @@ class ImageManager:
         return job
 
     def create(self, request):
+        if self.gate.maintenance_paused():raise HTTPException(503, "Image generation is paused during model experiments. Try again when tests finish.")
         try:
             validate(request)
             for file_id in request.get('reference_file_ids', []):
@@ -391,7 +404,7 @@ class ImageManager:
     async def worker(self):
         while not self.stopping:
             job = next((j for j in reversed(self.jobs()) if j['status'] == 'queued'), None)
-            if job and self.gate.phase != 'recovery_failed':
+            if job and self.gate.phase != 'recovery_failed' and not self.gate.maintenance_paused():
                 self.current = asyncio.create_task(self.execute(job))
                 try:
                     await self.current
