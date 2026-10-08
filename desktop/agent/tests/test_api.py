@@ -42,6 +42,7 @@ class AgentApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 401)
         await self.proposal()
         self.assertEqual(self.calls, [])
+        self.assertIsNone((await self.client.get('/workspace/agent/tasks/' + (await self.proposal())['id'] + '/report')).json()['result'])
 
     async def test_approval_executes_once_and_result_is_in_paged_activity(self):
         task = await self.proposal()
@@ -54,7 +55,13 @@ class AgentApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.calls), 1)
         self.release.set()
         await asyncio.sleep(.01)
-        self.assertEqual((await self.client.get(path)).json()['status'], 'done')
+        detail = (await self.client.get(path)).json()
+        self.assertEqual(detail['status'], 'done')
+        self.assertEqual(detail['result']['text'], 'Finished')
+        report = (await self.client.get(path + '/report')).json()
+        self.assertEqual(report['result']['text'], 'Finished')
+        self.assertEqual((await self.client.get(path + '/report', headers={'Authorization': ''})).status_code, 401)
+        self.assertEqual((await self.client.get('/workspace/agent/tasks/unknown/report')).status_code, 409)
         events = (await self.client.get(path + '/events')).json()
         self.assertIn('result', [event['kind'] for event in events])
         self.assertEqual((await self.client.get(path + '/events', params={'after': events[-1]['seq']})).json(), [])

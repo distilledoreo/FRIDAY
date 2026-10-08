@@ -9,6 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 import time
 
@@ -36,6 +37,11 @@ def main():
             raise RuntimeError('Gateway must be idle with background inference paused')
         if not (server / 'workspace-data/background-inference.paused').is_file():
             raise RuntimeError('Persistent GPU maintenance pause is required')
+        agent_db = server / 'workspace-data/agent/agent.sqlite'
+        if agent_db.exists():
+            with sqlite3.connect(f'file:{agent_db}?mode=ro', uri=True) as db:
+                if db.execute("SELECT COUNT(*) FROM tasks WHERE status IN ('approved','running')").fetchone()[0]:
+                    raise RuntimeError('Agent work is active; defer deployment until it finishes')
         # Validate the pinned image and credential configuration before gateway edits.
         from .engine import OpenCodeEngine, docker_command
         engine = OpenCodeEngine(args.image, lambda: None)

@@ -12,7 +12,7 @@ Goal: deliver the user's October 8 plan while preserving Claude's existing memor
 - CPU-only grounding pre-check searches before replies involving recent/current, date-sensitive, price/weather, officeholders, regulations, health and recommendation cues. Respect explicit no-search requests and text transformations. Supply labeled untrusted evidence and source links, report verification failure without fabricated citations. This English trigger is conservative, not complete semantic understanding.
 - Image quality testing deferred until GPU is available. Existing dimensions/step caps and 15-minute timeout remain intact; no speculative quality change without a render comparison.
 
-## Current additional delivery: 0.7.1
+## Current additional delivery: 0.7.2
 
 The approved cloud agent is deployed on the PC. Activity reviews plans, requests explicit approval, polls running tasks, pages events, displays authenticated static source screenshots, and supports cancellation. FRIDAY branding/persona now spans chat, voice and agent. Opening Activity refreshes its state directly, including read-only updates during a chat.
 
@@ -20,7 +20,7 @@ OpenCode runs in a pinned Docker container with four CPU threads, 8 GB RAM, no G
 
 33 agent checks, including real Docker/OpenCode/Chromium tests, passed. A live approved synthetic public-page task produced a report and screenshot through the free cloud route. Android build, lint and all 129 tests passed for the final 0.7.1 release. No GPU/local model inference was used. API deployment preserved Claude's changes and the maintenance pause.
 
-Sending, submitting, logging in, buying and deleting are deliberately unavailable until separate review/vault/executors are implemented. Proposed actions remain pending setup. Scheduled tasks, completion notifications/chat report handoff, richer readable audit records and physical phone verification remain to finish Phase 3. The broader roadmap below remains active.
+Sending, submitting, logging in, buying and deleting are deliberately unavailable until separate review/vault/executors are implemented. Proposed actions remain pending setup. Completion notifications open Activity using Android’s background polling, and a dedicated authenticated report endpoint feeds a read-only chat tool. Discuss in chat prepares a draft and preserves existing drafts/attachments; it never starts inference automatically. Activity shows reports and readable event summaries with optional raw details. The final 0.7.2 build/lint and 130 Android tests pass; seven changed API checks and the live authenticated report check pass. Deployment now refuses active agent work as well as active chat. Scheduled tasks, full large-event audit preservation and physical phone verification remain to finish Phase 3. The broader roadmap below remains active.
 
 ## Then: persona, credentials and automation
 

@@ -50,6 +50,7 @@ class ChatPrivacyTest {
         assertFalse(privacy.copy(freshSlate = true).recall)
         assertFalse(privacy.allowsTool("propose_agent_task"))
         assertFalse(privacy.allowsTool("list_agent_activity"))
+        assertFalse(privacy.allowsTool("get_agent_report"))
     }
     @Test fun normalChatStillCheckpoints() = runBlocking {
         var writes = 0; ChatPrivacy().checkpoint { writes++ }; assertEquals(1, writes)

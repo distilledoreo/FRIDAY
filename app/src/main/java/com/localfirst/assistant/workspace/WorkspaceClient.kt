@@ -79,7 +79,7 @@ class WorkspaceClient(private val context: Context, private val settings: () -> 
         val (code, bytes) = desktopRequest(s.searchBaseUrl, s.searchApiKey, method, privatePath(path),
             body?.toString()?.toByteArray(), "application/json", timeoutMs = timeoutMs)
         if (code !in 200..299) throw IOException("Computer returned HTTP $code: ${bytes.toString(Charsets.UTF_8).take(500)}")
-        if (path == "/workspace/jobs" && method == "POST") TaskNotifications.enable(context)
+        if (method == "POST" && (path == "/workspace/jobs" || path.matches(Regex("/workspace/agent/tasks/[a-f0-9]{32}/approve")))) TaskNotifications.enable(context)
         bytes.toString(Charsets.UTF_8)
     }
 

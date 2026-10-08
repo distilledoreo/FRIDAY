@@ -746,6 +746,13 @@ class ChatViewModel(
         ) }
     }
     fun refreshAgentActivity(taskId: String? = null, after: Long? = null) = workspaceAction(allowDuringChat = true) { loadAgentActivity(taskId, after); "Activity updated." }
+    fun discussAgentReport(id: String) {
+        if (_state.value.privacy.incognito || _state.value.busy || !id.matches(Regex("[a-f0-9]{32}"))) return
+        if (_state.value.draft.isNotBlank() || _state.value.draftAttachments.isNotEmpty()) {
+            _state.update { it.copy(error = "Send or clear your draft before opening a report in chat.") }; return
+        }
+        _state.update { it.copy(showWorkspace = false, draft = "Read the report for FRIDAY task $id using get_agent_report, then help me discuss its findings.") }
+    }
     fun proposeAgentTask(prompt: String, plan: List<String>) = workspaceAction {
         val client = workspace ?: error("Computer unavailable.")
         client.request("/workspace/agent/tasks", "POST", JSONObject().put("prompt", prompt).put("plan", JSONArray(plan)))

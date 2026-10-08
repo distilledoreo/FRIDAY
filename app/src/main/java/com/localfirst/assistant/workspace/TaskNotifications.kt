@@ -43,7 +43,7 @@ class TaskPollService : JobService() {
         running = scope.launch {
             try {
                 val client = WorkspaceClient(applicationContext) { ServerSettingsStore(applicationContext).load() }
-                val tasks = JSONArray(client.request("/workspace/jobs"))
+                val tasks = runCatching { JSONArray(client.request("/workspace/jobs")) }.getOrElse { if (it is CancellationException) throw it; JSONArray() }
                 val prefs = getSharedPreferences("task-notifications", Context.MODE_PRIVATE)
                 val manager = getSystemService(NotificationManager::class.java)
                 manager.createNotificationChannel(NotificationChannel(TaskNotifications.CHANNEL, "Assistant task results", NotificationManager.IMPORTANCE_DEFAULT))
@@ -63,6 +63,33 @@ class TaskPollService : JobService() {
                             runCatching { manager.notify(task.id.hashCode(), notification) }
                         }
                         prefs.edit().putString(task.id, signature).apply()
+                    }
+                }
+                if (manager.areNotificationsEnabled()) {
+                    val agentTasks = JSONArray(client.request("/workspace/agent/tasks?limit=100"))
+                    for (i in 0 until agentTasks.length()) {
+                        val task = agentTasks.getJSONObject(i)
+                        val status = task.optString("status")
+                        if (status !in listOf("done", "failed", "interrupted", "awaiting_setup")) continue
+                        val key = "agent-${task.getString("id") }"
+                        val signature = "$status:${task.optDouble("updated") }"
+                        if (prefs.getString(key, null) == signature || sent >= 5) continue
+                        val open = PendingIntent.getActivity(this@TaskPollService, key.hashCode(),
+                            Intent(this@TaskPollService, MainActivity::class.java).setAction("com.localfirst.assistant.ACTIVITY"),
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                        val text = when (status) {
+                            "done" -> "FRIDAY's report is ready. Open Activity to read it."
+                            "awaiting_setup" -> "An action needs account setup. Review it in Activity."
+                            "interrupted" -> "Task interrupted. Review before trying again."
+                            else -> "Task failed. Open Activity for details."
+                        }
+                        val notification = NotificationCompat.Builder(this@TaskPollService, TaskNotifications.CHANNEL)
+                            .setSmallIcon(android.R.drawable.ic_dialog_info)
+                            .setContentTitle(task.getJSONObject("proposal").optString("prompt").take(80))
+                            .setContentText(text).setContentIntent(open).setAutoCancel(true).build()
+                        manager.notify(key.hashCode(), notification)
+                        prefs.edit().putString(key, signature).apply()
+                        sent++
                     }
                 }
             } catch (e: CancellationException) { throw e }

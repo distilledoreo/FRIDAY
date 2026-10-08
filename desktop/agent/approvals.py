@@ -174,6 +174,12 @@ class Approvals:
             if changed != 1: raise ValueError('Action state or payload has changed')
             self.event(db, action['task_id'], 'action_' + new, {'id': action_id, 'fingerprint': fingerprint})
 
+    def result(self, task_id):
+        self.task(task_id)
+        with self.db() as db:
+            row = db.execute("SELECT data FROM events WHERE task_id=? AND kind='result' ORDER BY seq DESC LIMIT 1", (task_id,)).fetchone()
+        return json.loads(row['data']) if row else None
+
     def tasks(self, limit=50):
         if not 1 <= limit <= 100: raise ValueError('Limit must be 1–100')
         with self.db() as db:

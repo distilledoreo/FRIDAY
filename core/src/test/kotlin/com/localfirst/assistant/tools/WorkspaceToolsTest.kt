@@ -44,6 +44,18 @@ class WorkspaceToolsTest {
             assertFalse(tools.any { it.name.contains("approve") || it.name.contains("start_agent") })
         } finally { dir.deleteRecursively() }
     }
+    @Test fun reportToolReadsOnlyTheSelectedTaskAndRejectsPathInjection() = runBlocking {
+        val dir = Files.createTempDirectory("agent-reports").toFile()
+        try {
+            val gateway = FakeGateway()
+            val tool = workspaceTools(gateway, KnowledgeStore(dir.resolve("knowledge.json")), FileConversationStore(dir.resolve("chats"))).first { it.name == "get_agent_report" }
+            val id = "a".repeat(32)
+            tool.execute(buildJsonObject { put("id", id) })
+            assertEquals("/workspace/agent/tasks/$id/report", gateway.path)
+            try { tool.execute(buildJsonObject { put("id", "../approve") }); fail("Unsafe id accepted") } catch (_: IllegalArgumentException) { }
+            assertEquals("/workspace/agent/tasks/$id/report", gateway.path)
+        } finally { dir.deleteRecursively() }
+    }
     @Test fun memoryIsSavedOnlyAfterConfirmationAndCanBeForgotten() = runBlocking {
         val dir = Files.createTempDirectory("workspace-tools").toFile()
         try {

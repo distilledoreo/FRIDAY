@@ -53,7 +53,14 @@ def install(app, auth, root, engine=None, unavailable_detail=None):
     async def task(task_id: str):
         value = guarded(store.task, task_id)
         value['actions'] = store.actions(task_id)
+        value['result'] = store.result(task_id)
         return value
+
+    @router.get('/tasks/{task_id}/report')
+    async def task_report(task_id: str):
+        value = guarded(store.task, task_id)
+        return {'id': task_id, 'status': value['status'], 'prompt': value['proposal']['prompt'],
+                'result': store.result(task_id)}
 
     @router.get('/tasks/{task_id}/events')
     async def events(task_id: str, after: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=200)):

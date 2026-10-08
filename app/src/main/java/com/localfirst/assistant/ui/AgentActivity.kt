@@ -85,6 +85,13 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                         if (current.optString("status") in listOf("proposed", "approved", "running", "awaiting_setup")) OutlinedButton(onClick = { vm.cancelAgentTask(current.getString("id")) }, enabled = !state.workspaceBusy) { Text("Cancel task") }
                     }
                 }
+                current.optJSONObject("result")?.optString("text")?.takeIf(String::isNotBlank)?.let { report ->
+                    item {
+                        Text("Report", style = MaterialTheme.typography.titleMedium)
+                        Text(report, style = MaterialTheme.typography.bodyMedium)
+                        TextButton(onClick = { vm.discussAgentReport(current.getString("id")) }, enabled = !state.busy) { Text("Discuss in chat") }
+                    }
+                }
                 val pending = current.optJSONArray("actions")?.let { values -> (0 until values.length()).map { values.getJSONObject(it) }.filter { it.optString("status") == "proposed" } }.orEmpty()
                 items(pending, key = { it.getString("id") }) { pendingAction ->
                     OutlinedCard(Modifier.fillMaxWidth()) {
@@ -97,7 +104,12 @@ internal fun AgentActivity(state: ChatUiState, vm: ChatViewModel) {
                 items(state.agentEvents, key = { it.getLong("seq") }) { event ->
                     Column {
                         Text(event.optString("kind").replace('_', ' '), style = MaterialTheme.typography.labelLarge)
-                        Text(event.getJSONObject("data").toString(2), style = MaterialTheme.typography.bodySmall)
+                        val data = event.getJSONObject("data")
+                        val summary = data.optString("text").ifBlank { data.optString("url").ifBlank { data.optString("message").ifBlank { "Details recorded" } } }
+                        Text(summary, style = MaterialTheme.typography.bodySmall)
+                        var expanded by remember(event.getLong("seq")) { mutableStateOf(false) }
+                        TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "Hide details" else "Show details") }
+                        if (expanded) Text(data.toString(2), style = MaterialTheme.typography.bodySmall)
                         if (event.optString("kind") == "screenshot") AgentScreenshot(current.getString("id"), event.getJSONObject("data"), vm)
                         HorizontalDivider(Modifier.padding(top = 8.dp))
                     }
