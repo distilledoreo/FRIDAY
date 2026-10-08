@@ -12,7 +12,7 @@ class WorkspaceToolsTest {
         val dir = Files.createTempDirectory("workspace-tools").toFile()
         try {
             val tools = workspaceTools(FakeGateway(), KnowledgeStore(dir.resolve("knowledge.json")), FileConversationStore(dir.resolve("chats")))
-            assertEquals(11, tools.size)
+            assertFalse(tools.any { it.name.contains("approve") })
             tools.forEach { assertEquals("object", it.inputSchema["type"]?.jsonPrimitive?.content) }
             assertTrue(tools.first { it.name == "remember" }.requiresConfirmation)
             assertTrue(tools.first { it.name == "schedule_task" }.requiresConfirmation)
@@ -30,6 +30,18 @@ class WorkspaceToolsTest {
             assertEquals(args, Json.parseToJsonElement(gateway.body!!))
             tools.first { it.name == "fetch_page" }.execute(buildJsonObject { put("url", "https://example.com") })
             assertEquals(16000, Json.parseToJsonElement(gateway.body!!).jsonObject["max_chars"]!!.jsonPrimitive.int)
+        } finally { dir.deleteRecursively() }
+    }
+    @Test fun agentToolCanOnlySaveAPlanForUserReview() = runBlocking {
+        val dir = Files.createTempDirectory("agent-tools").toFile()
+        try {
+            val gateway = FakeGateway()
+            val tools = workspaceTools(gateway, KnowledgeStore(dir.resolve("knowledge.json")), FileConversationStore(dir.resolve("chats")))
+            val args = buildJsonObject { put("prompt", "Research batteries"); putJsonArray("plan") { add(JsonPrimitive("Read public sources")) } }
+            tools.first { it.name == "propose_agent_task" }.execute(args)
+            assertEquals("/workspace/agent/tasks", gateway.path)
+            assertEquals(args, Json.parseToJsonElement(gateway.body!!))
+            assertFalse(tools.any { it.name.contains("approve") || it.name.contains("start_agent") })
         } finally { dir.deleteRecursively() }
     }
     @Test fun memoryIsSavedOnlyAfterConfirmationAndCanBeForgotten() = runBlocking {

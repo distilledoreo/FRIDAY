@@ -1,7 +1,8 @@
 # FRIDAY agent foundations
 
-This package is not yet connected to chat or Activity and does not run a cloud
-agent. It provides two boundaries for that integration:
+This package does not yet run a cloud agent. Android Activity and model proposal
+tools have been implemented, but this backend is not deployed or connected to an
+execution engine yet. It provides boundaries for that integration:
 
 - `sandbox.Sandbox`: offline Python execution in a digest-pinned Docker image,
   four CPU cores of quota, 8 GB memory with no extra swap, 128 processes, unprivileged
@@ -16,13 +17,31 @@ agent. It provides two boundaries for that integration:
   pending approvals. A crash after claiming requires reconciliation, never an
   automatic replay of an uncertain external operation.
 
-The authenticated user API must own approval methods. Model tools must not expose
-them. Keep secrets in a separate vault; proposal payloads and events are not a
-credential store. Artifact export, screenshots, cloud models, public browsing,
-outgoing review, task recovery and phone Activity are still to be implemented.
-The offline boundary must remain in place until a restricted network broker is
-verified. Merely selecting Docker bridge networking would allow home-network
-access and is insufficient.
+- `api.install`: authenticated task proposals, UI-only approvals, cancellation,
+  bounded event pages and interruption after restart. An unconfigured execution
+  engine returns 503 before recording approval. A model has proposal/status tools
+  only; incognito blocks both. The Android Activity screen reviews complete plans
+  and exact action payloads, pages events and polls running tasks.
+- `public_web.read`: public HTTPS reads, validated DNS addresses pinned to the
+  TLS connection with the original hostname, private/tailnet/metadata/mapped IPv6
+  rejection, redirect revalidation, no cookies or authorization, 2 MB response cap.
+- `cloud.FreeCloud`: credential held by the host broker, current catalog pricing
+  verification, free model allowlist, zero maximum token price, fixed endpoint,
+  bounded context/output/request count, no paid/local fallback or provider plugins.
+  Only public catalog metadata has been verified live; no inference was run.
+
+The authenticated user API owns approval methods. Model tools must not expose
+them. Proposal payloads and events are not a credential store. Artifact export,
+screenshots, sandbox IPC, OpenCode execution, outgoing review and account/vault
+integration are still pending. Restart marks uncertain tasks interrupted without
+replaying external effects. The offline boundary remains in place; the tested
+public reader and free broker still need a narrowly scoped IPC adapter into the
+  reasoning container. `ipc.UnixBroker` now provides a private, size-limited,
+  task-bound Unix socket capability for model/page/action-proposal requests only,
+  with cancellation revocation. Its three tests pass. The OpenCode container
+  still needs to connect to that capability through its local HTTP/MCP adapters.
+  A real pinned TLS read of example.com passed. Docker bridge networking would allow home-network access
+and is insufficient.
 
 Docker stores its images on `/mnt/docker-data`; the small Python image fits its
 existing free capacity. Nothing was resized or pruned. Enabling the Docker group

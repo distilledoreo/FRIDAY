@@ -132,6 +132,28 @@ class Approvals:
             return [dict(r, proposal=json.loads(r['proposal'])) for r in db.execute(
                 'SELECT * FROM tasks ORDER BY updated DESC LIMIT ?', (limit,))]
 
+    def task(self, task_id):
+        with self.db() as db:
+            row = db.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
+            if row is None: raise ValueError('Unknown task')
+            return dict(row, proposal=json.loads(row['proposal']))
+
+    def actions(self, task_id):
+        with self.db() as db:
+            return [dict(r, payload=json.loads(r['payload'])) for r in db.execute(
+                'SELECT * FROM actions WHERE task_id=? ORDER BY rowid', (task_id,))]
+
+    def interrupt_running(self):
+        # Restart cannot tell whether an external operation happened. Retain all
+        # claims and approvals for inspection; never automatically replay them.
+        with self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            rows = db.execute("SELECT id FROM tasks WHERE status IN ('approved','running')").fetchall()
+            for row in rows:
+                db.execute("UPDATE tasks SET status='interrupted', updated=? WHERE id=?", (time.time(), row['id']))
+                db.execute("UPDATE actions SET status='cancelled' WHERE task_id=? AND status IN ('proposed','approved')", (row['id'],))
+                self.event(db, row['id'], 'task_interrupted', {'reason': 'Service restarted; review before resuming'})
+
     def events(self, task_id, after=0, limit=100):
         if after < 0 or not 1 <= limit <= 200: raise ValueError('Invalid event page')
         with self.db() as db:

@@ -29,6 +29,11 @@ fun workspaceTools(client: WorkspaceGateway, knowledge: KnowledgeStore, conversa
     fun JsonObject.string(key: String) = getValue(key).jsonPrimitive.content
     return listOf(
         ImageGenerationTool(client),
+        tool("propose_agent_task", "Suggest a concrete plan for FRIDAY’s cloud agent. Saves a proposal only; the user must approve it in Activity before anything runs. Never say it has started.",
+            """"prompt":{"type":"string"},"plan":{"type":"array","items":{"type":"string"}}""", "\"prompt\",\"plan\"") {
+            client.toolRequest("/workspace/agent/tasks", "POST", it.toString())
+        },
+        tool("list_agent_activity", "Read FRIDAY cloud-agent proposals and task statuses. Does not start or approve tasks.", "", "") { client.toolRequest("/workspace/agent/tasks") },
         tool("remember", "Save a fact or preference across chats. Use only when the user explicitly asks to remember it. Do not save passwords or API keys.",
             """"text":{"type":"string"}""", "\"text\"", true) { client.toolRequest("/workspace/memory/memories", "POST", it.toString()) },
         tool("forget_memory", "Delete a saved memory by id.", """"id":{"type":"string"}""", "\"id\"", true) { client.toolRequest("/workspace/memory/memories/${it.string("id")}", "DELETE"); knowledge.forget(it.string("id")); "Forgot memory on the PC." },

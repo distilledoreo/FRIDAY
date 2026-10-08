@@ -66,6 +66,7 @@ internal fun ChatDrawer(
     onProject: (String) -> Unit,
     onProjects: () -> Unit,
     onTasks: () -> Unit,
+    onActivity: () -> Unit,
     onFiles: () -> Unit,
     onImages: () -> Unit,
 ) {
@@ -92,6 +93,7 @@ internal fun ChatDrawer(
                     item { NavigationDrawerItem(label = { Text("Library") }, icon = { Icon(Icons.AutoMirrored.Filled.List, null) }, selected = false, onClick = onFiles) }
                     item { NavigationDrawerItem(label = { Text("Images") }, icon = { Icon(Icons.Filled.Create, null) }, selected = false, onClick = onImages) }
                     item { NavigationDrawerItem(label = { Text("Tasks") }, icon = { Icon(Icons.Filled.DateRange, null) }, selected = false, onClick = onTasks) }
+                    item { NavigationDrawerItem(label = { Text("Activity") }, icon = { Icon(Icons.AutoMirrored.Filled.List, null) }, selected = false, onClick = onActivity) }
                     item { TextButton(onClick = onProjects, modifier = Modifier.padding(top = 12.dp)) { Text("Projects") } }
                     items(projects, key = { "project:${it.id}" }) { project ->
                         NavigationDrawerItem(label = { Text(project.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },

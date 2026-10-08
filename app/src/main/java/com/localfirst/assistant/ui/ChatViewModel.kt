@@ -84,6 +84,12 @@ data class ChatUiState(
     val workspaceBusy: Boolean = false,
     val workspaceStatus: String? = null,
     val tasks: List<BackgroundTask> = emptyList(),
+    val agentTasks: List<JSONObject> = emptyList(),
+    val agentTask: JSONObject? = null,
+    val agentEvents: List<JSONObject> = emptyList(),
+    val agentEventAfter: Long = 0,
+    val agentReady: Boolean = false,
+    val agentDetail: String = "Connecting to FRIDAY’s computer…",
     val workspaceFiles: List<WorkspaceFile> = emptyList(),
     val syncConflicts: List<SyncConflict> = emptyList(),
     val memorySummary: JSONObject? = null,
@@ -723,6 +729,38 @@ class ChatViewModel(
         if (destination in listOf(WorkspaceDestination.MEMORY, WorkspaceDestination.IMPORT_CHATGPT, WorkspaceDestination.MEMORY_REVIEW, WorkspaceDestination.MEMORY_ARCHIVE)) refreshMemory()
     }
     fun dismissWorkspace() { _state.update { it.copy(showWorkspace = false) } }
+
+    private suspend fun loadAgentActivity(taskId: String? = null, after: Long? = null) {
+        val client = workspace ?: error("Computer unavailable.")
+        val health = JSONObject(client.request("/workspace/agent/health"))
+        val tasks = JSONArray(client.request("/workspace/agent/tasks"))
+        val task = taskId?.let { JSONObject(client.request("/workspace/agent/tasks/$it")) }
+        val cursor = after ?: if (_state.value.agentTask?.optString("id") == taskId) _state.value.agentEventAfter else 0L
+        val events = taskId?.let { JSONArray(client.request("/workspace/agent/tasks/$it/events?limit=200&after=$cursor")) }
+        _state.update { it.copy(
+            agentReady = health.optBoolean("ready"), agentDetail = health.optString("detail"),
+            agentTasks = (0 until tasks.length()).map { tasks.getJSONObject(it) },
+            agentTask = task, agentEventAfter = cursor, agentEvents = events?.let { e -> (0 until e.length()).map { e.getJSONObject(it) } }.orEmpty(),
+        ) }
+    }
+    fun refreshAgentActivity(taskId: String? = null, after: Long? = null) = workspaceAction { loadAgentActivity(taskId, after); "Activity updated." }
+    fun proposeAgentTask(prompt: String, plan: List<String>) = workspaceAction {
+        val client = workspace ?: error("Computer unavailable.")
+        client.request("/workspace/agent/tasks", "POST", JSONObject().put("prompt", prompt).put("plan", JSONArray(plan)))
+        loadAgentActivity(); "Plan saved for approval."
+    }
+    fun approveAgentTask(id: String, fingerprint: String) = workspaceAction {
+        workspace?.request("/workspace/agent/tasks/$id/approve", "POST", JSONObject().put("fingerprint", fingerprint)) ?: error("Computer unavailable.")
+        loadAgentActivity(id); "Task approved."
+    }
+    fun cancelAgentTask(id: String) = workspaceAction {
+        workspace?.request("/workspace/agent/tasks/$id/cancel", "POST") ?: error("Computer unavailable.")
+        loadAgentActivity(id); "Task cancelled."
+    }
+    fun approveAgentAction(taskId: String, id: String, fingerprint: String) = workspaceAction {
+        workspace?.request("/workspace/agent/actions/$id/approve", "POST", JSONObject().put("fingerprint", fingerprint)) ?: error("Computer unavailable.")
+        loadAgentActivity(taskId); "Exact action approved."
+    }
 
     private fun workspaceAction(action: suspend () -> String) {
         if (_state.value.workspaceBusy || _state.value.busy) return

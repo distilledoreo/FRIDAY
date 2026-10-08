@@ -29,7 +29,7 @@ import java.time.*
 import java.time.format.DateTimeFormatter
 
 enum class WorkspaceDestination(val title: String) {
-    SETTINGS("Settings"), MEMORY("Memory"), PROJECTS("Projects"), PROJECT("Project"),
+    SETTINGS("Settings"), MEMORY("Memory"), ACTIVITY("Activity"), PROJECTS("Projects"), PROJECT("Project"),
     EDIT_PROJECT("Project settings"), TASKS("Tasks"), TASK("Task"), NEW_TASK("New task"),
     FILES("Library"), DATA("Data controls"), NEW_MEMORY("Add memory"), IMAGES("Images"), IMPORT_CHATGPT("Import ChatGPT"), MEMORY_REVIEW("Review memories"), MEMORY_ARCHIVE("PC archive"), MEMORY_SOURCE("Source chat"), MEMORY_CONTEXT("Recall context")
 }
@@ -98,6 +98,7 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                     if (state.workspaceBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
                     state.workspaceStatus?.takeIf { !it.startsWith("Computer online") }?.let { Text(it, Modifier.padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall) }
                     when (page) {
+                        WorkspaceDestination.ACTIVITY -> AgentActivity(state, vm)
                         WorkspaceDestination.IMAGES -> ImageJobs(state, vm)
                         WorkspaceDestination.SETTINGS -> ScreenList {
                             item { SectionLabel("Personalization") }
