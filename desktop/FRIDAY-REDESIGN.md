@@ -1,6 +1,6 @@
 # FRIDAY mobile redesign — current working goal
 
-Implement the user's complete October 8 UI/UX specification, using the supplied two-phone dark/light image as the primary visual reference. This is the current detour before resuming the unfinished functional roadmap. Preserve the existing application architecture, every feature/integration, private-data boundaries, stored data, Claude changes and user-approved privacy/inference preferences. The chat goal tracker permits only one unfinished goal; the earlier roadmap remains active rather than being falsely marked complete.
+Implement the user's complete October 8 UI/UX specification, using the supplied two-phone dark/light image as the primary visual reference. This is the current detour before resuming the unfinished functional roadmap. Preserve the existing application architecture, every feature/integration, private-data boundaries, stored data, Claude changes and user-approved privacy/inference preferences. The chat goal tracker permits only one unfinished goal; the earlier roadmap remains unfinished rather than being falsely marked complete.
 
 ## Design and behavior contract
 
