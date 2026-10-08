@@ -522,7 +522,8 @@ class ChatViewModel(
                 val grounding = com.localfirst.assistant.grounding.GroundingPrecheck
                 val webTools = com.localfirst.assistant.conversation.ConversationEngine.WEB_TOOLS
                 session.blockedTools = if (grounding.blocksWeb(pendingRecallQuery)) webTools else emptySet()
-                session.confirmedTools = if (grounding.privateRequest(pendingRecallQuery) || _state.value.recallSources.isNotEmpty()) webTools else emptySet()
+                // Web calls carrying private details ask first; see ConversationEngine.privateDetails.
+                session.confirmedTools = emptySet()
                 _state.update { it.copy(groundingResearchAvailable = grounding.largerResearch(pendingRecallQuery) && !it.privacy.incognito) }
                 val searchTool = session.toolRegistry.getAvailableTools().firstOrNull { it.name == "web_search" }
                 if (searchTool != null && com.localfirst.assistant.grounding.GroundingPrecheck.needsSearch(pendingRecallQuery)) {

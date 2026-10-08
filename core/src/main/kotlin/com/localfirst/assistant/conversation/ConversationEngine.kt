@@ -1,11 +1,17 @@
 package com.localfirst.assistant.conversation
 
+import com.localfirst.assistant.grounding.PrivateLeak
+import com.localfirst.assistant.json.JsonCodec
 import com.localfirst.assistant.model.ModelProvider
 import com.localfirst.assistant.model.ModelProviderException
 import com.localfirst.assistant.model.ModelResponse
 import com.localfirst.assistant.tools.ToolConfirmer
 import com.localfirst.assistant.tools.ToolRegistry
 import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * Runs one turn: model response, then zero or more tool rounds, then a final
@@ -37,7 +43,7 @@ class ConversationEngine(
         confirmedTools: Set<String> = emptySet(),
     ): TurnOutcome {
         var rounds = 0
-        var privateData = messages.filterIsInstance<Message.ToolResult>().any { it.success && it.name in PRIVATE_TOOLS }
+        val recalled = PrivateLeak.recalled(systemPrompt)
         while (true) {
             val partial = StringBuilder()
             val response = try {
@@ -107,11 +113,17 @@ class ConversationEngine(
                     }
                     onUpdate(messages.toList())
                     if (response.calls.any { it.name == "generate_image" }) checkpoint()
-                    privateData = privateData || response.calls.any { it.name in PRIVATE_TOOLS }
                     for ((index, call) in response.calls.withIndex()) {
+                        // Public web calls ask first only when they would carry private details out.
+                        val leaked = if (call.name in WEB_TOOLS) messages.privateDetails(call.argumentsJson, recalled) else emptyList()
                         val result = try {
                             if (call.name in blockedTools) com.localfirst.assistant.tools.ToolExecutionResult(false, "Web access is disabled for this turn. Respect the user's offline/no-search request.")
-                            else toolRegistry.execute(call, confirmer, forceConfirmation = call.name in confirmedTools || privateData && call.name in WEB_TOOLS)
+                            else toolRegistry.execute(
+                                call,
+                                confirmer,
+                                forceConfirmation = call.name in confirmedTools || leaked.isNotEmpty(),
+                                confirmationNote = leaked.takeIf { it.isNotEmpty() }?.let { "This includes private details (${it.take(5).joinToString(", ")})." },
+                            )
                         } catch (e: CancellationException) {
                             for (unanswered in response.calls.drop(index)) {
                                 messages += Message.ToolResult(
@@ -183,6 +195,24 @@ class ConversationEngine(
 
     companion object {
         val WEB_TOOLS = setOf("web_search", "fetch_page")
+
+        /** Text the user didn't write that a public web call would carry from memories or private tool results. */
+        private fun MutableList<Message>.privateDetails(argumentsJson: String, recalled: String?): List<String> {
+            val private = listOfNotNull(recalled) + filterIsInstance<Message.ToolResult>().filter { it.success && it.name in PRIVATE_TOOLS }.map { it.content }
+            val own = filterIsInstance<Message.User>().joinToString("\n") { it.content }
+            return PrivateLeak.details(argumentStrings(argumentsJson), private, own)
+        }
+
+        private fun argumentStrings(json: String): String = try {
+            fun collect(e: JsonElement): List<String> = when (e) {
+                is JsonPrimitive -> if (e.isString) listOf(e.content) else emptyList()
+                is JsonObject -> e.values.flatMap(::collect)
+                is JsonArray -> e.flatMap(::collect)
+            }
+            collect(JsonCodec.json.parseToJsonElement(json)).joinToString("\n")
+        } catch (e: Exception) {
+            json
+        }
         private val PRIVATE_TOOLS = setOf("read_account_inbox", "read_account_message", "read_account_calendar", "read_account_calendar_event", "read_daily_brief", "list_followups", "search_memory", "search_history", "get_agent_report")
         /**
          * Hides reasoning markup some models emit even with reasoning off:

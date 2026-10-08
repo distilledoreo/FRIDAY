@@ -21,7 +21,7 @@ class ToolRegistry {
 
     fun definitions(): List<ToolDefinition> = tools.values.map { it.definition() }
 
-    suspend fun execute(call: ToolCall, confirmer: ToolConfirmer? = null, forceConfirmation: Boolean = false): ToolExecutionResult {
+    suspend fun execute(call: ToolCall, confirmer: ToolConfirmer? = null, forceConfirmation: Boolean = false, confirmationNote: String? = null): ToolExecutionResult {
         val tool = tools[call.name]
             ?: return ToolExecutionResult(
                 success = false,
@@ -43,7 +43,7 @@ class ToolRegistry {
         }
         return try {
             if ((tool.requiresConfirmation || forceConfirmation) && confirmer != null) {
-                val prompt = tool.confirmationPrompt(arguments)
+                val prompt = listOfNotNull(confirmationNote, tool.confirmationPrompt(arguments)).joinToString(" ")
                 if (!confirmer.confirm(ConfirmationRequest(call.id, tool.name, prompt))) {
                     return ToolExecutionResult(
                         success = false,
