@@ -3,9 +3,9 @@ package com.localfirst.assistant.grounding
 /**
  * Finds private details in what the model wants to send to the public web: words that
  * came from recalled memories or private tool results (inbox, calendar, briefs) and that
- * the user didn't write themselves. A search built only from the user's own words and
- * everyday vocabulary goes out without asking; one that carries a name, place or other
- * detail from private context asks first.
+ * the user didn't write themselves. Contact details, street addresses and ID numbers
+ * always count as identifying; other details (a city, an interest, a device) are judged
+ * by the model, so only things that single out a specific private person need approval.
  */
 object PrivateLeak {
     /** Marks the start of recalled memories in the system prompt. */
@@ -13,6 +13,51 @@ object PrivateLeak {
 
     private val word = Regex("[\\p{L}\\p{N}][\\p{L}\\p{N}'’]*")
     private val contact = Regex("[\\w.+-]+@[\\w-]+(?:\\.[\\w-]+)+|\\+?\\d[\\d\\s().-]{7,}\\d")
+    private val streetAddress = Regex(
+        "\\b\\d{1,6}\\s+(?:[\\p{L}.]+\\s+){1,3}(?:st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|ln|lane|ct|court|way|pl|place|pkwy|parkway|cir|circle|trl|trail|hwy|highway)\\b",
+        RegexOption.IGNORE_CASE,
+    )
+    private val idNumber = Regex("\\b\\d{6,}\\b")
+    private val sentence = Regex("[^.!?\\n]+[.!?]?")
+
+    /** What a web call would carry out: [identifying] always needs approval; [other] only if it singles someone out. */
+    class Found(val identifying: List<String>, val other: List<String>, val context: List<String>) {
+        val isEmpty get() = identifying.isEmpty() && other.isEmpty()
+    }
+
+    fun find(outgoing: String, privateTexts: List<String>, userText: String): Found {
+        if (privateTexts.isEmpty() || outgoing.isBlank()) return Found(emptyList(), emptyList(), emptyList())
+        val identifying = LinkedHashSet<String>()
+        for (pattern in listOf(contact, streetAddress, idNumber)) {
+            for (match in pattern.findAll(outgoing)) {
+                val value = match.value.trim()
+                if (privateTexts.any { it.contains(value, ignoreCase = true) } && !userText.contains(value, ignoreCase = true)) identifying += value
+            }
+        }
+        val other = details(outgoing, privateTexts, userText).filter { word -> identifying.none { word in it.lowercase() } }
+        val context = privateTexts.flatMap { text -> sentence.findAll(text).map { it.value.trim() } }
+            .filter { s -> other.any { s.contains(it, ignoreCase = true) } }
+            .distinct().take(6).map { it.take(240) }
+        return Found(identifying.toList(), other, context)
+    }
+
+    /** Instructions for the model's yes/no judgment of [Found.other]. */
+    const val JUDGE_INSTRUCTIONS = "You check web searches for a personal assistant before they are sent. Decide whether the listed details, " +
+        "which came from the user's private memories or accounts, would identify a specific private person. Identifying: names of private " +
+        "people (family, friends, coworkers, contacts), their contact details or handles, home or street addresses, account, order or ID numbers, " +
+        "or a combination that points to one private individual. Not identifying: cities, regions and countries, interests, preferences, " +
+        "beliefs, devices and products, companies and organizations, public figures, dates and general facts. Reply with exactly one word: " +
+        "IDENTIFYING or OK."
+
+    fun judgeRequest(outgoing: String, found: Found): String =
+        "Search or URL: $outgoing\nDetails from private data: ${found.other.joinToString(", ")}\nWhere they came from:\n" +
+            found.context.joinToString("\n") { "- $it" }
+
+    /** True unless the reply clearly says OK. */
+    fun judgedIdentifying(reply: String?): Boolean {
+        val text = reply?.uppercase() ?: return true
+        return "IDENTIFYING" in text || "OK" !in text
+    }
 
     /** The private words in [outgoing], or empty when it's safe to send without asking. */
     fun details(outgoing: String, privateTexts: List<String>, userText: String): List<String> {

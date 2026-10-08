@@ -8,6 +8,7 @@ import com.localfirst.assistant.model.ModelResponse
 import com.localfirst.assistant.tools.ToolConfirmer
 import com.localfirst.assistant.tools.ToolRegistry
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -114,8 +115,8 @@ class ConversationEngine(
                     onUpdate(messages.toList())
                     if (response.calls.any { it.name == "generate_image" }) checkpoint()
                     for ((index, call) in response.calls.withIndex()) {
-                        // Public web calls ask first only when they would carry private details out.
-                        val leaked = if (call.name in WEB_TOOLS) messages.privateDetails(call.argumentsJson, recalled) else emptyList()
+                        // Public web calls ask first only when they would carry out details that identify someone.
+                        val leaked = if (call.name in WEB_TOOLS) messages.identifyingDetails(modelProvider, call.argumentsJson, recalled) else emptyList()
                         val result = try {
                             if (call.name in blockedTools) com.localfirst.assistant.tools.ToolExecutionResult(false, "Web access is disabled for this turn. Respect the user's offline/no-search request.")
                             else toolRegistry.execute(
@@ -196,12 +197,34 @@ class ConversationEngine(
     companion object {
         val WEB_TOOLS = setOf("web_search", "fetch_page")
 
-        /** Text the user didn't write that a public web call would carry from memories or private tool results. */
-        private fun MutableList<Message>.privateDetails(argumentsJson: String, recalled: String?): List<String> {
+        /**
+         * Details from memories or private tool results, not written by the user, that a public web call would
+         * carry and that identify a specific private person. Empty means it can go without asking.
+         */
+        private suspend fun MutableList<Message>.identifyingDetails(model: ModelProvider, argumentsJson: String, recalled: String?): List<String> {
             val private = listOfNotNull(recalled) + filterIsInstance<Message.ToolResult>().filter { it.success && it.name in PRIVATE_TOOLS }.map { it.content }
             val own = filterIsInstance<Message.User>().joinToString("\n") { it.content }
-            return PrivateLeak.details(argumentStrings(argumentsJson), private, own)
+            val outgoing = argumentStrings(argumentsJson)
+            val found = PrivateLeak.find(outgoing, private, own)
+            if (found.isEmpty) return emptyList()
+            if (found.identifying.isNotEmpty()) return found.identifying + found.other
+            val reply = try {
+                withTimeoutOrNull(JUDGE_TIMEOUT_MS) {
+                    val response = model.sendConversation(
+                        listOf(Message.System(PrivateLeak.JUDGE_INSTRUCTIONS), Message.User(PrivateLeak.judgeRequest(outgoing, found))),
+                        emptyList(),
+                    )
+                    (response as? ModelResponse.TextResponse)?.text
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null // Can't judge: ask.
+            }
+            return if (PrivateLeak.judgedIdentifying(reply)) found.other else emptyList()
         }
+
+        private const val JUDGE_TIMEOUT_MS = 20_000L
 
         private fun argumentStrings(json: String): String = try {
             fun collect(e: JsonElement): List<String> = when (e) {

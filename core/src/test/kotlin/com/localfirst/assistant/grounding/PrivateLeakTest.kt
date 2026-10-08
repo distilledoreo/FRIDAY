@@ -22,6 +22,23 @@ class PrivateLeakTest {
     }
 
     @Test
+    fun contactAddressesAndIdsAreIdentifyingOnTheirOwn() {
+        val inbox = listOf("Order 88231447 ships to 1420 Oak Hollow Dr. Questions: priya.k@example.org")
+        val found = PrivateLeak.find("track 88231447 1420 Oak Hollow Dr priya.k@example.org", inbox, "Where is my package?")
+        assertEquals(listOf("priya.k@example.org", "1420 Oak Hollow Dr", "88231447"), found.identifying)
+        val city = PrivateLeak.find("weather Plano", listOf("The user lives in Plano."), "What's the weather?")
+        assertTrue(city.identifying.isEmpty());assertEquals(listOf("plano"), city.other);assertEquals(listOf("The user lives in Plano."), city.context)
+    }
+
+    @Test
+    fun onlyAClearOkLetsDetailsThrough() {
+        assertEquals(false, PrivateLeak.judgedIdentifying("OK"))
+        assertEquals(true, PrivateLeak.judgedIdentifying("IDENTIFYING"))
+        assertEquals(true, PrivateLeak.judgedIdentifying("Not sure"))
+        assertEquals(true, PrivateLeak.judgedIdentifying(null))
+    }
+
+    @Test
     fun recalledMemoriesSkipTheIntroduction() {
         val prompt = "System prompt.\n\nRetrieved personal context. Approved memories are user-reviewed facts.\n\nThe user lives in Plano."
         assertEquals("The user lives in Plano.", PrivateLeak.recalled(prompt))
