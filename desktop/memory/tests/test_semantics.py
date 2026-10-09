@@ -1,6 +1,6 @@
 import os,tempfile,unittest
 from pathlib import Path
-from ..store import MemoryStore
+from desktop.memory.store import MemoryStore
 
 class SemanticTest(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("MEMORY_TEST_MODEL"), "Set MEMORY_TEST_MODEL to a verified CPU encoder directory")

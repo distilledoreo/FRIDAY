@@ -1,7 +1,7 @@
 import sqlite3,tempfile,unittest,os
 from pathlib import Path
 from unittest.mock import patch
-from ..backup import backup
+from desktop.memory.backup import backup
 
 class BackupTests(unittest.TestCase):
     def setUp(self):
