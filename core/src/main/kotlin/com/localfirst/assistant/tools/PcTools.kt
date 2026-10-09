@@ -44,7 +44,17 @@ fun pcTools(client: WorkspaceGateway): List<Tool> = listOf(
         override suspend fun execute(arguments: JsonObject): ToolExecutionResult {
             val prompt = arguments.getValue("prompt").jsonPrimitive.content.trim()
             require(prompt.isNotEmpty() && prompt.length <= 20000)
-            val result = JsonCodec.json.parseToJsonElement(client.toolRequest("/workspace/pc/schedules", "POST", arguments.toString())).jsonObject
+            // Only known fields travel: anything else the model adds is dropped, not rejected.
+            val body = buildJsonObject {
+                put("prompt", prompt)
+                arguments["title"]?.jsonPrimitive?.contentOrNull?.takeIf { it.length <= 200 }?.let { put("title", it) }
+                arguments["run_at"]?.jsonPrimitive?.doubleOrNull?.let { put("run_at", it) }
+                arguments["interval_seconds"]?.jsonPrimitive?.intOrNull?.let { put("interval_seconds", it) }
+                arguments["max_runs"]?.jsonPrimitive?.intOrNull?.let { put("max_runs", it) }
+                arguments["timezone"]?.jsonPrimitive?.contentOrNull?.takeIf { it.length <= 60 }?.let { put("timezone", it) }
+            }
+            require("run_at" in body) { "Schedule a future run time" }
+            val result = JsonCodec.json.parseToJsonElement(client.toolRequest("/workspace/pc/schedules", "POST", body.toString())).jsonObject
             val runs = result["remaining"]?.jsonPrimitive?.int ?: 1
             return ToolExecutionResult(true, "Scheduled on the PC: ${if (runs > 1) "$runs runs" else "one run"}. Each run starts a new PC task with the usual approvals.")
         }

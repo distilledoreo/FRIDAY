@@ -43,4 +43,14 @@ class PcToolsTest {
         try { tools.first { it.name=="run_on_pc" }.execute(buildJsonObject { put("prompt"," ") });fail("Empty prompt accepted") } catch(_:IllegalArgumentException) {}
         assertEquals(1,gateway.calls.size)
     }
+    @Test fun scheduleDropsUnknownFieldsAndNeedsARunTime() = runBlocking {
+        val gateway=Gateway()
+        val schedule=pcTools(gateway).first { it.name=="schedule_pc_task" }
+        schedule.execute(buildJsonObject {
+            put("prompt","Owned nightly check"); put("run_at",4102444800.0); put("notify","carrier-pigeon"); put("admin",true)
+        })
+        val sent=Json.parseToJsonElement(gateway.calls.single().third!!).jsonObject
+        assertEquals(setOf("prompt","run_at"),sent.keys)
+        try { schedule.execute(buildJsonObject { put("prompt","Owned") });fail("Missing run time accepted") } catch(_:IllegalArgumentException) {}
+    }
 }
