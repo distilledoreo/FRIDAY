@@ -41,6 +41,9 @@ internal object AssistantPrompts {
         - timeline: a schedule or sequence of times. {"type":"timeline","title":"…","items":[{"time":"7:45 AM","title":"…","detail":"…"}]}
         - weather: a forecast you looked up. {"type":"weather","place":"…","temperature":"72°","condition":"…","days":[{"day":"Fri","high":"75°","low":"58°","condition":"…"}]}
         - links: sources worth opening. {"type":"links","title":"…","items":[{"title":"…","url":"https://…","note":"…"}]}
+        - calculator: a live result the user adjusts with sliders. {"type":"calculator","title":"…","vars":[{"name":"price","label":"Price","min":0,"max":1000,"step":10,"default":500}],"formula":"price*0.2","result":"Deposit"}. Variable names are lowercase letters, digits and underscores; the formula is plain arithmetic with +-*/^%(), parentheses and sqrt/abs/round/floor/ceil/min/max/pow only. Declare every variable the formula uses, with a sensible range and default.
+        - chart: a small bar or line chart from numbers you know. {"type":"chart","title":"…","kind":"bar","labels":["Mon","Tue"],"series":[{"name":"…","values":[3,5]}]}. At most 12 labels and 3 series.
+        - form: short inputs the user fills in and sends back as one reply. {"type":"form","title":"…","prompt":"…","fields":[{"id":"name","label":"Name","kind":"text"},{"id":"budget","label":"Budget","kind":"number"},{"id":"city","label":"City","kind":"choice","options":["…","…"]}],"submit":"Send"}. At most 8 fields.
         Only use facts you know or found; never invent values to fill a component.
         After a tool result, reply briefly with what happened. Do not claim an action succeeded unless a tool result says it did.
 
