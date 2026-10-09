@@ -34,9 +34,14 @@ object WakeOnLan {
     /** Broadcasts the packet on port 9; returns what happened in plain words. */
     suspend fun wake(context: Context, mac: String): String = withContext(Dispatchers.IO) {
         val address = parseMac(mac) ?: error("Enter the PC's MAC address as six hex pairs, like AA:BB:CC:DD:EE:FF.")
-        val manager = context.getSystemService(ConnectivityManager::class.java)
-        val wifi = manager.getNetworkCapabilities(manager.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
-        if (!wifi) error("Join the same Wi-Fi as the PC first: wake packets can't cross mobile data or VPN.")
+        val capabilities = context.getSystemService(ConnectivityManager::class.java).activeNetwork
+            ?.let { context.getSystemService(ConnectivityManager::class.java).getNetworkCapabilities(it) }
+        if (capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true) {
+            error("Turn off the VPN first: wake packets can't leave the VPN tunnel for your home network.")
+        }
+        if (capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) != true) {
+            error("Join the same Wi-Fi as the PC first: wake packets can't cross mobile data or VPN.")
+        }
         val packet = magicPacket(address)
         DatagramSocket().use { socket ->
             socket.broadcast = true
