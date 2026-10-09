@@ -374,7 +374,7 @@ internal fun ApprovalCard(approval: PendingApproval, onAnswer: (Boolean) -> Unit
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 OutlinedButton(shape = MaterialTheme.shapes.small, onClick = { onAnswer(false) }) { Text("Deny") }
-                Button(shape = MaterialTheme.shapes.small, onClick = { onAnswer(true) }) { Text("Approve") }
+                Button(shape = MaterialTheme.shapes.small, onClick = { onAnswer(true) }) { Text(approval.approveLabel) }
             }
         }
     }

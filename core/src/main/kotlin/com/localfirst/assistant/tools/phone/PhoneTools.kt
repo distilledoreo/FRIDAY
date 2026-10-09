@@ -45,7 +45,7 @@ private class ReadPhoneScreenTool(private val accessibility: PhoneAccessibilityA
 
 private class ControlPhoneScreenTool(private val accessibility: PhoneAccessibilityActions) : PhoneTool(
     name = "control_phone_screen",
-    description = "Control the phone screen using a tap, swipe, replacement text in the focused field, or Android global action. Coordinates are normalized from 0 (left/top) to 1000 (right/bottom); use clickable bounds from read_phone_screen. Each action requires user confirmation. Requires FRIDAY accessibility to be enabled.",
+    description = "Control the phone screen using a tap, swipe, replacement text in the focused field, or Android global action. Coordinates are normalized from 0 (left/top) to 1000 (right/bottom); use clickable bounds from read_phone_screen. The first action requires user approval; approval covers subsequent phone-control actions in this conversation. Requires FRIDAY accessibility to be enabled.",
     inputSchema = objectSchema {
         string("action", "Action to perform.", required = true, enum = listOf("tap", "swipe", "enter_text", "back", "home", "recents", "notifications", "quick_settings", "power_dialog", "lock_screen"))
         integer("x", "Tap x coordinate from 0 to 1000.", min = 0, max = 1000)

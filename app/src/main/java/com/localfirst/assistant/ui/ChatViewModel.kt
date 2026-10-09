@@ -188,7 +188,7 @@ data class FridayLive(val taskId: String, val activity: String, val screenshotId
 /** One refresh of the native PC agent: status, sessions, schedules, and the open session's view. */
 private data class PcSnapshot(val status: org.json.JSONObject, val sessions: List<org.json.JSONObject>, val schedules: List<org.json.JSONObject>, val view: org.json.JSONObject?)
 
-data class PendingApproval(val toolName: String, val prompt: String)
+data class PendingApproval(val toolName: String, val prompt: String, val approveLabel: String = "Approve")
 
 /** A document drafted from an answer: edited on the phone, saved to files. */
 data class CanvasDoc(val title: String, val body: String)
@@ -212,20 +212,36 @@ class ChatViewModel(
 
     /** Suspends the turn until the user answers the approval card. Stop cancels it. */
     private val confirmer = ToolConfirmer { request ->
-        val answer = CompletableDeferred<Boolean>()
-        approval = answer
-        _state.update { it.copy(pendingApproval = PendingApproval(request.toolName, request.prompt)) }
-        if (carTurn) app?.let { CarMessaging.showReply(it, SpeechText.fromMarkdown(request.prompt) + ". Should I go ahead? Reply yes or no.") }
-        try {
-            answer.await()
-        } finally {
-            approval = null
-            _state.update { it.copy(pendingApproval = null) }
+        if (request.toolName == PHONE_CONTROL_TOOL && session.phoneControlApprovedForConversation) {
+            true
+        } else {
+            val answer = CompletableDeferred<Boolean>()
+            approval = answer
+            val phoneControl = request.toolName == PHONE_CONTROL_TOOL
+            _state.update {
+                it.copy(pendingApproval = PendingApproval(
+                    request.toolName,
+                    request.prompt,
+                    approveLabel = if (phoneControl) "Allow for this conversation" else "Approve",
+                ))
+            }
+            if (carTurn) app?.let {
+                val scope = if (phoneControl) " This also allows later phone actions in this conversation." else ""
+                CarMessaging.showReply(it, SpeechText.fromMarkdown(request.prompt) + scope + " Should I go ahead? Reply yes or no.")
+            }
+            try {
+                val approved = answer.await()
+                if (approved && phoneControl) session.phoneControlApprovedForConversation = true
+                approved
+            } finally {
+                approval = null
+                _state.update { it.copy(pendingApproval = null) }
+            }
         }
     }
 
     private var provider: ModelProvider = providers(settingsStore.load())
-    private var session = newSession(emptyList())
+    private var session: ConversationSession = newSession(emptyList())
     private var turnJob: Job? = null
     private var foregroundBeat: Job? = null
     private val foregroundId = UUID.randomUUID().toString()
@@ -1869,6 +1885,7 @@ class ChatViewModel(
         private const val CONNECT_TIMEOUT_MILLIS = 10_000
         private const val CAR_REPLY_CHARS = 1_200
         const val MAX_ATTACHMENTS = 6
+        private const val PHONE_CONTROL_TOOL = "control_phone_screen"
     }
 }
 

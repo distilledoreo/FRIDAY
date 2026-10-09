@@ -36,6 +36,8 @@ class ConversationSession(
     /** Per-turn network policy; also enforced against unadvertised model calls. */
     var blockedTools: Set<String> = emptySet()
     var confirmedTools: Set<String> = emptySet()
+    /** Phone-control consent lasts only for this in-memory conversation session. */
+    var phoneControlApprovedForConversation: Boolean = false
 
     private val messages = initialMessages.toMutableList()
     private val mutex = Mutex()

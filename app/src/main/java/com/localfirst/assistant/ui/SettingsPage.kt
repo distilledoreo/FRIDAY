@@ -235,7 +235,7 @@ private fun PhoneAccessSection() {
         Text(if (enabled) "Notification access: allowed" else "Allow notification access")
     }
     Text(
-        text = "Phone control uses Android's Accessibility service to read visible non-password text and perform gestures, replace text in a focused field, and use system navigation. Read screen content is sent to the current chat model. Each control action asks for confirmation in chat. Enable it only if you want FRIDAY to operate other apps; you can turn it off here in Android Settings at any time.",
+        text = "Phone control uses Android's Accessibility service to read visible non-password text and perform gestures, replace text in a focused field, and use system navigation. Read screen content is sent to the current chat model. The first control action asks for approval; approving allows later phone actions in that conversation. A different conversation requires its own approval. Enable it only if you want FRIDAY to operate other apps; you can turn it off here in Android Settings at any time.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
