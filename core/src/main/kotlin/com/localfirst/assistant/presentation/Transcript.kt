@@ -60,11 +60,15 @@ data class ToolStep(
     val resultContent: String? = null,
     /** The task FRIDAY proposed (JSON from propose_agent_task), shown as a card with Start and live status. */
     val agentTask: String? = null,
+    /** A native PC session (JSON from run_on_pc / get_pc_task), shown as a card with live status and approvals. */
+    val pcTask: String? = null,
 )
 
 enum class ToolStepState { RUNNING, DONE, FAILED }
 
 object Transcript {
+    /** Tool calls whose successful result is a PC session JSON shown as an inline card. */
+    val PC_TASK_TOOLS = setOf("run_on_pc", "get_pc_task")
     fun items(messages: List<Message>, busy: Boolean): List<TranscriptItem> {
         val out = mutableListOf<TranscriptItem>()
         val pendingSteps = mutableListOf<ToolStep>()
@@ -141,6 +145,7 @@ object Transcript {
             else -> ToolStepState.FAILED
         }
         val label = ToolLabels.label(call.name, args ?: JsonObject(emptyMap()), state)
+        val pcTask = result?.takeIf { it.success && call.name in PC_TASK_TOOLS }?.content
         return ToolStep(
             callId = call.id,
             name = call.name,
@@ -148,9 +153,10 @@ object Transcript {
             label = label,
             detail = result?.takeIf { !it.success }?.content,
             sources = result?.sources.orEmpty(),
-            resultContent = result?.takeIf { it.success }?.content,
+            resultContent = result?.takeIf { it.success && call.name !in PC_TASK_TOOLS }?.content,
             imageResult = result?.takeIf { it.success && call.name == "generate_image" }?.content,
             agentTask = result?.takeIf { it.success && call.name == "propose_agent_task" }?.content,
+            pcTask = pcTask,
         )
     }
 }
@@ -264,6 +270,8 @@ internal object ToolLabels {
                 pick("Adding $what to your calendar", "Added $what to your calendar", "Couldn't add $what to your calendar")
             }
             "upcoming_events" -> pick("Checking your calendar", "Checked your calendar", "Couldn't read your calendar")
+            "run_on_pc" -> pick("Starting PC task", "Started PC task", "Couldn't start the PC task")
+            "get_pc_task" -> pick("Reading PC task", "Read PC task", "Couldn't read the PC task")
             else -> pick("Running $name", "Used $name", "$name failed")
         }
     }

@@ -92,7 +92,7 @@ class WorkspaceClient(private val context: Context, private val settings: () -> 
             if (privateAccountAction) throw IOException("Private account/action request failed (HTTP $code). Check exact review, activation, permissions, the PC connection and its unlocked vault.")
             throw IOException("Computer returned HTTP $code: ${bytes.toString(Charsets.UTF_8).take(500)}")
         }
-        if (method == "POST" && (path == "/workspace/jobs" || path.matches(Regex("/workspace/agent/(tasks|actions)/[a-f0-9]{32}/approve")))) TaskNotifications.enable(context)
+        if (method == "POST" && (path == "/workspace/jobs" || path == "/workspace/pc/sessions" || path.matches(Regex("/workspace/agent/(tasks|actions)/[a-f0-9]{32}/approve")))) TaskNotifications.enable(context)
         bytes.toString(Charsets.UTF_8)
     }
 

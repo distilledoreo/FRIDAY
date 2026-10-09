@@ -104,6 +104,8 @@ data class ChatUiState(
     val pcSessions: List<JSONObject> = emptyList(),
     val pcSessionId: String? = null,
     val pcSession: JSONObject? = null,
+    /** Full views for PC sessions linked from this chat's tool results, keyed by session id. */
+    val pcChat: Map<String, JSONObject> = emptyMap(),
     val pcScreen: String? = null,
     val pcScreenAt: Long = 0,
     val pcBusy: Boolean = false,
@@ -1112,6 +1114,14 @@ class ChatViewModel(
         }
         _state.update { it.copy(showWorkspace = false, draft = "Read the report for FRIDAY task $id using get_agent_report, then help me discuss its findings.") }
     }
+    /** Brings a native PC task's results into this chat via get_pc_task. */
+    fun discussPcTask(id: String) {
+        if (_state.value.privacy.incognito || _state.value.busy || !id.matches(Regex("[A-Za-z0-9_-]{1,100}"))) return
+        if (_state.value.draft.isNotBlank() || _state.value.draftAttachments.isNotEmpty()) {
+            _state.update { it.copy(error = "Send or clear your draft before reading a PC task in chat.") }; return
+        }
+        _state.update { it.copy(showWorkspace = false, draft = "Read PC task $id using get_pc_task, then help me with its results.") }
+    }
     fun proposeAgentTask(prompt: String, plan: List<String>, schedule: JSONObject? = null, dataScopes: JSONArray? = null) = workspaceAction {
         val client = workspace ?: error("Computer unavailable.")
         client.request("/workspace/agent/tasks", "POST", JSONObject().put("prompt", prompt).put("plan", JSONArray(plan)).apply {
@@ -1153,7 +1163,47 @@ class ChatViewModel(
             try { action() }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) { _state.update { it.copy(pcError="The PC request could not be confirmed. Check its current task state before trying again.") } }
-            finally { _state.update { it.copy(pcBusy=false) }; refreshPc() }
+            finally { _state.update { it.copy(pcBusy=false) }; refreshPc(); refreshChatPc() }
+        }
+    }
+
+    private var pcChatJob: Job? = null
+
+    /** Session ids linked from this chat's PC tool results, newest first. */
+    fun chatPcIds(messages: List<Message> = _state.value.messages, limit: Int = 5): List<String> {
+        val ids = LinkedHashSet<String>()
+        for (message in messages) {
+            if (message !is Message.ToolResult) continue
+            if (message.name != "run_on_pc" && message.name != "get_pc_task") continue
+            if (!message.success) continue
+            val id = runCatching { JSONObject(message.content).optString("id") }.getOrNull().orEmpty()
+            if (id.matches(Regex("[A-Za-z0-9_-]{1,100}"))) ids += id
+        }
+        return ids.toList().takeLast(limit).reversed()
+    }
+
+    /** Loads full views (status, approvals, results) for PC sessions linked from this chat. */
+    fun refreshChatPc(ids: List<String>? = null) {
+        if (_state.value.privacy.incognito || pcChatJob?.isActive == true) return
+        val wanted = (ids ?: chatPcIds()).take(5)
+        if (wanted.isEmpty()) {
+            if (_state.value.pcChat.isNotEmpty()) _state.update { it.copy(pcChat=emptyMap()) }
+            return
+        }
+        pcChatJob = viewModelScope.launch {
+            try {
+                val views = withContext(Dispatchers.IO) {
+                    val client = workspace ?: error("Computer unavailable")
+                    wanted.mapNotNull { id ->
+                        runCatching { id to JSONObject(client.request("/workspace/pc/sessions/$id")) }.getOrNull()
+                    }.toMap()
+                }
+                _state.update { current ->
+                    if (current.privacy.incognito) current
+                    else current.copy(pcChat=current.pcChat.filterKeys { it in wanted } + views, pcError=null)
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { /* Next poll retries; chat keeps its last snapshot. */ }
         }
     }
 
@@ -1237,6 +1287,7 @@ class ChatViewModel(
         val client = workspace ?: return
         if (fridayPoll?.isActive == true || _state.value.privacy.incognito) return
         if (_state.value.pcStatus != null) refreshPc()
+        refreshChatPc()
         fridayPoll = viewModelScope.launch {
             try {
                 val health = JSONObject(client.request("/workspace/agent/health"))

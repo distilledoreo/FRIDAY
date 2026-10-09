@@ -94,6 +94,73 @@ class TaskPollService : JobService() {
                 }
                 val privacy = getSharedPreferences("brief-privacy", Context.MODE_PRIVATE)
                 if (manager.areNotificationsEnabled() && !privacy.getBoolean("incognito", false)) {
+                    try {
+                        val pcStatus = JSONObject(client.request("/workspace/pc/status"))
+                        if (pcStatus.optBoolean("enabled")) {
+                            val approvals = runCatching { JSONObject(client.request("/workspace/pc/approvals")) }.getOrNull()
+                            approvals?.optJSONArray("permissions")?.let { permissions ->
+                                for (i in 0 until permissions.length()) {
+                                    val request = permissions.optJSONObject(i) ?: continue
+                                    val key = "pcperm-${request.optString("id")}"
+                                    if (prefs.contains(key) || sent >= 5) continue
+                                    val open = PendingIntent.getActivity(this@TaskPollService, key.hashCode(),
+                                        Intent(this@TaskPollService, MainActivity::class.java).setAction("com.localfirst.assistant.ACTIVITY"),
+                                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                                    val notification = NotificationCompat.Builder(this@TaskPollService, TaskNotifications.CHANNEL)
+                                        .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("FRIDAY needs your permission")
+                                        .setContentText(request.optString("detail").ifBlank { "A PC task is waiting for approval." }.take(180))
+                                        .setContentIntent(open).setAutoCancel(true).build()
+                                    manager.notify(key.hashCode(), notification)
+                                    prefs.edit().putLong(key, System.currentTimeMillis()).apply(); sent++
+                                }
+                            }
+                            approvals?.optJSONArray("questions")?.let { questions ->
+                                for (i in 0 until questions.length()) {
+                                    val request = questions.optJSONObject(i) ?: continue
+                                    val key = "pcq-${request.optString("id")}"
+                                    if (prefs.contains(key) || sent >= 5) continue
+                                    val open = PendingIntent.getActivity(this@TaskPollService, key.hashCode(),
+                                        Intent(this@TaskPollService, MainActivity::class.java).setAction("com.localfirst.assistant.ACTIVITY"),
+                                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                                    val notification = NotificationCompat.Builder(this@TaskPollService, TaskNotifications.CHANNEL)
+                                        .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("FRIDAY has a question")
+                                        .setContentText("A PC task needs your answer. Open FRIDAY to reply.".take(180))
+                                        .setContentIntent(open).setAutoCancel(true).build()
+                                    manager.notify(key.hashCode(), notification)
+                                    prefs.edit().putLong(key, System.currentTimeMillis()).apply(); sent++
+                                }
+                            }
+                            val sessions = runCatching { JSONArray(client.request("/workspace/pc/sessions")) }.getOrNull() ?: JSONArray()
+                            for (i in 0 until sessions.length()) {
+                                val session = sessions.optJSONObject(i) ?: continue
+                                val id = session.optString("id")
+                                if (!id.matches(Regex("[A-Za-z0-9_-]{1,100}"))) continue
+                                val key = "pc-$id"
+                                val state = session.optString("state")
+                                val previous = prefs.getString(key, null)
+                                if (previous == null && state != "busy") { prefs.edit().putString(key, state).apply(); continue }
+                                if (previous == "busy" && state != "busy" && prefs.getString("$key-notified", null) == null && sent < 5) {
+                                    val open = PendingIntent.getActivity(this@TaskPollService, key.hashCode(),
+                                        Intent(this@TaskPollService, MainActivity::class.java).setAction("com.localfirst.assistant.ACTIVITY"),
+                                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                                    val text = when (state) {
+                                        "idle" -> "Your PC task finished. Open FRIDAY to see the result."
+                                        "waiting" -> "Your PC task needs your reply. Open FRIDAY to review it."
+                                        else -> "Your PC task stopped ($state). Open FRIDAY for details."
+                                    }
+                                    val notification = NotificationCompat.Builder(this@TaskPollService, TaskNotifications.CHANNEL)
+                                        .setSmallIcon(android.R.drawable.ic_dialog_info)
+                                        .setContentTitle(session.optString("title").ifBlank { "PC task" }.take(80))
+                                        .setContentText(text).setContentIntent(open).setAutoCancel(true).build()
+                                    manager.notify(key.hashCode(), notification)
+                                    prefs.edit().putString("$key-notified", state).apply(); sent++
+                                }
+                                if (previous != state) prefs.edit().putString(key, state).apply()
+                            }
+                        }
+                    } catch (_: Exception) { /* PC offline: leave seen state untouched. */ }
+                }
+                if (manager.areNotificationsEnabled() && !privacy.getBoolean("incognito", false)) {
                     // Proposals contain no account snapshot and cannot approve/start a task.
                     val proposals = JSONObject(client.request("/workspace/agent/briefing/proposals/refresh", "POST", JSONObject().put("scope", "")))
                     val items = proposals.getJSONArray("items")

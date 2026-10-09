@@ -115,6 +115,23 @@ class TranscriptTest {
     }
 
     @Test
+    fun pcTasksBecomeCardsWithoutRawJson() {
+        val start = Transcript.step(
+            Message.ToolCall("p", "run_on_pc", """{"prompt":"List files"}"""),
+            Message.ToolResult("p", "run_on_pc", """{"id":"ses_1","title":"List files"}""", true),
+        )
+        assertEquals("Started PC task", start.label)
+        assertEquals("""{"id":"ses_1","title":"List files"}""", start.pcTask)
+        assertEquals(null, start.resultContent)
+        val read = Transcript.step(
+            Message.ToolCall("g", "get_pc_task", """{"id":"ses_1"}"""),
+            Message.ToolResult("g", "get_pc_task", """{"id":"ses_1","state":"idle"}""", true),
+        )
+        assertEquals("Read PC task", read.label)
+        assertEquals("""{"id":"ses_1","state":"idle"}""", read.pcTask)
+    }
+
+    @Test
     fun groupsConversationsByAge() {
         val day = 24L * 60 * 60 * 1000
         val today = 100 * day

@@ -167,7 +167,7 @@ internal fun PcTaskContent(task:JSONObject?,busy:Boolean,error:String?,onBack:()
 }
 
 @Composable
-private fun PcPermissionCard(request:JSONObject,enabled:Boolean,onReply:(String,String,Boolean)->Unit) {
+internal fun PcPermissionCard(request:JSONObject,enabled:Boolean,onReply:(String,String,Boolean)->Unit) {
     var rememberRule by remember(request.optString("id")) { mutableStateOf(false) }
     val patterns=pcStrings(request,"always")
     val id=request.getString("id")
@@ -193,7 +193,7 @@ private fun PcPermissionCard(request:JSONObject,enabled:Boolean,onReply:(String,
 }
 
 @Composable
-private fun PcQuestionCard(request:JSONObject,enabled:Boolean,onAnswer:(String,JSONArray?)->Unit) {
+internal fun PcQuestionCard(request:JSONObject,enabled:Boolean,onAnswer:(String,JSONArray?)->Unit) {
     val questions=pcRows(request,"questions")
     var answers by remember(request.optString("id")) { mutableStateOf(List(questions.size) { emptyList<String>() }) }
     var custom by remember(request.optString("id")) { mutableStateOf(List(questions.size) { "" }) }
@@ -222,7 +222,7 @@ private fun PcQuestionCard(request:JSONObject,enabled:Boolean,onAnswer:(String,J
 }
 
 @Composable
-private fun PcScreenPreview(state:ChatUiState,vm:ChatViewModel) {
+internal fun PcScreenPreview(state:ChatUiState,vm:ChatViewModel) {
     val path=state.pcScreen ?: return
     var bitmap by remember(path) { mutableStateOf<android.graphics.Bitmap?>(null) }
     LaunchedEffect(path,state.pcScreenAt) {
@@ -240,6 +240,49 @@ private fun PcScreenPreview(state:ChatUiState,vm:ChatViewModel) {
                 Text("Captured ${java.time.Instant.ofEpochMilli(state.pcScreenAt).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("h:mm:ss a"))}",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                 bitmap?.let { androidx.compose.foundation.Image(it.asImageBitmap(),"Captured PC screen",Modifier.fillMaxWidth().weight(1f),contentScale=androidx.compose.ui.layout.ContentScale.Fit) }
                     ?:Text("The screenshot could not be displayed.")
+            }
+        }
+    }
+}
+
+/** A native PC session linked from chat: live status, inline approvals, and follow-up actions. */
+@Composable
+internal fun PcChatCard(json:String,state:ChatUiState,vm:ChatViewModel) {
+    val stored=remember(json) { runCatching { JSONObject(json) }.getOrNull() } ?: return
+    val id=stored.optString("id").takeIf { it.matches(Regex("[A-Za-z0-9_-]{1,100}")) } ?: return
+    val listed=state.pcSessions.firstOrNull { it.optString("id")==id }
+    val full=state.pcChat[id] ?: if (stored.has("state")||stored.has("busy")) stored else null
+    val title=(full?.optString("title") ?: listed?.optString("title") ?: stored.optString("title")).ifBlank { "PC task" }
+    val status=full?.optString("state") ?: listed?.optString("state") ?: stored.optString("state").ifBlank { "busy" }
+    val busy=full?.optBoolean("busy") ?: (status=="busy")
+    val model=full?.optString("model") ?: listed?.optString("model").orEmpty()
+    val permissions=full?.let { pcRows(it,"permissions") }.orEmpty()
+    val questions=full?.let { pcRows(it,"questions") }.orEmpty()
+    val waiting=status=="waiting"||permissions.isNotEmpty()||questions.isNotEmpty()
+    FridayCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment=Alignment.CenterVertically) {
+                Text("PC task",style=MaterialTheme.typography.titleSmall,modifier=Modifier.weight(1f))
+                Text(if (waiting) "Needs your reply" else pcState(status),style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Text(title,style=MaterialTheme.typography.bodyMedium)
+            if (model.isNotBlank()) Text(model,style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            if (busy&&!waiting) Text("Working on your computer…",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.primary)
+            permissions.forEach { request ->
+                val requestId=request.optString("id").takeIf(String::isNotBlank) ?: return@forEach
+                key(requestId) { PcPermissionCard(request,!state.pcBusy,vm::replyPcPermission) }
+            }
+            questions.forEach { question ->
+                val questionId=question.optString("id").takeIf(String::isNotBlank) ?: return@forEach
+                key(questionId) { PcQuestionCard(question,!state.pcBusy,vm::answerPcQuestion) }
+            }
+            if (full==null&&(state.pcStatus?.optInt("pending_count") ?: 0)>0) {
+                Text("Approvals may be waiting. Open the task to review them.",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Row(horizontalArrangement=Arrangement.spacedBy(4.dp),verticalAlignment=Alignment.CenterVertically) {
+                TextButton(shape=MaterialTheme.shapes.small,onClick={ vm.openPcTask(id) }) { Text(if (waiting) "Review" else "Open") }
+                TextButton(shape=MaterialTheme.shapes.small,onClick={ vm.discussPcTask(id) },enabled=!state.busy) { Text("Read into chat") }
+                TextButton(shape=MaterialTheme.shapes.small,onClick={ vm.refreshChatPc() },enabled=!state.pcBusy) { Text("Refresh") }
             }
         }
     }

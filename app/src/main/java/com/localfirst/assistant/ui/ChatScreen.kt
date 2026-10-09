@@ -151,6 +151,10 @@ fun ChatScreen(viewModel: ChatViewModel) {
     val clipboard = LocalClipboardManager.current
     val snackbar = remember { SnackbarHostState() }
     val items = remember(state.messages, state.busy) { Transcript.items(state.messages, state.busy) }
+    val chatPcIds = remember(state.messages) { viewModel.chatPcIds() }
+    LaunchedEffect(chatPcIds.joinToString(",")) {
+        if (chatPcIds.isNotEmpty() && !state.privacy.incognito) viewModel.refreshChatPc(chatPcIds)
+    }
 
     fun closeDrawerThen(action: () -> Unit) {
         scope.launch { if(palette.reducedMotion)drawerState.snapTo(DrawerValue.Closed)else drawerState.animateTo(DrawerValue.Closed,tween(220)) }
@@ -323,7 +327,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                                     onRegenerate = viewModel::regenerate,
                                     onChoose = viewModel::sendSuggestion,
                                 )
-                                is TranscriptItem.ToolActivity -> ToolActivityCard(item, viewModel::loadImage, viewModel::openArtifact) { FridayTaskCard(it, state, viewModel) }
+                                is TranscriptItem.ToolActivity -> ToolActivityCard(item, viewModel::loadImage, viewModel::openArtifact, { FridayTaskCard(it, state, viewModel) }, { PcChatCard(it, state, viewModel) })
                                 TranscriptItem.Thinking -> ThinkingIndicator()
                             }
                         }
