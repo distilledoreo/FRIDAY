@@ -9,7 +9,7 @@ built from the phone's PC access settings, in the style of Claude Code/Codex:
 * ``full``         everything runs, except a few catastrophic commands that still ask.
 
 The user's allow/deny rules are OpenCode patterns ("gh pr list *"); deny always wins. Approval
-requests are relayed to the phone. Models: AA-ranked free OpenRouter models, a ranked vision
+requests are relayed to the phone. Models: AA-ranked free OpenCode Zen models, a ranked vision
 helper for desktop work, then the local Qwen when the free ones are rate-limited.
 """
 import asyncio
@@ -28,7 +28,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from .model_ranking import ModelRanking, openrouter_key
+from .model_ranking import ModelRanking, PROVIDER, ENDPOINT
 
 PORT = 4097
 MODES = ('ask', 'ask_changes', 'full')
@@ -205,7 +205,7 @@ class PcAgent:
         # A newly listed model must be registered with OpenCode first. Config reloads wait
         # for idle, rather than interrupting other tasks just to add a new provider entry.
         if self.model_registry is not None: cloud = [name for name in cloud if name in self.model_registry]
-        self.chain = [('openrouter', name) for name in cloud] + [LOCAL]
+        self.chain = [(PROVIDER, name) for name in cloud] + [LOCAL]
         return self.chain
 
     async def session_chain(self, session_id):
@@ -232,14 +232,17 @@ class PcAgent:
         settings = self.settings()
         cloud = {}
         for provider, name in chain:
-            if provider != 'openrouter': continue
+            if provider != PROVIDER: continue
             meta = self.ranking.catalog.get(name, {})
             inputs = meta.get('input_modalities', ['text', 'image'])
-            cloud[name] = {'name': name, 'tool_call': True, 'attachment': 'image' in inputs,
+            cloud[name] = {'name': meta.get('name', name), 'tool_call': True, 'attachment': 'image' in inputs,
                            'modalities': {'input': inputs, 'output': ['text']},
                            'limit': {'context': meta.get('context', 200000), 'output': meta.get('output', 16384)},
-                           'options': {'provider': {'max_price': {'prompt': 0, 'completion': 0}}}}
-        vision = [row['id'] for row in self.ranking.ranked(vision=True) if ('openrouter', row['id']) in chain]
+                           'cost': {'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0},
+                           'provider': {'npm': meta.get('npm', '@ai-sdk/openai-compatible'), 'api': ENDPOINT},
+                           'reasoning': meta.get('reasoning', False), 'temperature': meta.get('temperature', False)}
+            if meta.get('interleaved'): cloud[name]['interleaved'] = meta['interleaved']
+        vision = [row['id'] for row in self.ranking.ranked(vision=True) if (PROVIDER, row['id']) in chain]
         agents = {'friday': {'mode': 'primary', 'description': 'FRIDAY on the user’s PC', 'steps': 80,
                              'tools': {COMPUTER + '_screenshot': False, COMPUTER + '_action': False},
                              'prompt': prompt_text(os.environ.get('USER', 'user'), str(Path.home()))}}
@@ -261,11 +264,15 @@ class PcAgent:
             'plugin': [(self.root / 'shell-environment.js').as_uri()],
             'model': '/'.join(chain[0]), 'small_model': '/'.join(chain[0]),
             'autoupdate': False, 'share': 'disabled',
+            'enabled_providers': [PROVIDER, VISION_PROVIDER, LOCAL[0]],
             'provider': {
-                'openrouter': {'models': cloud},
+                # Public free-tier auth cannot spend the user's Zen/Go credits. Whitelist
+                # also excludes paid built-in models and automatic title/summary choices.
+                PROVIDER: {'options': {'apiKey': 'public', 'baseURL': ENDPOINT}, 'whitelist': list(cloud), 'models': cloud},
                 VISION_PROVIDER: {'npm': '@ai-sdk/openai-compatible', 'name': 'FRIDAY free desktop vision',
                                   'options': {'baseURL': 'http://127.0.0.1:8700/workspace/pc/vision/v1', 'apiKey': self.password},
-                                  'models': {name: cloud[name] for name in vision}},
+                                  'models': {name: {**cloud[name], 'provider': {'npm': '@ai-sdk/openai-compatible',
+                                      'api': 'http://127.0.0.1:8700/workspace/pc/vision/v1'}} for name in vision}},
                 LOCAL[0]: {'npm': '@ai-sdk/openai-compatible', 'name': 'Local Qwen (FRIDAY fallback)',
                            'options': {'baseURL': 'http://127.0.0.1:8700/workspace/pc/internal/v1', 'apiKey': self.password},
                            # Slot 1 is the background slot, so chat keeps its cached prompt in slot 0.
@@ -284,7 +291,7 @@ class PcAgent:
         async with self.lock:
             chain = await self.models()
             # Register all free tool models, with their actual capabilities.
-            registry = chain + [('openrouter', row['id']) for row in self.ranking.ranked() if ('openrouter', row['id']) not in chain]
+            registry = chain + [(PROVIDER, row['id']) for row in self.ranking.ranked() if (PROVIDER, row['id']) not in chain]
             config = self.config(registry)
             digest = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
             if self.process and self.process.returncode is None and self.client:
@@ -304,10 +311,10 @@ class PcAgent:
             await self.stop()
             # Removing the old registry exposes newly available candidates after idle.
             chain = await self.models()
-            registry = chain + [('openrouter', row['id']) for row in self.ranking.ranked() if ('openrouter', row['id']) not in chain]
+            registry = chain + [(PROVIDER, row['id']) for row in self.ranking.ranked() if (PROVIDER, row['id']) not in chain]
             config = self.config(registry)
             self.config_digest = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
-            self.model_registry = {name for provider, name in registry if provider == 'openrouter'}
+            self.model_registry = {name for provider, name in registry if provider == PROVIDER}
             self.vision_chain = list(config['provider'][VISION_PROVIDER]['models'])
             # Isolate OpenCode, while shell commands retain the user's usual app/CLI profiles.
             restore = {key: os.environ.get(key) or str(Path.home() / default) for key, default in
@@ -344,9 +351,9 @@ class PcAgent:
             for key in ('OPENCODE_CONFIG_CONTENT', 'OPENCODE_CONFIG_DIR'): env.pop(key, None)
             for key, directory in (('XDG_CONFIG_HOME', 'config'), ('XDG_DATA_HOME', 'data'), ('XDG_CACHE_HOME', 'cache')):
                 folder = self.root / directory; folder.mkdir(mode=0o700, exist_ok=True); env[key] = str(folder)
-            if not env.get('OPENROUTER_API_KEY'):
-                key = openrouter_key()
-                if key: env['OPENROUTER_API_KEY'] = key
+            # The native helper has no paid provider credential. AA metadata is fetched
+            # separately by the gateway, and ordinary shell profiles still work normally.
+            for key in ('OPENROUTER_API_KEY', 'OPENCODE_API_KEY'): env.pop(key, None)
             env.update(OPENCODE_CONFIG=str(self.config_path), OPENCODE_SERVER_PASSWORD=self.password,
                        OPENCODE_DISABLE_AUTOUPDATE='true', GIT_TERMINAL_PROMPT='0', GH_PROMPT_DISABLED='1', PAGER='cat')
             log = open(self.root / 'opencode.log', 'ab')
@@ -511,7 +518,7 @@ class PcAgent:
         busy = bool(status) or record['state'] == 'busy' and session_id in self.watchers and not self.watchers[session_id].done()
         provider, model = chain[min(record['model'], len(chain) - 1)]
         return {'id': session_id, 'title': record['title'], 'busy': busy, 'state': 'waiting' if pending['permissions'] or pending['questions'] else 'busy' if busy else record['state'],
-                'model': model if provider == 'openrouter' else 'Local Qwen', 'items': items, **pending}
+                'model': 'Local Qwen' if provider == LOCAL[0] else model, 'items': items, **pending}
 
     async def owner(self, session_id):
         if session_id in self.session_roots: return self.session_roots[session_id]
@@ -638,7 +645,7 @@ def routes(app, auth, agent):
         return {**settings, 'ready': ready, 'sudo_ready': sudo_ready, 'user': os.environ.get('USER'),
                 'pending_count': len(pending['permissions']) + len(pending['questions']),
                 'active_count': sum(s['state'] == 'busy' for s in agent.sessions(200)),
-                'models': [name if provider == 'openrouter' else 'Local Qwen' for provider, name in chain],
+                'models': ['Local Qwen' if provider == LOCAL[0] else name for provider, name in chain],
                 'model_ranking': agent.ranking.status(),
                 'desktop_ranking': agent.ranking.status(vision=True) if settings['computer_use'] else None}
 

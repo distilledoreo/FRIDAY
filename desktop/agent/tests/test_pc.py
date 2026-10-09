@@ -33,7 +33,7 @@ class FakePc(PcAgent):
         self.stopped = 0
         self.ensured = 0
 
-    async def models(self): return [('openrouter', 'synthetic:free'), LOCAL]
+    async def models(self): return [('opencode', 'synthetic:free'), LOCAL]
     async def ensure(self): self.ensured += 1
     async def stop(self): self.stopped += 1
 
@@ -113,23 +113,25 @@ class PcTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored.watchers, {})
 
     async def test_catalog_requires_zero_pricing_and_tools_and_includes_strong_text_models(self):
-        def model(identifier, price='0', image=True, tools=True):
-            return {'id':identifier,'pricing':{'prompt':price,'completion':'0'},'architecture':{'input_modalities':['text','image'] if image else ['text']},'supported_parameters':['tools'] if tools else []}
+        from desktop.agent.tests.test_model_ranking import model, metadata
+        definitions = metadata([model('owned-free'), model('paid-free', price='1'),
+                                model('noimage-free', vision=False), model('notools-free', tools=False)])
         async def respond(request):
-            if request.url.path.endswith('/models'):
-                return httpx.Response(200, json={'data':[model('v/owned:free'),model('v/paid:free',price='1'),model('v/noimage:free',image=False),model('v/notools:free',tools=False)]})
-            return httpx.Response(200, json={'data':[{'source':'artificial-analysis','model_permaslug':'v/owned','intelligence_index':40}]})
+            if request.url.host == 'models.dev': return httpx.Response(200, json=definitions)
+            if request.url.host == 'opencode.ai': return httpx.Response(200, json={'data': [{'id': name} for name in definitions['opencode']['models']]})
+            if request.url.path.endswith('/models'): return httpx.Response(200, json={'data': []})
+            return httpx.Response(200, json={'data': [{'source': 'artificial-analysis', 'model_permaslug': 'owned-free', 'intelligence_index': 40}]})
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
             self.pc.ranking.client = client
             self.pc.ranking.key = lambda: 'fixture'
             chain = await PcAgent.models(self.pc)
-            self.assertEqual(chain, [('openrouter','v/owned:free'),('openrouter','v/noimage:free'),LOCAL])
+            self.assertEqual(chain, [('opencode','owned-free'),('opencode','noimage-free'),LOCAL])
             self.pc.save_settings(Settings(computer_use=False).model_dump())
             chain = await PcAgent.models(self.pc)
-            self.assertEqual(chain, [('openrouter','v/owned:free'),('openrouter','v/noimage:free'),LOCAL])
+            self.assertEqual(chain, [('opencode','owned-free'),('opencode','noimage-free'),LOCAL])
 
     async def test_live_model_identity_and_fallback_order_are_pinned_until_human_followup(self):
-        a, b, c = [('openrouter', 'v/'+name+':free') for name in ('a','b','c')]
+        a, b, c = [('opencode', 'v/'+name+':free') for name in ('a','b','c')]
         self.pc.models = AsyncMock(return_value=[a,b,LOCAL])
         await self.pc.send(self.session, 'Owned first turn')
         self.pc.models.return_value = [c,a,b,LOCAL]
@@ -142,7 +144,7 @@ class PcTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.pc.record(self.session)['model'], 0)
 
     async def test_saved_fallback_cannot_reintroduce_removed_or_paid_model(self):
-        a, b = [('openrouter','v/'+name+':free') for name in ('a','b')]
+        a, b = [('opencode','v/'+name+':free') for name in ('a','b')]
         self.pc.models = AsyncMock(return_value=[a,b,LOCAL])
         await self.pc.send(self.session, 'Owned first turn')
         self.pc.models.return_value = [a,LOCAL]
@@ -178,23 +180,28 @@ class PcTests(unittest.IsolatedAsyncioTestCase):
         self.pc.ranking.refresh = AsyncMock()
         self.pc.ranking.ranked = lambda **kwargs: [{'id':'v/new:free'},{'id':'v/registered:free'}]
         self.pc.model_registry = {'v/registered:free'}
-        self.assertEqual(await PcAgent.models(self.pc), [('openrouter','v/registered:free'),LOCAL])
+        self.assertEqual(await PcAgent.models(self.pc), [('opencode','v/registered:free'),LOCAL])
         self.pc.model_registry = None
-        self.assertEqual((await PcAgent.models(self.pc))[0], ('openrouter','v/new:free'))
+        self.assertEqual((await PcAgent.models(self.pc))[0], ('opencode','v/new:free'))
 
-    def test_cloud_config_uses_actual_modalities_limits_and_zero_price_cap(self):
+    def test_zen_config_uses_capabilities_whitelist_and_public_free_credentials(self):
         self.pc.ranking.catalog['v/text-preview'] = {'input_modalities':['text'],'context':65536,'output':8192}
-        model = self.pc.config([('openrouter','v/text-preview'),LOCAL])['provider']['openrouter']['models']['v/text-preview']
+        model = self.pc.config([('opencode','v/text-preview'),LOCAL])['provider']['opencode']['models']['v/text-preview']
         self.assertFalse(model['attachment'])
         self.assertEqual(model['modalities']['input'], ['text'])
         self.assertEqual(model['limit'], {'context':65536,'output':8192})
-        self.assertEqual(model['options']['provider']['max_price'], {'prompt':0,'completion':0})
+        self.assertEqual(model['cost']['input'], 0)
+        config = self.pc.config([('opencode','v/text-preview'),LOCAL])
+        self.assertEqual(config['provider']['opencode']['options']['apiKey'], 'public')
+        self.assertEqual(config['provider']['opencode']['whitelist'], ['v/text-preview'])
+        self.assertNotIn('openrouter', config['enabled_providers'])
+        self.assertNotIn('openrouter', config['provider'])
 
     def test_desktop_helper_has_ranked_vision_only_failover_and_no_permission_grants(self):
         self.pc.ranking.ranked = lambda vision=False: [{'id':name} for name in (['v/best-vision:free','v/next-vision:free'] if vision else ['v/text-preview','v/best-vision:free','v/next-vision:free'])]
-        config = self.pc.config([('openrouter',name) for name in ('v/text-preview','v/best-vision:free','v/next-vision:free')] + [LOCAL])
+        config = self.pc.config([('opencode',name) for name in ('v/text-preview','v/best-vision:free','v/next-vision:free')] + [LOCAL])
         helper = config['agent']['friday-desktop']
-        self.assertEqual(config['model'], 'openrouter/v/text-preview')
+        self.assertEqual(config['model'], 'opencode/v/text-preview')
         self.assertEqual(helper['model'], 'friday-vision/v/best-vision:free')
         self.assertEqual(list(config['provider']['friday-vision']['models']), ['v/best-vision:free','v/next-vision:free'])
         self.assertNotIn('permission', helper)

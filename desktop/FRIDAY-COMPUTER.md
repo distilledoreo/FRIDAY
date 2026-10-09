@@ -19,4 +19,4 @@ API-only deployment preserved the prompt cache/model services and restored the p
 
 Sudo needs the PC’s existing password authorization; no password storage or sudoers change. Tailscale needs login and the private APK server is offline, so direct APK delivery is the verified route. Physical-phone, real keyboard/mouse actions, real model quality and performance/battery remain unverified. Synthetic fixtures do not establish those properties. The broader roadmap remains unfinished.
 
-References: [OpenCode permissions](https://opencode.ai/docs/permissions/), [server API](https://opencode.ai/docs/server/), [plugins](https://opencode.ai/docs/plugins/), [OpenRouter routing cap](https://openrouter.ai/docs/guides/routing/provider-selection).
+References: [OpenCode permissions](https://opencode.ai/docs/permissions/), [server API](https://opencode.ai/docs/server/), [plugins](https://opencode.ai/docs/plugins/), [OpenCode Zen free models](https://opencode.ai/docs/zen/).

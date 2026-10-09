@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 from desktop.agent.pc import PcAgent, Prompt, Reply, Settings, COMPUTER, LOCAL, VISION_PROVIDER
 from desktop.agent.vision_proxy import vision_payload
 
+RESPONSES = 'owned-responses-free'
 TEXT, VISION, NEXT = 'owned/text-preview', 'owned/vision:free', 'owned/next-vision:free'
 
 class Model(BaseHTTPRequestHandler):
@@ -13,8 +14,25 @@ class Model(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        if self.path.endswith('/responses'):
+            self.bodies.append(body)
+            assert body['model'] == RESPONSES and isinstance(body['input'], list), body
+            item = {'id': 'msg_owned', 'type': 'message', 'role': 'assistant', 'status': 'completed',
+                    'content': [{'type': 'output_text', 'text': 'Owned native Responses result.', 'annotations': []}]}
+            response = {'id': 'resp_owned', 'object': 'response', 'created_at': int(time.time()), 'status': 'completed',
+                        'model': RESPONSES, 'output': [item], 'usage': {'input_tokens': 10, 'output_tokens': 6, 'total_tokens': 16}}
+            events = [
+                {'type': 'response.created', 'response': {**response, 'status': 'in_progress', 'output': []}},
+                {'type': 'response.output_item.added', 'output_index': 0, 'item': {**item, 'status': 'in_progress', 'content': []}},
+                {'type': 'response.output_text.delta', 'item_id': 'msg_owned', 'output_index': 0, 'content_index': 0, 'delta': 'Owned native Responses result.'},
+                {'type': 'response.output_item.done', 'output_index': 0, 'item': item},
+                {'type': 'response.completed', 'response': response}]
+            self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.end_headers()
+            for event in events: self.wfile.write(('data: '+json.dumps(event)+'\n\n').encode()); self.wfile.flush()
+            return
         if self.path.startswith('/vision/'):
-            body = vision_payload(body, current_agent)
+            body, chain = vision_payload(body, current_agent)
+            assert chain == [VISION, NEXT]
         self.bodies.append(body)
         names = [t['function']['name'] for t in body.get('tools', [])]
         used = any(m.get('role') == 'tool' for m in body['messages'])
@@ -28,8 +46,7 @@ class Model(BaseHTTPRequestHandler):
                 'name':COMPUTER+'_action', 'arguments':json.dumps({'action':'click','x':1,'y':1})}}]}
         else:
             assert model == VISION, model
-            assert body.get('models') == [VISION, NEXT], 'Vision fallback list was not transmitted'
-            assert body.get('provider',{}).get('max_price') == {'prompt':0,'completion':0}, 'Price cap absent'
+            assert 'provider' not in body and 'models' not in body, 'OpenRouter billing/routing options leaked into Zen'
             results = [m for m in body['messages'] if m.get('role')=='tool']
             if len(results) >= 2: delta = {'content': 'Owned fake desktop result checked.'}
             elif used: delta = {'tool_calls': [{'index':0, 'id':'call_owned_input', 'type':'function', 'function': {
@@ -46,8 +63,10 @@ class Model(BaseHTTPRequestHandler):
 class OwnedPc(PcAgent):
     def config(self, chain):
         value = super().config(chain)
-        value['provider']['openrouter']['options'] = {'baseURL':f'http://127.0.0.1:{server.server_port}/v1','apiKey':'owned-fixture'}
+        value['provider']['opencode']['options'] = {'baseURL':f'http://127.0.0.1:{server.server_port}/v1','apiKey':'owned-fixture'}
+        for definition in value['provider']['opencode']['models'].values(): definition['provider']['api'] = f'http://127.0.0.1:{server.server_port}/v1'
         value['provider'][VISION_PROVIDER]['options'] = {'baseURL':f'http://127.0.0.1:{server.server_port}/vision','apiKey':'owned-fixture'}
+        for definition in value['provider'][VISION_PROVIDER]['models'].values(): definition['provider']['api'] = f'http://127.0.0.1:{server.server_port}/vision'
         value['mcp'][COMPUTER]['command'] = [self.python, str(self.root/'fake_desktop.py')]
         value['provider'][LOCAL[0]]['options']['baseURL'] = f'http://127.0.0.1:{server.server_port}/unused'
         return value
@@ -112,7 +131,7 @@ serve(Owned())
             agent.ranking.scores[NEXT]['score'] = 70
             await agent.ensure()
             assert agent.process.pid != old_process, 'Idle helper did not reload its default model'
-            assert json.loads(agent.config_path.read_text())['model'] == 'openrouter/'+NEXT
+            assert json.loads(agent.config_path.read_text())['model'] == 'opencode/'+NEXT
             assert (await agent.view(sid))['model'] == TEXT, 'History was relabeled after refresh'
             await agent.stop()
             agent.ranking.scores[NEXT]['score'] = 40
@@ -137,8 +156,17 @@ serve(Owned())
             await agent.reply(task['permissions'][0]['id'],Reply(reply='reject'))
             task = await wait(agent,ask['id'],lambda t:not t['busy'] and not t['permissions'])
             assert not marker.exists(), 'Rejected child input executed'
+            await agent.stop()
+            agent.ranking.catalog[RESPONSES] = {'id': RESPONSES, 'canonical_slug': RESPONSES, 'context': 65536, 'output': 8192,
+                'npm': '@ai-sdk/openai', 'input_modalities': ['text', 'image']}
+            agent.ranking.scores[RESPONSES] = {'score': 80, 'benchmark_name': 'Owned native Responses fixture'}
+            native = await agent.start(Prompt(prompt='Return the owned native Responses fixture result.', title='Owned Responses fixture'))
+            task = await wait(agent, native['id'], lambda t: not t['busy'])
+            assert task['model'] == RESPONSES, task
+            assert any('Owned native Responses result.' in i.get('text', '') for i in task['items']), task
+            assert any(body.get('model') == RESPONSES and 'input' in body for body in Model.bodies)
             print(json.dumps({'strong_text_default':True,'vision_helper_used':True,'ranked_vision_fallback_transmitted':True,
-                'zero_price_cap_transmitted':True,'child_input_required_human_approval':True,'idle_refresh_applied':True,
+                'zen_public_free_routing':True,'native_responses_protocol_verified':True,'child_input_required_human_approval':True,'idle_refresh_applied':True,
                 'history_model_stable':True,'parent_desktop_input_blocked':True,'active_refresh_deferred':True,
                 'full_access_inherited':True,'ask_mode_inherited':True,'rejected_input_absent':True,'owned_model_calls':len(Model.bodies)}))
         finally: await agent.stop()
