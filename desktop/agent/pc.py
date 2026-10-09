@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import sqlite3
@@ -33,6 +34,9 @@ from .model_ranking import ModelRanking, PROVIDER, ENDPOINT
 PORT = 4097
 MODES = ('ask', 'ask_changes', 'full')
 DEFAULTS = {'enabled': True, 'mode': 'ask_changes', 'computer_use': True, 'allow': [], 'deny': []}
+MAX_MCP_SERVERS = 10
+MCP_NAME = re.compile(r'[a-z0-9-]{1,32}')
+RESERVED_MCP = frozenset({'friday-computer', 'friday'})
 LOCAL = ('friday-local', 'qwen3.8-27b')
 
 # Commands that only look at things. Anything else asks in "ask before changes".
@@ -197,6 +201,52 @@ class PcAgent:
         temporary.replace(self.settings_path)
         return value
 
+    # ---- MCP service connections ----
+    def mcp_servers(self):
+        """Operator-configured MCP servers from ``mcp.json``, merged into the OpenCode config.
+
+        ``{"servers": {"github": {"type": "local", "command": [...], "environment": {...}, "enabled": true},
+        "notion": {"type": "remote", "url": "https://...", "enabled": true}}}``. Like the outgoing
+        activation file, this is a trusted operator attestation: server commands and credentials run
+        on the user's own PC. Tool calls from these servers arrive as permission prompts in chat and
+        FRIDAY like everything else; unknown tools ask by default. Fail closed: anything invalid
+        yields no extra servers.
+        """
+        try:
+            raw = json.loads((self.root / 'mcp.json').read_text())
+            declared = raw['servers'] if isinstance(raw, dict) else None
+            if not isinstance(declared, dict) or len(declared) > MAX_MCP_SERVERS: return {}
+        except (OSError, ValueError, KeyError, TypeError): return {}
+        servers = {}
+        for name, entry in declared.items():
+            if not isinstance(name, str) or not MCP_NAME.match(name) or name in RESERVED_MCP: continue
+            if not isinstance(entry, dict) or entry.get('enabled', True) is not True: continue
+            try: servers[name] = self._mcp_entry(entry)
+            except (ValueError, KeyError, TypeError): continue
+        return servers
+
+    @staticmethod
+    def _mcp_entry(entry):
+        kind = entry.get('type', 'local')
+        if kind == 'local':
+            command = entry.get('command')
+            if (not isinstance(command, list) or not command or len(command) > 8 or
+                    any(not isinstance(part, str) or not part or len(part) > 256 for part in command)): raise ValueError('Invalid MCP command')
+            environment = entry.get('environment', {})
+            if (not isinstance(environment, dict) or len(environment) > 20 or
+                    any(not isinstance(key, str) or not key or len(key) > 128 or
+                        not isinstance(val, str) or len(val) > 4096 for key, val in environment.items())): raise ValueError('Invalid MCP environment')
+            return {'type': 'local', 'command': list(command), 'environment': dict(environment), 'enabled': True}
+        if kind == 'remote':
+            url = entry.get('url')
+            if not isinstance(url, str) or len(url) > 500 or not url.startswith('https://') or ' ' in url: raise ValueError('Invalid MCP URL')
+            headers = entry.get('headers', {})
+            if (not isinstance(headers, dict) or len(headers) > 20 or
+                    any(not isinstance(key, str) or not key or len(key) > 128 or
+                        not isinstance(val, str) or len(val) > 4096 for key, val in headers.items())): raise ValueError('Invalid MCP headers')
+            return {'type': 'remote', 'url': url, 'headers': dict(headers), 'enabled': True}
+        raise ValueError('Invalid MCP type')
+
     # ---- models ----
     async def models(self):
         """Highest AA intelligence score first; vision is handled by a specialized helper."""
@@ -281,7 +331,8 @@ class PcAgent:
             },
             'permission': {'*': 'ask', 'bash': 'ask', 'edit': 'ask', 'read': 'allow', 'webfetch': 'allow'},
             'mcp': {COMPUTER: {'type': 'local', 'command': [self.python, '-m', 'agent.computer'], 'enabled': settings['computer_use'],
-                               'environment': {'DISPLAY': os.environ.get('DISPLAY', ':0'), 'PYTHONPATH': str(Path(__file__).resolve().parent.parent)}}},
+                               'environment': {'DISPLAY': os.environ.get('DISPLAY', ':0'), 'PYTHONPATH': str(Path(__file__).resolve().parent.parent)}},
+                    **self.mcp_servers()},
             'agent': agents,
         }
 

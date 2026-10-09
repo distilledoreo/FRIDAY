@@ -80,6 +80,34 @@ class PcTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision(settings, 'bash', 'git push origin main'), 'deny')
         self.assertEqual(decision(settings, 'bash', 'sudo mkfs.ext4 /dev/synthetic'), 'ask')
 
+    def test_operator_mcp_servers_merge_and_fail_closed(self):
+        self.assertEqual(self.pc.mcp_servers(), {})
+        manifest = self.pc.root / 'mcp.json'
+        manifest.write_text(json.dumps({'servers': {
+            'github': {'type': 'local', 'command': ['synthetic-mcp', 'serve'], 'environment': {'GITHUB_TOKEN': 'synthetic'}, 'enabled': True},
+            'notion': {'type': 'remote', 'url': 'https://mcp.notion.com/mcp', 'enabled': True},
+            'off': {'type': 'local', 'command': ['synthetic-off'], 'enabled': False},
+            'Bad Name!': {'type': 'local', 'command': ['synthetic-bad']},
+            'friday-computer': {'type': 'local', 'command': ['synthetic-reserved']},
+            'plain': {'type': 'remote', 'url': 'http://mcp.example.com/mcp'},
+        }}))
+        servers = self.pc.mcp_servers()
+        self.assertEqual(set(servers), {'github', 'notion'})
+        self.assertEqual(servers['github'], {'type': 'local', 'command': ['synthetic-mcp', 'serve'], 'environment': {'GITHUB_TOKEN': 'synthetic'}, 'enabled': True})
+        self.assertEqual(servers['notion'], {'type': 'remote', 'url': 'https://mcp.notion.com/mcp', 'headers': {}, 'enabled': True})
+        for bad in ('not json', '[]', '{}', '{"servers":[]}', '{"servers":{' + ','.join(f'"s{i}":{{"type":"local","command":["x"]}}' for i in range(11)) + '}}'):
+            manifest.write_text(bad)
+            self.assertEqual(self.pc.mcp_servers(), {}, bad[:40])
+        manifest.unlink()
+        self.assertEqual(self.pc.mcp_servers(), {})
+
+    def test_operator_mcp_servers_merge_into_opencode_config(self):
+        (self.pc.root / 'mcp.json').write_text(json.dumps({'servers': {'github': {'type': 'local', 'command': ['synthetic-mcp']}}}))
+        config = self.pc.config([('opencode', 'synthetic:free'), LOCAL])
+        self.assertIn('friday-computer', config['mcp'])
+        self.assertEqual(config['mcp']['github'], {'type': 'local', 'command': ['synthetic-mcp'], 'environment': {}, 'enabled': True})
+        self.assertEqual(decision(self.pc.settings(), 'mcp_github_list_repos', '*'), 'ask')
+
     def test_computer_off_overrides_full_mode(self):
         settings = Settings(mode='full', computer_use=False, allow=['computer']).model_dump()
         for tool in (COMPUTER + '_screenshot', COMPUTER + '_action'):
