@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Set up FRIDAY's PC server from this repo plus a checkout of the Android app repo.
-# Usage: scripts/setup.sh /path/to/FRIDAY-Android
+# Set up FRIDAY's PC server from this checkout.
+# Usage: server/scripts/setup.sh
 # Installs to ~/assistant-server (override with SERVER_DIR). Safe to re-run.
 set -euo pipefail
-APP_REPO="${1:?path to a FRIDAY-Android checkout}"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+APP_REPO="$(cd "$HERE/.." && pwd)"
 DEST="${SERVER_DIR:-$HOME/assistant-server}"
 mkdir -p "$DEST/api" "$DEST/searxng/config" "$DEST/maintenance" "$DEST/llama" "$DEST/slot-cache" "$HOME/.config/systemd/user"
 
-# Gateway core from this repo; feature modules (agent, memory, workspace, imagegen) from the app repo.
+# Gateway core from server/; feature modules (agent, memory, workspace, imagegen) from desktop/.
 cp "$HERE"/api/{app.py,prompt_cache.py,requirements.txt} "$DEST/api/"
 for module in agent memory workspace imagegen; do
   rsync -a --delete --exclude tests --exclude __pycache__ --exclude config.json "$APP_REPO/desktop/$module/" "$DEST/api/$module/"

@@ -1,4 +1,6 @@
-# Local Android Assistant
+# FRIDAY
+
+A local-first Android assistant and the PC server it runs on. `app/` and `core/` are the Android app; `server/` and `desktop/` are the PC side (setup: `server/scripts/setup.sh`, see [server/README.md](server/README.md)).
 
 
 Current Android interface: **FRIDAY 0.18.1** uses a minimal adaptive home, sidebar, optional real-data dashboard, inline voice and native rich-response foundation. Dark/light/accent/motion controls live in Appearance. See [redesign contract and validation](desktop/FRIDAY-REDESIGN.md). The existing data, integrations and assistant task controls remain in place.
@@ -28,7 +30,8 @@ Phone search/page tools retrieve bounded public static passages with source prov
 ```
 core/                     conversation engine, model provider, tools (JVM, unit-tested)
 app/                      Compose chat UI, settings, AudioManager volume control
-desktop/search_service/  PC search HTTP service (SearchProvider + optional PageFetcher)
+desktop/                  PC gateway feature modules (agent, memory, workspace, imagegen) and the search service
+server/                   PC gateway core, services and setup
 ```
 
 | Package | Responsibility |

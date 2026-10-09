@@ -1,6 +1,6 @@
 # FRIDAY server
 
-The PC side of FRIDAY, the local Android assistant ([FRIDAY-Android](https://github.com/distilledoreo/FRIDAY-Android)).
+The PC side of FRIDAY, the local Android assistant in this repo.
 It runs the model, search, voice and the authenticated API the phone talks to. Everything listens on
 `127.0.0.1` only; the phone reaches the API through Tailscale Serve (tailnet-only HTTPS → `127.0.0.1:8700`).
 
@@ -14,11 +14,11 @@ It runs the model, search, voice and the authenticated API the phone talks to. E
 
 ## What lives where
 
-- **This repo:** the gateway core (`api/app.py`, `api/prompt_cache.py`), Docker compose, SearXNG config,
-  the llama launcher, systemd units, backup script and setup.
-- **The app repo's `desktop/` folder:** the gateway's feature modules — `agent` (FRIDAY tasks, PC access,
-  accounts, daily brief), `memory`, `workspace` (files, Python analysis, scheduled jobs) and `imagegen`.
-  `scripts/setup.sh` copies them into `api/` from an app checkout, so each piece of code has one home.
+- **`server/` (this folder):** the gateway core (`api/app.py`, `api/prompt_cache.py`), Docker compose,
+  SearXNG config, the llama launcher, systemd units, backup script and setup.
+- **`desktop/`:** the gateway's feature modules — `agent` (FRIDAY tasks, PC access, accounts, daily brief),
+  `memory`, `workspace` (files, Python analysis, scheduled jobs) and `imagegen`. `scripts/setup.sh` copies
+  them into `api/`, so each piece of code has one home.
 
 `api/prompt_cache.py` is what keeps replies fast on a hybrid recurrent model that only reuses an exact
 prompt prefix: it keeps the chat prompt byte-stable, pins phone chat to slot 0 and background work to
@@ -27,9 +27,8 @@ slot 1, and restores a saved snapshot of the system prompt and tools for each ne
 ## Setup
 
 ```bash
-git clone <this repo> friday-server
-git clone https://github.com/distilledoreo/FRIDAY-Android
-friday-server/scripts/setup.sh FRIDAY-Android
+git clone https://github.com/distilledoreo/FRIDAY
+FRIDAY/server/scripts/setup.sh
 ```
 
 Then fill in, on the PC only (never committed):
