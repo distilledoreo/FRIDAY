@@ -23,6 +23,8 @@ data class ServerSettings(
     val voicePhoneMicDevices: Set<String> = emptySet(),
     /** Show replies in Android Auto as messages, and accept replies from the car. */
     val androidAuto: Boolean = true,
+    /** The PC's MAC address for Wake-on-LAN; blank disables waking. */
+    val pcMac: String = "",
 ) {
     fun validate(): String? {
         val url = baseUrl.trim()
@@ -73,6 +75,7 @@ class ServerSettingsStore(
         voiceName = prefs.getString(KEY_VOICE_NAME, ServerSettings.DEFAULT_VOICE) ?: ServerSettings.DEFAULT_VOICE,
         voicePhoneMicDevices = prefs.getStringSet(KEY_VOICE_PHONE_MIC, null)?.toSet().orEmpty(),
         androidAuto = prefs.getBoolean(KEY_ANDROID_AUTO, true),
+        pcMac = prefs.getString(KEY_PC_MAC, "") ?: "",
     )
 
     fun save(settings: ServerSettings) {
@@ -89,6 +92,7 @@ class ServerSettingsStore(
             .putString(KEY_VOICE_NAME, settings.voiceName)
             .putStringSet(KEY_VOICE_PHONE_MIC, settings.voicePhoneMicDevices.toSet())
             .putBoolean(KEY_ANDROID_AUTO, settings.androidAuto)
+            .putString(KEY_PC_MAC, settings.pcMac.trim())
             .apply()
     }
 
@@ -106,5 +110,6 @@ class ServerSettingsStore(
         const val KEY_VOICE_NAME = "voice_name"
         const val KEY_VOICE_PHONE_MIC = "voice_phone_mic_devices"
         const val KEY_ANDROID_AUTO = "android_auto"
+        const val KEY_PC_MAC = "pc_mac"
     }
 }

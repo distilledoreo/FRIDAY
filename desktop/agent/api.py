@@ -22,6 +22,7 @@ class Schedule(BaseModel):
     interval_seconds: int = 0
     max_runs: int = Field(default=1, ge=1, le=100)
     timezone: str = Field(default='UTC', max_length=100)
+    notify: str = Field(default='always', pattern='^(always|on_change)$')
 
 
 class Proposal(BaseModel):

@@ -137,7 +137,9 @@ class Approvals:
                 raise ValueError('Use 1–100 runs; one-time schedules have one run')
             try: ZoneInfo(zone)
             except (ZoneInfoNotFoundError, TypeError, ValueError): raise ValueError('Invalid time zone')
-            body['schedule'] = {'run_at': when, 'interval_seconds': interval, 'max_runs': count, 'timezone': zone}
+            notify = schedule.get('notify', 'always')
+            if notify not in ('always', 'on_change'): raise ValueError('Schedule notify must be always or on_change')
+            body['schedule'] = {'run_at': when, 'interval_seconds': interval, 'max_runs': count, 'timezone': zone, 'notify': notify}
         proposal = encode(body)
         task_id = uuid.uuid4().hex
         fingerprint = digest(proposal)

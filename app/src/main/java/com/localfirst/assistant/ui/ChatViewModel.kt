@@ -102,6 +102,7 @@ data class ChatUiState(
     val accountContent: JSONObject? = null,
     val pcStatus: JSONObject? = null,
     val pcSessions: List<JSONObject> = emptyList(),
+    val pcSchedules: List<JSONObject> = emptyList(),
     val pcSessionId: String? = null,
     val pcSession: JSONObject? = null,
     /** Full views for PC sessions linked from this chat's tool results, keyed by session id. */
@@ -179,6 +180,9 @@ data class DraftAttachment(
 
 /** The running task's latest step and page, read from its events. */
 data class FridayLive(val taskId: String, val activity: String, val screenshotId: String?, val screenshotUrl: String?, val lastSeq: Long)
+
+/** One refresh of the native PC agent: status, sessions, schedules, and the open session's view. */
+private data class PcSnapshot(val status: org.json.JSONObject, val sessions: List<org.json.JSONObject>, val schedules: List<org.json.JSONObject>, val view: org.json.JSONObject?)
 
 data class PendingApproval(val toolName: String, val prompt: String)
 
@@ -1152,19 +1156,58 @@ class ChatViewModel(
         if (_state.value.privacy.incognito || pcRefreshJob?.isActive == true) return
         pcRefreshJob = viewModelScope.launch {
             try {
-                val result = withContext(Dispatchers.IO) {
+                val snapshot = withContext(Dispatchers.IO) {
                     val client = workspace ?: error("Computer unavailable")
-                    Triple(JSONObject(client.request("/workspace/pc/status")),
-                        jsonRows(JSONArray(client.request("/workspace/pc/sessions"))),
-                        sessionId?.let { JSONObject(client.request("/workspace/pc/sessions/$it")) })
+                    PcSnapshot(
+                        status = JSONObject(client.request("/workspace/pc/status")),
+                        sessions = jsonRows(JSONArray(client.request("/workspace/pc/sessions"))),
+                        schedules = runCatching { jsonRows(JSONArray(client.request("/workspace/pc/schedules"))) }.getOrDefault(emptyList()),
+                        view = sessionId?.let { JSONObject(client.request("/workspace/pc/sessions/$it")) },
+                    )
                 }
                 _state.update { current ->
                     if (current.privacy.incognito) current
-                    else current.copy(pcStatus=result.first, pcSessions=result.second,
-                        pcSession=if (current.pcSessionId == sessionId) result.third else current.pcSession, pcError=null)
+                    else current.copy(pcStatus=snapshot.status, pcSessions=snapshot.sessions,
+                        pcSchedules=snapshot.schedules,
+                        pcSession=if (current.pcSessionId == sessionId) snapshot.view else current.pcSession, pcError=null)
                 }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { _state.update { if(it.privacy.incognito)it else it.copy(pcError="The PC agent could not be reached. Check the computer connection and native OpenCode setup.") } }
+        }
+    }
+
+    /** Cancels a scheduled PC task; runs keep their sessions. */
+    fun cancelPcSchedule(id: String) {
+        if (!id.matches(Regex("[a-f0-9]{32}"))) return
+        pcAction {
+            withContext(Dispatchers.IO) { workspace?.request("/workspace/pc/schedules/$id", "DELETE") ?: error("Computer unavailable") }
+        }
+    }
+
+    /** Saves the PC's MAC address for Wake-on-LAN; blank clears it. */
+    fun saveWakeMac(mac: String) {
+        val trimmed = mac.trim().take(32)
+        if (trimmed.isNotEmpty() && com.localfirst.assistant.phone.WakeOnLan.parseMac(trimmed) == null) {
+            _state.update { it.copy(pcError = "Enter the MAC as six hex pairs, like AA:BB:CC:DD:EE:FF.") }; return
+        }
+        val updated = _state.value.settings.copy(pcMac = trimmed)
+        settingsStore.save(updated)
+        _state.update { it.copy(settings = updated, pcError = null) }
+    }
+
+    /** Sends a Wake-on-LAN packet; only works on the same Wi-Fi as the PC. */
+    fun wakePc() {
+        val context = app ?: return
+        val mac = _state.value.settings.pcMac
+        if (mac.isBlank() || _state.value.privacy.incognito || _state.value.pcBusy) return
+        viewModelScope.launch {
+            _state.update { it.copy(pcBusy = true, pcError = null) }
+            try {
+                val status = com.localfirst.assistant.phone.WakeOnLan.wake(context, mac)
+                _state.update { it.copy(workspaceStatus = status) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _state.update { it.copy(pcError = e.message ?: "The wake packet could not be sent.") } }
+            finally { _state.update { it.copy(pcBusy = false) } }
         }
     }
 

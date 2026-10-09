@@ -74,6 +74,32 @@ class TaskPollService : JobService() {
                         val key = "agent-${task.getString("id") }"
                         val signature = "$status:${task.optDouble("updated") }"
                         if (prefs.getString(key, null) == signature || sent >= 5) continue
+                        val origin = task.getJSONObject("proposal").optJSONObject("schedule_origin")
+                        val parentId = origin?.optString("id")?.takeIf { it.matches(Regex("[a-f0-9]{32}")) }
+                        if (status == "done" && parentId != null) {
+                            // A watch schedule reports only when its report changes; quiet runs stay silent.
+                            val notify = runCatching { JSONObject(client.request("/workspace/agent/tasks/$parentId"))
+                                .getJSONObject("proposal").optJSONObject("schedule")?.optString("notify") }.getOrNull()
+                            if (notify == "on_change") {
+                                val report = runCatching { JSONObject(client.request("/workspace/agent/tasks/${task.getString("id")}/report")) }.getOrNull()
+                                val text = report?.optJSONObject("result")?.optString("text").orEmpty()
+                                val watchKey = "watch-$parentId"
+                                prefs.edit().putString(key, signature).apply()
+                                if (text.isNotBlank() && prefs.getString(watchKey, null) != text.hashCode().toString()) {
+                                    prefs.edit().putString(watchKey, text.hashCode().toString()).apply()
+                                    val open = PendingIntent.getActivity(this@TaskPollService, watchKey.hashCode(),
+                                        Intent(this@TaskPollService, MainActivity::class.java).setAction("com.localfirst.assistant.ACTIVITY"),
+                                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                                    val notification = NotificationCompat.Builder(this@TaskPollService, TaskNotifications.CHANNEL)
+                                        .setSmallIcon(android.R.drawable.ic_dialog_info)
+                                        .setContentTitle("Watched change: ${task.getJSONObject("proposal").optString("prompt").take(80)}")
+                                        .setContentText(text.take(180)).setContentIntent(open).setAutoCancel(true).build()
+                                    manager.notify(watchKey.hashCode(), notification)
+                                    sent++
+                                }
+                                continue
+                            }
+                        }
                         val open = PendingIntent.getActivity(this@TaskPollService, key.hashCode(),
                             Intent(this@TaskPollService, MainActivity::class.java).setAction("com.localfirst.assistant.ACTIVITY"),
                             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)

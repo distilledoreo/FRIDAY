@@ -24,6 +24,7 @@ import shutil
 import sqlite3
 import sys
 import time
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from fastapi import APIRouter, HTTPException, Response
@@ -131,6 +132,16 @@ class Answers(BaseModel):
     answers: list[list[str]] = Field(max_length=10)
 
 
+class PcSchedule(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    prompt: str = Field(min_length=1, max_length=20000)
+    title: str | None = Field(default=None, max_length=200)
+    run_at: float
+    interval_seconds: int = 0
+    max_runs: int = 1
+    timezone: str = Field(default='UTC', max_length=60)
+
+
 def prompt_text(user, home):
     return (f'You are FRIDAY, the user’s personal assistant, working directly on their own computer: Ubuntu 24.04 with an X11 desktop, '
             f'user {user}, home {home}. You have a real shell as the user. gh and git are signed in. sudo works only if passwordless '
@@ -160,6 +171,7 @@ class PcAgent:
         self.model_registry = None
         self.config_digest = None
         self.refresh_task = None
+        self.schedule_task = None
         self.vision_chain = []
         self.watchers = {}
         self.session_roots = {}
@@ -170,6 +182,7 @@ class PcAgent:
             db.execute("UPDATE sessions SET state='interrupted' WHERE state='busy'")
             db.execute('CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY,digest TEXT NOT NULL,session TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS session_models(session TEXT PRIMARY KEY,chain TEXT NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS pc_schedules(id TEXT PRIMARY KEY, prompt TEXT NOT NULL, title TEXT, source TEXT NOT NULL, next_run REAL NOT NULL, interval_seconds INTEGER NOT NULL, remaining INTEGER NOT NULL, created REAL NOT NULL)')
             # Preserve the old index-based model identity when upgrading an existing install.
             with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
                 config = json.loads(self.config_path.read_text())
@@ -276,6 +289,9 @@ class PcAgent:
         if self.refresh_task:
             self.refresh_task.cancel()
             with contextlib.suppress(asyncio.CancelledError): await self.refresh_task
+        if self.schedule_task:
+            self.schedule_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError): await self.schedule_task
         await self.stop()
 
     def config(self, chain):
@@ -611,6 +627,67 @@ class PcAgent:
             with contextlib.suppress(asyncio.CancelledError): await watcher
         return await self.call('POST', f'/session/{session_id}/abort')
 
+    # ---- scheduled PC tasks ----
+    def schedule(self, body):
+        """Save a one-time or recurring PC task. Each due run starts a new session; the phone is
+        notified through the usual session polling. Returns the schedule id."""
+        when = body.run_at
+        interval = body.interval_seconds
+        count = body.max_runs
+        if not isinstance(when, float) or when != when or when <= time.time(): raise HTTPException(422, 'Schedule the first run in the future')
+        if type(interval) is not int or interval != 0 and not 900 <= interval <= 366 * 86400: raise HTTPException(422, 'Repeat interval must be zero or at least 15 minutes')
+        if type(count) is not int or not 1 <= count <= 100 or interval == 0 and count != 1: raise HTTPException(422, 'Use 1–100 runs; one-time schedules have one run')
+        try: ZoneInfo(body.timezone)
+        except (ZoneInfoNotFoundError, TypeError, ValueError): raise HTTPException(422, 'Invalid time zone')
+        identifier = secrets.token_hex(16)
+        with self.db() as db:
+            db.execute('INSERT INTO pc_schedules VALUES(?,?,?,?,?,?,?,?)', (identifier, body.prompt, body.title, 'schedule', when, interval, count, time.time()))
+        return {'id': identifier, 'next_run': when, 'remaining': count}
+
+    def scheduled(self, limit=30):
+        with self.db() as db:
+            return [dict(row) for row in db.execute('SELECT * FROM pc_schedules ORDER BY next_run LIMIT ?', (limit,))]
+
+    def cancel_schedule(self, schedule_id):
+        if not isinstance(schedule_id, str) or not re.fullmatch(r'[a-f0-9]{32}', schedule_id): raise HTTPException(404, 'Not one of FRIDAY’s PC schedules')
+        with self.db() as db:
+            row = db.execute('DELETE FROM pc_schedules WHERE id=? RETURNING id', (schedule_id,)).fetchone()
+        if not row: raise HTTPException(404, 'Not one of FRIDAY’s PC schedules')
+        return {'id': schedule_id}
+
+    async def run_due_schedules(self):
+        """Start one session per due schedule. Idempotent per (schedule, due time); failures and a
+        full task queue retry on the next tick without consuming the run."""
+        if not self.settings()['enabled']: return []
+        now = time.time()
+        with self.db() as db:
+            due = [dict(row) for row in db.execute('SELECT * FROM pc_schedules WHERE remaining>0 AND next_run<=? ORDER BY next_run LIMIT 5', (now,))]
+        started = []
+        for row in due:
+            request_id = f"pcs-{row['id']}-{int(row['next_run'])}"
+            try:
+                result = await self.start(Prompt(prompt=row['prompt'], title=row['title'], source='schedule', request_id=request_id))
+            except HTTPException:
+                continue
+            with self.db() as db:
+                if row['interval_seconds']:
+                    skipped = max(0, int((time.time() - row['next_run']) // row['interval_seconds']))
+                    db.execute('UPDATE pc_schedules SET next_run=?, remaining=? WHERE id=?',
+                               (row['next_run'] + (skipped + 1) * row['interval_seconds'], row['remaining'] - 1, row['id']))
+                else:
+                    db.execute('UPDATE pc_schedules SET remaining=0 WHERE id=?', (row['id'],))
+            started.append({'schedule': row['id'], 'session': result['id']})
+        with self.db() as db:
+            db.execute('DELETE FROM pc_schedules WHERE remaining<=0')
+        return started
+
+    async def start_scheduler(self):
+        async def scheduler_loop():
+            while True:
+                with contextlib.suppress(Exception): await self.run_due_schedules()
+                await asyncio.sleep(60)
+        self.schedule_task = asyncio.create_task(scheduler_loop())
+
     async def question(self, question_id):
         questions = {q['id']: q for q in await self.call('GET', '/question')}
         request = questions.get(question_id)
@@ -673,6 +750,7 @@ def routes(app, auth, agent):
     install_vision_proxy(app, agent)
     router = APIRouter(prefix='/workspace/pc', dependencies=auth)
     app.router.add_event_handler('startup', agent.start_refresh)
+    app.router.add_event_handler('startup', agent.start_scheduler)
     app.router.add_event_handler('shutdown', agent.shutdown)
 
     @router.get('/status')
@@ -739,6 +817,15 @@ def routes(app, auth, agent):
     @router.post('/sessions/{session_id}/abort')
     async def abort(session_id: str):
         return await agent.cancel(session_id)
+
+    @router.get('/schedules')
+    async def schedules(): return agent.scheduled()
+
+    @router.post('/schedules')
+    async def start_schedule(body: PcSchedule): return agent.schedule(body)
+
+    @router.delete('/schedules/{schedule_id}')
+    async def cancel_schedule(schedule_id: str): return agent.cancel_schedule(schedule_id)
 
     @router.get('/approvals')
     async def approvals(): return await agent.pending()

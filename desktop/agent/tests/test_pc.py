@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi import Depends, FastAPI, Header, HTTPException
 import httpx
 
-from desktop.agent.pc import PcAgent, Prompt, Reply, Settings, LOCAL, COMPUTER, ruleset, routes
+from desktop.agent.pc import PcAgent, Prompt, Reply, Settings, LOCAL, COMPUTER, ruleset, routes, PcSchedule
 
 
 def decision(settings, permission, value):
@@ -32,6 +32,7 @@ class FakePc(PcAgent):
         self.failure = False
         self.stopped = 0
         self.ensured = 0
+        self.created = 0
 
     async def models(self): return [('opencode', 'synthetic:free'), LOCAL]
     async def ensure(self): self.ensured += 1
@@ -42,7 +43,9 @@ class FakePc(PcAgent):
         if path == '/permission': return self.permissions
         if path == '/question': return self.questions
         if path == '/session/status': return {}
-        if path == '/session' and method == 'POST': return {'id': 'ses_created', 'title': kwargs['json']['title']}
+        if path == '/session' and method == 'POST':
+            self.created += 1
+            return {'id': f'ses_created_{self.created}', 'title': kwargs['json']['title']}
         if path.endswith('/message'): return self.messages
         if path.startswith('/session/') and method == 'GET': return {'parentID': self.parents.get(path.split('/')[-1])}
         if self.failure: raise HTTPException(409, 'Synthetic upstream failure')
@@ -124,6 +127,54 @@ class PcTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException): await self.pc.start(Prompt(prompt='Synthetic task'))
         with self.assertRaises(HTTPException): await self.pc.send(self.session, 'Continue')
         self.assertEqual(self.pc.calls, [])
+
+    def test_pc_schedule_validation_matches_agent_schedules(self):
+        future = time.time() + 3600
+        self.pc.schedule(PcSchedule(prompt='Owned nightly check', run_at=future))
+        self.pc.schedule(PcSchedule(prompt='Owned hourly check', run_at=future, interval_seconds=3600, max_runs=5, timezone='America/New_York'))
+        for body in (PcSchedule(prompt='Owned past', run_at=time.time() - 1),
+                     PcSchedule(prompt='Owned quick', run_at=future, interval_seconds=30),
+                     PcSchedule(prompt='Owned many', run_at=future, interval_seconds=900, max_runs=101),
+                     PcSchedule(prompt='Owned once', run_at=future, max_runs=2)):
+            with self.assertRaises(HTTPException): self.pc.schedule(body)
+        with self.assertRaises(HTTPException):
+            self.pc.schedule(PcSchedule(prompt='Owned zone', run_at=future, timezone='Invalid/Zone'))
+        self.assertEqual(len(self.pc.scheduled()), 2)
+
+    async def test_due_pc_schedule_runs_once_and_recurs_without_bursts(self):
+        created = self.pc.schedule(PcSchedule(prompt='Owned recurring check', run_at=time.time() + 3600, interval_seconds=900, max_runs=3))
+        due = time.time() - 2000
+        with self.pc.db() as db: db.execute('UPDATE pc_schedules SET next_run=? WHERE id=?', (due, created['id']))
+        started = await self.pc.run_due_schedules()
+        self.assertEqual(len(started), 1)
+        record = self.pc.record(started[0]['session'])
+        self.assertEqual(record['source'], 'schedule')
+        state = self.pc.scheduled()[0]
+        self.assertEqual(state['remaining'], 2)
+        self.assertGreater(state['next_run'], time.time())
+        # A retry of the same due time reuses the same session and consumes one run, never two sessions.
+        with self.pc.db() as db: db.execute('UPDATE pc_schedules SET next_run=?, remaining=2 WHERE id=?', (due, created['id']))
+        before = [session['id'] for session in self.pc.sessions(200)]
+        again = await self.pc.run_due_schedules()
+        self.assertEqual([run['session'] for run in again], [started[0]['session']])
+        self.assertEqual([session['id'] for session in self.pc.sessions(200)], before)
+        self.assertEqual(self.pc.scheduled()[0]['remaining'], 1)
+        one_shot = self.pc.schedule(PcSchedule(prompt='Owned once', run_at=time.time() + 3600))
+        with self.pc.db() as db: db.execute('UPDATE pc_schedules SET next_run=? WHERE id=?', (time.time() - 1, one_shot['id']))
+        await self.pc.run_due_schedules()
+        self.assertNotIn(one_shot['id'], [row['id'] for row in self.pc.scheduled()])
+
+    async def test_pc_schedule_cancel_and_disabled_skip(self):
+        created = self.pc.schedule(PcSchedule(prompt='Owned cancellable', run_at=time.time() + 3600))
+        self.assertEqual(self.pc.cancel_schedule(created['id']), {'id': created['id']})
+        self.assertEqual(self.pc.scheduled(), [])
+        with self.assertRaises(HTTPException): self.pc.cancel_schedule('f' * 32)
+        with self.assertRaises(HTTPException): self.pc.cancel_schedule('../owned')
+        kept = self.pc.schedule(PcSchedule(prompt='Owned paused', run_at=time.time() + 3600))
+        self.pc.save_settings(Settings(enabled=False).model_dump())
+        with self.pc.db() as db: db.execute('UPDATE pc_schedules SET next_run=? WHERE id=?', (time.time() - 1, kept['id']))
+        self.assertEqual(await self.pc.run_due_schedules(), [])
+        self.assertEqual(len(self.pc.scheduled()), 1)
 
     async def test_idempotent_start_does_not_repeat_work_and_conflicting_payload_fails(self):
         prompt = Prompt(prompt='Owned fixture', request_id='owned-1')

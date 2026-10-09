@@ -18,8 +18,9 @@ class PcToolsTest {
         val gateway=Gateway()
         val tools=pcTools(gateway)
         val registry=ToolRegistry().apply { tools.forEach(::register) }
-        assertEquals(setOf("run_on_pc","get_pc_task"),tools.map { it.name }.toSet())
-        assertTrue(tools.all { it.requiresConfirmation })
+        assertEquals(setOf("run_on_pc","get_pc_task","schedule_pc_task","list_pc_schedules"),tools.map { it.name }.toSet())
+        assertTrue(tools.first { it.name == "list_pc_schedules" }.requiresConfirmation.not())
+        assertTrue(tools.filter { it.name != "list_pc_schedules" }.all { it.requiresConfirmation })
         assertTrue(tools.none { ChatPrivacy(incognito=true).allowsTool(it.name) })
         val call=ToolCall("owned","run_on_pc","""{"prompt":"Inspect the owned fixture","title":"Synthetic task"}""")
         registry.execute(call,ToolConfirmer { false })
