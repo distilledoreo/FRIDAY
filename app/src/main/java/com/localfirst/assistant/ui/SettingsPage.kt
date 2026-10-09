@@ -69,6 +69,7 @@ internal fun SettingsPage(
     var searchUrl by remember(initial) { mutableStateOf(initial.searchBaseUrl) }
     var searchApiKey by remember(initial) { mutableStateOf(initial.searchApiKey) }
     var bargeIn by remember(initial) { mutableStateOf(initial.voiceBargeIn) }
+    var wakeWord by remember(initial) { mutableStateOf(initial.wakeWord) }
     var voiceEngine by remember(initial) { mutableStateOf(initial.voiceEngine) }
     var voiceName by remember(initial) { mutableStateOf(initial.voiceName) }
     var phoneMic by remember(initial) { mutableStateOf(initial.voicePhoneMicDevices) }
@@ -154,6 +155,8 @@ internal fun SettingsPage(
                     onVoiceChange = { voiceName = it },
                     bargeIn = bargeIn,
                     onBargeInChange = { bargeIn = it },
+                    wakeWord = wakeWord,
+                    onWakeWordChange = { wakeWord = it },
                 )
                 CarSection(phoneMic, { phoneMic = it }, androidAuto, { androidAuto = it })
                 PhoneAccessSection()
@@ -172,6 +175,7 @@ internal fun SettingsPage(
                                     searchBaseUrl = searchUrl,
                                     searchApiKey = searchApiKey,
                                     voiceBargeIn = bargeIn,
+                                    wakeWord = wakeWord,
                                     voiceEngine = voiceEngine,
                                     voiceName = voiceName,
                                     voicePhoneMicDevices = phoneMic,
@@ -237,6 +241,8 @@ private fun VoiceSection(
     onVoiceChange: (String) -> Unit,
     bargeIn: Boolean,
     onBargeInChange: (Boolean) -> Unit,
+    wakeWord: Boolean,
+    onWakeWordChange: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     var isDefault by remember { mutableStateOf(isDefaultAssistant(context)) }
@@ -270,6 +276,19 @@ private fun VoiceSection(
             )
         }
         Switch(checked = bargeIn, onCheckedChange = onBargeInChange)
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("“Hey FRIDAY” wake phrase", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                text = "Listens for the wake phrase and opens a voice chat. Uses Android speech recognition, " +
+                    "on-device when available; otherwise audio may go to the recognition service. " +
+                    "Runs a foreground microphone service with a persistent notification, and uses noticeably more battery.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(checked = wakeWord, onCheckedChange = onWakeWordChange)
     }
     OutlinedButton(shape = MaterialTheme.shapes.small,
         onClick = {

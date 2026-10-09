@@ -272,6 +272,8 @@ internal object ToolLabels {
             "upcoming_events" -> pick("Checking your calendar", "Checked your calendar", "Couldn't read your calendar")
             "run_on_pc" -> pick("Starting PC task", "Started PC task", "Couldn't start the PC task")
             "get_pc_task" -> pick("Reading PC task", "Read PC task", "Couldn't read the PC task")
+            "schedule_pc_task" -> pick("Scheduling PC task", "Scheduled PC task", "Couldn't schedule the PC task")
+            "list_pc_schedules" -> pick("Listing PC schedules", "Listed PC schedules", "Couldn't list PC schedules")
             else -> pick("Running $name", "Used $name", "$name failed")
         }
     }

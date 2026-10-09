@@ -151,6 +151,9 @@ fun ChatScreen(viewModel: ChatViewModel) {
     val clipboard = LocalClipboardManager.current
     val snackbar = remember { SnackbarHostState() }
     val items = remember(state.messages, state.busy) { Transcript.items(state.messages, state.busy) }
+    val lastQuestion = remember(state.messages) {
+        (state.messages.lastOrNull { it is com.localfirst.assistant.conversation.Message.User } as? com.localfirst.assistant.conversation.Message.User)?.content
+    }
     val chatPcIds = remember(state.messages) { viewModel.chatPcIds() }
     LaunchedEffect(chatPcIds.joinToString(",")) {
         if (chatPcIds.isNotEmpty() && !state.privacy.incognito) viewModel.refreshChatPc(chatPcIds)
@@ -167,6 +170,28 @@ fun ChatScreen(viewModel: ChatViewModel) {
             snackbar.currentSnackbarData?.dismiss()
             snackbar.showSnackbar("Copied")
         }
+    }
+
+    /** A camera photo to show FRIDAY, attached to the next message (voice turns include it too). */
+    fun takePhoto() {
+        try {
+            val dir = File(context.cacheDir, if (state.privacy.incognito) "incognito/camera" else "camera").apply { mkdirs() }
+            val photo = File.createTempFile("photo-", ".jpg", dir)
+            cameraPath = photo.absolutePath
+            viewModel.setAttachmentPickerOpen(true)
+            camera.launch(FileProvider.getUriForFile(context, "${context.packageName}.files", photo))
+        } catch (e: Exception) {
+            cameraPath?.let { File(it).delete() }
+            cameraPath = null
+            viewModel.setAttachmentPickerOpen(false)
+            Toast.makeText(context, "Couldn't open a camera app.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** Toggles the shared screen image that rides along with each message. */
+    fun toggleScreenShare() {
+        if (sharingScreen) ScreenContextService.stop(context)
+        else { viewModel.setAttachmentPickerOpen(true); screenCapture.launch(context.getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent()) }
     }
 
     BackHandler(enabled = drawerState.isOpen) { scope.launch { if(palette.reducedMotion)drawerState.snapTo(DrawerValue.Closed)else drawerState.animateTo(DrawerValue.Closed,tween(220)) } }
@@ -319,6 +344,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                                     actionsEnabled = !state.busy,
                                     onCopy = ::copy,
                                     onEdit = viewModel::startEditing,
+                                    onBranch = viewModel::branchFrom,
                                 )
                                 is TranscriptItem.Assistant -> AssistantMessage(
                                     item = item,
@@ -326,6 +352,9 @@ fun ChatScreen(viewModel: ChatViewModel) {
                                     onCopy = ::copy,
                                     onRegenerate = viewModel::regenerate,
                                     onChoose = viewModel::sendSuggestion,
+                                    onCanvas = viewModel::openCanvas,
+                                    onShare = viewModel::shareText,
+                                    onFeedback = { liked -> lastQuestion?.let { viewModel.saveAnswerFeedback(it, item.text, liked) } },
                                 )
                                 is TranscriptItem.ToolActivity -> ToolActivityCard(item, viewModel::loadImage, viewModel::openArtifact, { FridayTaskCard(it, state, viewModel) }, { PcChatCard(it, state, viewModel) })
                                 TranscriptItem.Thinking -> ThinkingIndicator()
@@ -336,7 +365,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     Column(Modifier.align(Alignment.BottomCenter).padding(bottom=homeOffset).onSizeChanged { composerHeight=it.height }) {
                         if(sharingScreen)Text("Screen context shared",Modifier.padding(horizontal=16.dp),style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.primary)
                         state.imageStatus?.let { Text(it,Modifier.padding(horizontal=16.dp),style=MaterialTheme.typography.labelSmall) }
-                        voice?.let { InlineVoice(it,viewModel::pauseVoiceFromChat,viewModel::startVoice,viewModel::interruptVoice,viewModel::closeVoice) }
+                        voice?.let { InlineVoice(it,viewModel::pauseVoiceFromChat,viewModel::startVoice,viewModel::interruptVoice,viewModel::closeVoice,sharingScreen,::takePhoto,::toggleScreenShare) }
                         state.groundingStatus?.let { status ->
                             Text(status, Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelSmall)
                             if (state.groundingResearchAvailable) TextButton(shape = MaterialTheme.shapes.small, onClick = viewModel::proposeGroundedResearch, enabled = !state.busy && !state.workspaceBusy) { Text("Have FRIDAY research this deeper") }
@@ -380,6 +409,8 @@ fun ChatScreen(viewModel: ChatViewModel) {
                             DropdownMenuItem(text = { Text("Model and voice") }, onClick = { attachmentMenu = false; viewModel.openSettings() })
                             DropdownMenuItem(text = { Text("Tools and integrations") }, onClick = { attachmentMenu = false; viewModel.openWorkspace(WorkspaceDestination.SETTINGS) })
                             DropdownMenuItem(text = { Text("Search the web") }, onClick = { attachmentMenu = false; viewModel.onDraftChange("Search the web for: " + state.draft) })
+                            DropdownMenuItem(text = { Text("Research deeply") }, enabled = state.draft.isNotBlank() && !state.busy && !state.workspaceBusy, onClick = { attachmentMenu = false; viewModel.proposeDeepResearch() })
+                            DropdownMenuItem(text = { Text("Export chat") }, enabled = state.messages.isNotEmpty() && !state.workspaceBusy, onClick = { attachmentMenu = false; viewModel.exportChat() })
                             DropdownMenuItem(text = { Text("Create image") }, onClick = {
                                 attachmentMenu = false
                                 viewModel.setImageMode(true)
@@ -392,23 +423,11 @@ fun ChatScreen(viewModel: ChatViewModel) {
                             })
                             DropdownMenuItem(text = { Text("Take photo") }, onClick = {
                                 attachmentMenu = false
-                                try {
-                                    val dir = File(context.cacheDir, if (state.privacy.incognito) "incognito/camera" else "camera").apply { mkdirs() }
-                                    val photo = File.createTempFile("photo-", ".jpg", dir)
-                                    cameraPath = photo.absolutePath
-                                    viewModel.setAttachmentPickerOpen(true)
-                                    camera.launch(FileProvider.getUriForFile(context, "${context.packageName}.files", photo))
-                                } catch (e: Exception) {
-                                    cameraPath?.let { File(it).delete() }
-                                    cameraPath = null
-                                    viewModel.setAttachmentPickerOpen(false)
-                                    Toast.makeText(context, "Couldn't open a camera app.", Toast.LENGTH_SHORT).show()
-                                }
+                                takePhoto()
                             })
                             DropdownMenuItem(text = { Text(if (sharingScreen) "Stop screen context" else "Share screen context") }, onClick = {
                                 attachmentMenu = false
-                                if (sharingScreen) ScreenContextService.stop(context)
-                                else { viewModel.setAttachmentPickerOpen(true); screenCapture.launch(context.getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent()) }
+                                toggleScreenShare()
                             })
                             DropdownMenuItem(text = { Text("Files") }, onClick = {
                                 attachmentMenu = false
@@ -444,6 +463,17 @@ fun ChatScreen(viewModel: ChatViewModel) {
         FridaySheet(onDismiss = { imageOptions = false }) { _,_,close ->
             ImageOptions(state, viewModel,close)
         }
+    }
+    state.canvas?.let { doc ->
+        CanvasSheet(
+            doc = doc,
+            busy = state.busy || state.workspaceBusy,
+            onTitle = { viewModel.updateCanvas(it, doc.body) },
+            onBody = { viewModel.updateCanvas(doc.title, it) },
+            onSave = viewModel::saveCanvas,
+            onCopy = ::copy,
+            onClose = viewModel::closeCanvas,
+        )
     }
     if (state.showSettings) {
         SettingsPage(

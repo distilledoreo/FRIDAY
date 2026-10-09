@@ -64,6 +64,25 @@ internal fun PcHomePanel(state: ChatUiState, vm: ChatViewModel) {
                     Text("›",style=MaterialTheme.typography.titleLarge)
                 }
             }
+            if (state.pcSchedules.isNotEmpty()) {
+                Text("Scheduled PC tasks",style=MaterialTheme.typography.titleSmall)
+                state.pcSchedules.take(8).forEach { schedule ->
+                    val due = remember(schedule.optDouble("next_run")) {
+                        runCatching {
+                            java.time.Instant.ofEpochSecond(schedule.optDouble("next_run").toLong()).atZone(java.time.ZoneId.systemDefault())
+                                .format(java.time.format.DateTimeFormatter.ofPattern("EEE h:mm a"))
+                        }.getOrDefault("")
+                    }
+                    Row(Modifier.fillMaxWidth().heightIn(min=56.dp),verticalAlignment=Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(4.dp)) {
+                            Text(schedule.optString("title").ifBlank { schedule.optString("prompt").take(80).ifBlank { "Scheduled PC task" } },style=MaterialTheme.typography.bodyLarge,maxLines=1)
+                            Text("$due · ${schedule.optInt("remaining")} left",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        TextButton(onClick={ vm.cancelPcSchedule(schedule.getString("id")) },enabled=!state.pcBusy) { Text("Cancel") }
+                    }
+                }
+                Text("New schedules start in chat: ask FRIDAY to run something on the PC later or on repeat.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
     PcScreenPreview(state,vm)
@@ -97,12 +116,36 @@ internal fun PcSettingsPage(state: ChatUiState, vm: ChatViewModel) {
         OutlinedTextField(allow,{allow=it},label={Text("Allow rules")},supportingText={Text("One shell pattern per line, such as gh pr list *. ‘computer’ allows desktop input.")},modifier=Modifier.fillMaxWidth(),enabled=editable,minLines=2,maxLines=6)
         OutlinedTextField(deny,{deny=it},label={Text("Deny rules")},supportingText={Text("One shell pattern per line, such as git push *.")},modifier=Modifier.fillMaxWidth(),enabled=editable,minLines=2,maxLines=6)
         status?.let { Text(if(it.optBoolean("sudo_ready"))"Sudo is available through the PC’s existing setup." else "Sudo currently needs the PC’s own authorization/setup. FRIDAY will not request or store your password.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }
+        Text("Wake on LAN",style=MaterialTheme.typography.titleSmall)
+        var mac by remember(state.settings.pcMac) { mutableStateOf(state.settings.pcMac) }
+        OutlinedTextField(mac,{mac=it.take(32)},label={Text("PC MAC address")},supportingText={Text("Six hex pairs, like AA:BB:CC:DD:EE:FF. Only works on the same Wi-Fi as the PC.")},modifier=Modifier.fillMaxWidth(),enabled=editable,singleLine=true)
+        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick={ vm.saveWakeMac(mac) },enabled=editable) { Text("Save MAC") }
+            TextButton(onClick=vm::wakePc,enabled=editable&&!state.pcBusy&&state.settings.pcMac.isNotBlank()) { Text("Wake PC") }
+        }
         Text("Saving changed access settings stops active PC tasks. Existing task history is retained.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         Button(onClick={
             vm.savePcSettings(JSONObject().put("enabled",enabled).put("computer_use",computer).put("mode",mode)
                 .put("allow",JSONArray(allow.lines().map(String::trim).filter(String::isNotBlank)))
                 .put("deny",JSONArray(deny.lines().map(String::trim).filter(String::isNotBlank))))
         },enabled=editable,shape=MaterialTheme.shapes.small) { Text("Save access settings") }
+        state.pcMcp?.optJSONArray("servers")?.let { servers ->
+            Text("Connected services",style=MaterialTheme.typography.titleSmall)
+            Text("Operator-configured tool servers from the PC's mcp.json. A new or changed server waits here until you confirm it; its tool calls still ask approval one by one afterwards.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            if (servers.length() == 0) Text("No service connections configured.",style=MaterialTheme.typography.bodyMedium)
+            for (i in 0 until servers.length()) {
+                val server = servers.optJSONObject(i) ?: continue
+                val name = server.optString("name")
+                Row(Modifier.fillMaxWidth().heightIn(min=56.dp),verticalAlignment=Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(2.dp)) {
+                        Text(name,style=MaterialTheme.typography.bodyLarge)
+                        Text(server.optString("type"),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (server.optBoolean("confirmed")) Text("Confirmed",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    else TextButton(onClick={ vm.confirmMcpServer(name) },enabled=editable) { Text("Confirm") }
+                }
+            }
+        }
     }
 }
 

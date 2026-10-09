@@ -18,11 +18,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import sqlite3
 import sys
 import time
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from fastapi import APIRouter, HTTPException, Response
@@ -33,6 +35,13 @@ from .model_ranking import ModelRanking, PROVIDER, ENDPOINT
 PORT = 4097
 MODES = ('ask', 'ask_changes', 'full')
 DEFAULTS = {'enabled': True, 'mode': 'ask_changes', 'computer_use': True, 'allow': [], 'deny': []}
+MAX_MCP_SERVERS = 10
+MCP_NAME = re.compile(r'[a-z0-9-]{1,32}')
+RESERVED_MCP = frozenset({'friday-computer', 'friday'})
+
+
+def _digest(entry):
+    return hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()
 LOCAL = ('friday-local', 'qwen3.8-27b')
 
 # Commands that only look at things. Anything else asks in "ask before changes".
@@ -127,6 +136,16 @@ class Answers(BaseModel):
     answers: list[list[str]] = Field(max_length=10)
 
 
+class PcSchedule(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    prompt: str = Field(min_length=1, max_length=20000)
+    title: str | None = Field(default=None, max_length=200)
+    run_at: float
+    interval_seconds: int = 0
+    max_runs: int = 1
+    timezone: str = Field(default='UTC', max_length=60)
+
+
 def prompt_text(user, home):
     return (f'You are FRIDAY, the user’s personal assistant, working directly on their own computer: Ubuntu 24.04 with an X11 desktop, '
             f'user {user}, home {home}. You have a real shell as the user. gh and git are signed in. sudo works only if passwordless '
@@ -156,6 +175,7 @@ class PcAgent:
         self.model_registry = None
         self.config_digest = None
         self.refresh_task = None
+        self.schedule_task = None
         self.vision_chain = []
         self.watchers = {}
         self.session_roots = {}
@@ -166,6 +186,15 @@ class PcAgent:
             db.execute("UPDATE sessions SET state='interrupted' WHERE state='busy'")
             db.execute('CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY,digest TEXT NOT NULL,session TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS session_models(session TEXT PRIMARY KEY,chain TEXT NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS pc_schedules(id TEXT PRIMARY KEY, prompt TEXT NOT NULL, title TEXT, source TEXT NOT NULL, next_run REAL NOT NULL, interval_seconds INTEGER NOT NULL, remaining INTEGER NOT NULL, created REAL NOT NULL, max_runs INTEGER NOT NULL)')
+            self._migrate_pc_schema(db)
+            db.execute('CREATE TABLE IF NOT EXISTS mcp_known(name TEXT PRIMARY KEY,digest TEXT NOT NULL)')
+            with contextlib.suppress(sqlite3.OperationalError):
+                db.execute('ALTER TABLE sessions ADD COLUMN schedule TEXT')
+            with contextlib.suppress(sqlite3.OperationalError):
+                db.execute('ALTER TABLE sessions ADD COLUMN schedule_due REAL')
+            with contextlib.suppress(sqlite3.OperationalError):
+                db.execute('ALTER TABLE sessions ADD COLUMN schedule_settled INTEGER NOT NULL DEFAULT 0')
             # Preserve the old index-based model identity when upgrading an existing install.
             with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
                 config = json.loads(self.config_path.read_text())
@@ -179,6 +208,44 @@ class PcAgent:
         try:
             with connection: yield connection
         finally: connection.close()
+
+    @staticmethod
+    def _migrate_pc_schema(db):
+        """Upgrade pc.sqlite from older installs (e.g. pc_schedules without max_runs)."""
+        schedule_columns = {row[1] for row in db.execute('PRAGMA table_info(pc_schedules)')}
+        if 'max_runs' not in schedule_columns:
+            db.execute('ALTER TABLE pc_schedules ADD COLUMN max_runs INTEGER NOT NULL DEFAULT 1')
+            db.execute('UPDATE pc_schedules SET max_runs = remaining')
+
+    @staticmethod
+    def _schedule_request_id(schedule_id, due_at):
+        return f'pcs-{schedule_id}-{int(due_at)}'
+
+    def _settle_schedule_success(self, session_id):
+        """Consume one schedule repeat after a successful PC session. Idempotent per session."""
+        with self.db() as db:
+            row = db.execute('SELECT schedule, schedule_due, schedule_settled, state FROM sessions WHERE id=?', (session_id,)).fetchone()
+            if not row or not row['schedule'] or row['schedule_settled'] or row['state'] != 'idle': return
+            if db.execute('UPDATE sessions SET schedule_settled=1 WHERE id=? AND schedule_settled=0', (session_id,)).rowcount != 1: return
+            sched = db.execute('SELECT * FROM pc_schedules WHERE id=?', (row['schedule'],)).fetchone()
+            if not sched or sched['remaining'] <= 0: return
+            due = row['schedule_due'] if row['schedule_due'] is not None else sched['next_run']
+            if sched['interval_seconds']:
+                skipped = max(0, int((time.time() - due) // sched['interval_seconds']))
+                next_run = due + (skipped + 1) * sched['interval_seconds']
+                db.execute('UPDATE pc_schedules SET next_run=?, remaining=remaining-1 WHERE id=? AND remaining>0', (next_run, row['schedule']))
+            else:
+                db.execute('UPDATE pc_schedules SET remaining=0 WHERE id=?', (row['schedule'],))
+            db.execute('DELETE FROM pc_schedules WHERE remaining<=0')
+
+    def _release_schedule_failure(self, session_id):
+        """Failed schedule runs do not consume a repeat; drop idempotency so the due slot can retry."""
+        with self.db() as db:
+            row = db.execute('SELECT schedule, schedule_due, schedule_settled FROM sessions WHERE id=?', (session_id,)).fetchone()
+            if not row or not row['schedule'] or row['schedule_settled']: return
+            request_id = self._schedule_request_id(row['schedule'], row['schedule_due'])
+            db.execute('DELETE FROM requests WHERE id=?', (request_id,))
+            db.execute('UPDATE sessions SET schedule=NULL, schedule_due=NULL, schedule_settled=1 WHERE id=?', (session_id,))
 
     # ---- settings ----
     def settings(self):
@@ -196,6 +263,76 @@ class PcAgent:
         os.chmod(temporary, 0o600)
         temporary.replace(self.settings_path)
         return value
+
+    # ---- MCP service connections ----
+    def mcp_file(self):
+        """Validated operator servers from ``mcp.json`` (name to OpenCode entry), regardless of confirmation."""
+        try:
+            raw = json.loads((self.root / 'mcp.json').read_text())
+            declared = raw['servers'] if isinstance(raw, dict) else None
+            if not isinstance(declared, dict) or len(declared) > MAX_MCP_SERVERS: return {}
+        except (OSError, ValueError, KeyError, TypeError): return {}
+        servers = {}
+        for name, entry in declared.items():
+            if not isinstance(name, str) or not MCP_NAME.match(name) or name in RESERVED_MCP: continue
+            if not isinstance(entry, dict) or entry.get('enabled', True) is not True: continue
+            try: servers[name] = self._mcp_entry(entry)
+            except (ValueError, KeyError, TypeError): continue
+        return servers
+
+    def mcp_servers(self):
+        """Operator-configured MCP servers from ``mcp.json``, merged into the OpenCode config.
+
+        ``{"servers": {"github": {"type": "local", "command": [...], "environment": {...}, "enabled": true},
+        "notion": {"type": "remote", "url": "https://...", "enabled": true}}}``. Like the outgoing
+        activation file, this is a trusted operator attestation: server commands and credentials run
+        on the user's own PC. A new or changed server stays out of the config until the phone
+        confirms it; tool calls from confirmed servers arrive as permission prompts in chat and
+        FRIDAY like everything else, and unknown tools ask by default. Fail closed: anything invalid
+        yields no extra servers.
+        """
+        declared = self.mcp_file()
+        with self.db() as db:
+            known = {row['name']: row['digest'] for row in db.execute('SELECT name, digest FROM mcp_known')}
+        return {name: entry for name, entry in declared.items() if known.get(name) == _digest(entry)}
+
+    def mcp_status(self):
+        """Every valid file server with its confirmation state, for the phone's review screen."""
+        declared = self.mcp_file()
+        with self.db() as db:
+            known = {row['name']: row['digest'] for row in db.execute('SELECT name, digest FROM mcp_known')}
+        return {'servers': [{'name': name, 'type': entry['type'], 'confirmed': known.get(name) == _digest(entry)} for name, entry in sorted(declared.items())]}
+
+    def confirm_mcp(self, name):
+        """Allow a new or changed file server to run. The phone calls this after human review."""
+        if not isinstance(name, str) or not MCP_NAME.match(name) or name in RESERVED_MCP: raise HTTPException(404, 'Not one of FRIDAY’s service connections')
+        entry = self.mcp_file().get(name)
+        if entry is None: raise HTTPException(404, 'Not one of FRIDAY’s service connections')
+        with self.db() as db:
+            db.execute('INSERT OR REPLACE INTO mcp_known VALUES(?,?)', (name, _digest(entry)))
+        return {'name': name, 'confirmed': True}
+
+    @staticmethod
+    def _mcp_entry(entry):
+        kind = entry.get('type', 'local')
+        if kind == 'local':
+            command = entry.get('command')
+            if (not isinstance(command, list) or not command or len(command) > 8 or
+                    any(not isinstance(part, str) or not part or len(part) > 256 for part in command)): raise ValueError('Invalid MCP command')
+            environment = entry.get('environment', {})
+            if (not isinstance(environment, dict) or len(environment) > 20 or
+                    any(not isinstance(key, str) or not key or len(key) > 128 or
+                        not isinstance(val, str) or len(val) > 4096 for key, val in environment.items())): raise ValueError('Invalid MCP environment')
+            return {'type': 'local', 'command': list(command), 'environment': dict(environment), 'enabled': True}
+        if kind == 'remote':
+            url = entry.get('url')
+            if not isinstance(url, str) or len(url) > 500 or not url.startswith('https://') or ' ' in url: raise ValueError('Invalid MCP URL')
+            headers = entry.get('headers', {})
+            if (not isinstance(headers, dict) or len(headers) > 20 or
+                    any(not isinstance(key, str) or not key or len(key) > 128 or
+                        not isinstance(val, str) or len(val) > 4096 for key, val in headers.items())): raise ValueError('Invalid MCP headers')
+            return {'type': 'remote', 'url': url, 'headers': dict(headers), 'enabled': True}
+        raise ValueError('Invalid MCP type')
 
     # ---- models ----
     async def models(self):
@@ -226,6 +363,9 @@ class PcAgent:
         if self.refresh_task:
             self.refresh_task.cancel()
             with contextlib.suppress(asyncio.CancelledError): await self.refresh_task
+        if self.schedule_task:
+            self.schedule_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError): await self.schedule_task
         await self.stop()
 
     def config(self, chain):
@@ -281,7 +421,8 @@ class PcAgent:
             },
             'permission': {'*': 'ask', 'bash': 'ask', 'edit': 'ask', 'read': 'allow', 'webfetch': 'allow'},
             'mcp': {COMPUTER: {'type': 'local', 'command': [self.python, '-m', 'agent.computer'], 'enabled': settings['computer_use'],
-                               'environment': {'DISPLAY': os.environ.get('DISPLAY', ':0'), 'PYTHONPATH': str(Path(__file__).resolve().parent.parent)}}},
+                               'environment': {'DISPLAY': os.environ.get('DISPLAY', ':0'), 'PYTHONPATH': str(Path(__file__).resolve().parent.parent)}},
+                    **self.mcp_servers()},
             'agent': agents,
         }
 
@@ -405,7 +546,7 @@ class PcAgent:
             if sum(s['state'] == 'busy' for s in self.sessions(200)) >= 4: raise HTTPException(409, 'Four PC tasks are already active')
             session = await self.call('POST', '/session', json={'title': body.title or body.prompt[:60], 'agent': 'friday', 'permission': ruleset(settings)})
             with self.db() as db:
-                db.execute('INSERT INTO sessions VALUES(?,?,?,?,?,?)', (session['id'], body.source, session.get('title'), time.time(), 0, 'busy'))
+                db.execute('INSERT INTO sessions(id, source, title, created, model, state) VALUES(?,?,?,?,?,?)', (session['id'], body.source, session.get('title'), time.time(), 0, 'busy'))
                 if body.request_id: db.execute('INSERT INTO requests VALUES(?,?,?)', (body.request_id, digest, session['id']))
             try: await self.send(session['id'], body.prompt)
             except Exception:
@@ -458,6 +599,7 @@ class PcAgent:
                             if not pending['permissions'] and not pending['questions'] and not running:
                                 await self.call('POST', f'/session/{session_id}/abort')
                                 with self.db() as db: db.execute("UPDATE sessions SET state='error' WHERE id=?", (session_id,))
+                                self._release_schedule_failure(session_id)
                                 return
                     continue
                 retrying_since = None
@@ -466,7 +608,10 @@ class PcAgent:
                 last = next((m for m in reversed(messages) if m['info']['role'] == 'assistant'), None)
                 error = (last or {}).get('info', {}).get('error')
                 if error and error.get('name') != 'MessageAbortedError' and retryable(error) and await self.fallback(session_id): continue
-                with self.db() as db: db.execute('UPDATE sessions SET state=? WHERE id=?', ('error' if error else 'idle', session_id))
+                final = 'error' if error else 'idle'
+                with self.db() as db: db.execute('UPDATE sessions SET state=? WHERE id=?', (final, session_id))
+                if final == 'idle': self._settle_schedule_success(session_id)
+                else: self._release_schedule_failure(session_id)
                 return
             except asyncio.CancelledError: raise
             except Exception:
@@ -560,6 +705,77 @@ class PcAgent:
             with contextlib.suppress(asyncio.CancelledError): await watcher
         return await self.call('POST', f'/session/{session_id}/abort')
 
+    # ---- scheduled PC tasks ----
+    def schedule(self, body):
+        """Save a one-time or recurring PC task. Each due run starts a new session; the phone is
+        notified through the usual session polling. Returns the schedule id."""
+        when = body.run_at
+        interval = body.interval_seconds
+        count = body.max_runs
+        if not isinstance(when, float) or when != when or when <= time.time(): raise HTTPException(422, 'Schedule the first run in the future')
+        if type(interval) is not int or interval != 0 and not 900 <= interval <= 366 * 86400: raise HTTPException(422, 'Repeat interval must be zero or at least 15 minutes')
+        if type(count) is not int or not 1 <= count <= 100 or interval == 0 and count != 1: raise HTTPException(422, 'Use 1–100 runs; one-time schedules have one run')
+        try: ZoneInfo(body.timezone)
+        except (ZoneInfoNotFoundError, TypeError, ValueError): raise HTTPException(422, 'Invalid time zone')
+        identifier = secrets.token_hex(16)
+        with self.db() as db:
+            db.execute('INSERT INTO pc_schedules VALUES(?,?,?,?,?,?,?,?,?)', (identifier, body.prompt, body.title, 'schedule', when, interval, count, time.time(), count))
+        return {'id': identifier, 'next_run': when, 'remaining': count}
+
+    def scheduled(self, limit=30):
+        with self.db() as db:
+            return [dict(row) for row in db.execute('SELECT * FROM pc_schedules ORDER BY next_run LIMIT ?', (limit,))]
+
+    def cancel_schedule(self, schedule_id):
+        if not isinstance(schedule_id, str) or not re.fullmatch(r'[a-f0-9]{32}', schedule_id): raise HTTPException(404, 'Not one of FRIDAY’s PC schedules')
+        with self.db() as db:
+            row = db.execute('DELETE FROM pc_schedules WHERE id=? RETURNING id', (schedule_id,)).fetchone()
+        if not row: raise HTTPException(404, 'Not one of FRIDAY’s PC schedules')
+        return {'id': schedule_id}
+
+    async def run_due_schedules(self):
+        """Start one session per due schedule. Idempotent per (schedule, due time). Repeats advance
+        only after the linked session finishes successfully; failures do not consume a run."""
+        if not self.settings()['enabled']: return []
+        now = time.time()
+        with self.db() as db:
+            due = [dict(row) for row in db.execute('SELECT * FROM pc_schedules WHERE remaining>0 AND next_run<=? ORDER BY next_run LIMIT 5', (now,))]
+        started = []
+        for row in due:
+            due_at = row['next_run']
+            with self.db() as db:
+                existing = db.execute(
+                    'SELECT id, state FROM sessions WHERE schedule=? AND schedule_due=? AND schedule_settled=0',
+                    (row['id'], due_at),
+                ).fetchone()
+            if existing:
+                if existing['state'] in ('busy', 'waiting'):
+                    continue
+                if existing['state'] == 'idle':
+                    self._settle_schedule_success(existing['id'])
+                    continue
+                if existing['state'] == 'error':
+                    self._release_schedule_failure(existing['id'])
+            request_id = self._schedule_request_id(row['id'], due_at)
+            try:
+                result = await self.start(Prompt(prompt=row['prompt'], title=row['title'], source='schedule', request_id=request_id))
+            except HTTPException:
+                continue
+            with self.db() as db:
+                db.execute('UPDATE sessions SET schedule=?, schedule_due=?, schedule_settled=0 WHERE id=?',
+                           (row['id'], due_at, result['id']))
+            started.append({'schedule': row['id'], 'session': result['id']})
+        with self.db() as db:
+            db.execute('DELETE FROM pc_schedules WHERE remaining<=0')
+        return started
+
+    async def start_scheduler(self):
+        async def scheduler_loop():
+            while True:
+                with contextlib.suppress(Exception): await self.run_due_schedules()
+                await asyncio.sleep(60)
+        self.schedule_task = asyncio.create_task(scheduler_loop())
+
     async def question(self, question_id):
         questions = {q['id']: q for q in await self.call('GET', '/question')}
         request = questions.get(question_id)
@@ -622,6 +838,7 @@ def routes(app, auth, agent):
     install_vision_proxy(app, agent)
     router = APIRouter(prefix='/workspace/pc', dependencies=auth)
     app.router.add_event_handler('startup', agent.start_refresh)
+    app.router.add_event_handler('startup', agent.start_scheduler)
     app.router.add_event_handler('shutdown', agent.shutdown)
 
     @router.get('/status')
@@ -689,8 +906,23 @@ def routes(app, auth, agent):
     async def abort(session_id: str):
         return await agent.cancel(session_id)
 
+    @router.get('/schedules')
+    async def schedules(): return agent.scheduled()
+
+    @router.post('/schedules')
+    async def start_schedule(body: PcSchedule): return agent.schedule(body)
+
+    @router.delete('/schedules/{schedule_id}')
+    async def cancel_schedule(schedule_id: str): return agent.cancel_schedule(schedule_id)
+
     @router.get('/approvals')
     async def approvals(): return await agent.pending()
+
+    @router.get('/mcp')
+    async def mcp(): return agent.mcp_status()
+
+    @router.post('/mcp/{name}/confirm')
+    async def confirm_mcp(name: str): return agent.confirm_mcp(name)
 
     @router.post('/permissions/{permission_id}')
     async def reply(permission_id: str, body: Reply): return await agent.reply(permission_id, body)

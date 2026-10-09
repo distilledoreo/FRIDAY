@@ -22,6 +22,7 @@ class Schedule(BaseModel):
     interval_seconds: int = 0
     max_runs: int = Field(default=1, ge=1, le=100)
     timezone: str = Field(default='UTC', max_length=100)
+    notify: str = Field(default='always', pattern='^(always|on_change)$')
 
 
 class Proposal(BaseModel):
@@ -191,6 +192,39 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
         value=guarded(store.propose_outgoing,action)
         value['review']=review
         return value
+
+    @router.get('/outgoing/verification')
+    async def outgoing_verification():
+        """Read-only readiness for the outgoing activation gate. No side effects and no credential
+        material: per-account answers are capability booleans only. Enabling execution still requires
+        the operator's explicit outgoing.json attestation after real consent, phone review, and
+        provider execution/concurrency checks."""
+        checks=[]
+        def check(name,passed,detail):checks.append({'name':name,'passed':bool(passed),'detail':detail})
+        enabled=bool(executors and executors.enabled)
+        check('activation_file',enabled,'outgoing.json attests enabled and phone_and_provider_verified' if enabled else 'Outgoing activation is off; drafts stay review-only and no approval is recorded')
+        try:identities=vault.accounts() if vault else None
+        except Exception:identities=None
+        check('vault_available',vault is not None,'Credential vault is installed' if vault is not None else 'Install and unlock the desktop credential vault first')
+        unlocked=False;send_capable=[];calendar_capable=[]
+        if identities is not None:
+            for row in identities:
+                try:credentials=vault.credentials(row['id']);unlocked=True
+                except Exception:continue
+                features=credentials.get('features',[]) if isinstance(credentials.get('features',[]),list) else []
+                if row['provider']=='imap':
+                    if credentials.get('smtp_host') and credentials.get('smtp_port') in (465,587):send_capable.append(row['id'])
+                elif 'mail_send' in features:send_capable.append(row['id'])
+                if row['provider'] in ('google','microsoft') and 'calendar_write' in features:calendar_capable.append(row['id'])
+        check('vault_unlocked',unlocked,'Vault decrypted for capability checks' if unlocked else 'Unlock the vault on the PC, or connect an account first')
+        check('send_account',len(send_capable)>0,f'{len(send_capable)} connected account(s) can send' if send_capable else 'No connected account can send yet (IMAP needs verified SMTP; Google/Microsoft need the mail_send feature)')
+        check('calendar_account',len(calendar_capable)>0,f'{len(calendar_capable)} connected account(s) can write calendar events' if calendar_capable else 'No connected account can write calendar events yet (Google/Microsoft need the calendar_write feature)')
+        idle=len(outgoing_running)==0 and (len(accounts.mail_tasks)==0 if accounts else True)
+        check('no_active_outgoing',idle,'No outgoing work is running' if idle else 'Outgoing work is active; defer activation changes until it finishes')
+        ready=all(item['passed'] for item in checks)
+        return {'ready':ready,'checks':checks,
+                'manual':['Review an exact outgoing draft on the phone','Confirm provider delivery/concurrency on a real account'],
+                'detail':'All automatic checks pass; complete the manual steps, then attest with outgoing.json' if ready else 'Resolve the failing checks before attesting with outgoing.json'}
 
     @router.get('/accounts')
     async def list_accounts():

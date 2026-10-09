@@ -154,3 +154,18 @@ class AgentApiTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post('/workspace/agent/actions/' + action['id'] + '/approve', json={'fingerprint': action['fingerprint']})
         self.assertEqual(response.status_code, 503)
         self.assertEqual(self.store.actions(task['id'])[0]['status'], 'proposed')
+
+    async def test_outgoing_verification_is_read_only_authenticated_and_leaks_nothing(self):
+        response = await self.client.get('/workspace/agent/outgoing/verification')
+        self.assertEqual(response.status_code, 200)
+        value = response.json()
+        self.assertFalse(value['ready'])
+        names = [item['name'] for item in value['checks']]
+        self.assertEqual(names, ['activation_file', 'vault_available', 'vault_unlocked', 'send_account', 'calendar_account', 'no_active_outgoing'])
+        self.assertTrue(value['checks'][-1]['passed'])
+        self.assertIn('manual', value)
+        dumped = response.text
+        for secret in ('password', 'token', 'secret', 'credentials'):
+            self.assertNotIn(secret, dumped.lower())
+        self.assertEqual((await self.client.get('/workspace/agent/outgoing/verification', headers={'Authorization': ''})).status_code, 401)
+        self.assertFalse((await self.client.get('/workspace/agent/health')).json()['outgoing_ready'])

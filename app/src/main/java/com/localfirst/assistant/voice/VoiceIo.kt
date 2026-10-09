@@ -8,8 +8,12 @@ sealed interface ListenResult {
 }
 
 interface SpeechInput {
-    /** Listens for one utterance. [onLevel] is 0..1 for the mic animation. */
-    suspend fun listen(onPartial: (String) -> Unit, onLevel: (Float) -> Unit): ListenResult
+    /**
+     * Listens for one utterance. [onLevel] is 0..1 for the mic animation.
+     * [completeSilenceMs] is how long silence ends the utterance; voice mode
+     * passes a shorter value to answer sooner.
+     */
+    suspend fun listen(onPartial: (String) -> Unit, onLevel: (Float) -> Unit, completeSilenceMs: Long = 1_000L): ListenResult
 }
 
 interface Speaker {

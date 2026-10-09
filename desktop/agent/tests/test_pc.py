@@ -1,5 +1,6 @@
 import fnmatch
 import json
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -10,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi import Depends, FastAPI, Header, HTTPException
 import httpx
 
-from desktop.agent.pc import PcAgent, Prompt, Reply, Settings, LOCAL, COMPUTER, ruleset, routes
+from desktop.agent.pc import PcAgent, Prompt, Reply, Settings, LOCAL, COMPUTER, ruleset, routes, PcSchedule
 
 
 def decision(settings, permission, value):
@@ -32,6 +33,7 @@ class FakePc(PcAgent):
         self.failure = False
         self.stopped = 0
         self.ensured = 0
+        self.created = 0
 
     async def models(self): return [('opencode', 'synthetic:free'), LOCAL]
     async def ensure(self): self.ensured += 1
@@ -42,7 +44,9 @@ class FakePc(PcAgent):
         if path == '/permission': return self.permissions
         if path == '/question': return self.questions
         if path == '/session/status': return {}
-        if path == '/session' and method == 'POST': return {'id': 'ses_created', 'title': kwargs['json']['title']}
+        if path == '/session' and method == 'POST':
+            self.created += 1
+            return {'id': f'ses_created_{self.created}', 'title': kwargs['json']['title']}
         if path.endswith('/message'): return self.messages
         if path.startswith('/session/') and method == 'GET': return {'parentID': self.parents.get(path.split('/')[-1])}
         if self.failure: raise HTTPException(409, 'Synthetic upstream failure')
@@ -50,7 +54,7 @@ class FakePc(PcAgent):
 
     def add(self, identifier='ses_owned'):
         with self.db() as db:
-            db.execute('INSERT INTO sessions VALUES(?,?,?,?,?,?)', (identifier, 'test', 'Synthetic task', time.time(), 0, 'busy'))
+            db.execute('INSERT INTO sessions(id, source, title, created, model, state) VALUES(?,?,?,?,?,?)', (identifier, 'test', 'Synthetic task', time.time(), 0, 'busy'))
         return identifier
 
 
@@ -80,6 +84,53 @@ class PcTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision(settings, 'bash', 'git push origin main'), 'deny')
         self.assertEqual(decision(settings, 'bash', 'sudo mkfs.ext4 /dev/synthetic'), 'ask')
 
+    def test_operator_mcp_servers_merge_and_fail_closed(self):
+        self.assertEqual(self.pc.mcp_servers(), {})
+        self.assertEqual(self.pc.mcp_status(), {'servers': []})
+        manifest = self.pc.root / 'mcp.json'
+        manifest.write_text(json.dumps({'servers': {
+            'github': {'type': 'local', 'command': ['synthetic-mcp', 'serve'], 'environment': {'GITHUB_TOKEN': 'synthetic'}, 'enabled': True},
+            'notion': {'type': 'remote', 'url': 'https://mcp.notion.com/mcp', 'enabled': True},
+            'off': {'type': 'local', 'command': ['synthetic-off'], 'enabled': False},
+            'Bad Name!': {'type': 'local', 'command': ['synthetic-bad']},
+            'friday-computer': {'type': 'local', 'command': ['synthetic-reserved']},
+            'plain': {'type': 'remote', 'url': 'http://mcp.example.com/mcp'},
+        }}))
+        # New servers wait for phone confirmation before they may run.
+        self.assertEqual(self.pc.mcp_servers(), {})
+        self.assertEqual(self.pc.mcp_status(), {'servers': [
+            {'name': 'github', 'type': 'local', 'confirmed': False},
+            {'name': 'notion', 'type': 'remote', 'confirmed': False}]})
+        self.assertEqual(self.pc.confirm_mcp('github'), {'name': 'github', 'confirmed': True})
+        self.assertEqual(self.pc.confirm_mcp('notion'), {'name': 'notion', 'confirmed': True})
+        servers = self.pc.mcp_servers()
+        self.assertEqual(set(servers), {'github', 'notion'})
+        self.assertEqual(servers['github'], {'type': 'local', 'command': ['synthetic-mcp', 'serve'], 'environment': {'GITHUB_TOKEN': 'synthetic'}, 'enabled': True})
+        self.assertEqual(servers['notion'], {'type': 'remote', 'url': 'https://mcp.notion.com/mcp', 'headers': {}, 'enabled': True})
+        with self.assertRaises(HTTPException): self.pc.confirm_mcp('missing')
+        with self.assertRaises(HTTPException): self.pc.confirm_mcp('../owned')
+        with self.assertRaises(HTTPException): self.pc.confirm_mcp('friday-computer')
+        # A changed entry needs confirmation again.
+        manifest.write_text(json.dumps({'servers': {'github': {'type': 'local', 'command': ['synthetic-changed']}}}))
+        self.assertEqual(self.pc.mcp_servers(), {})
+        self.assertEqual(self.pc.mcp_status(), {'servers': [{'name': 'github', 'type': 'local', 'confirmed': False}]})
+        self.pc.confirm_mcp('github')
+        self.assertEqual(list(self.pc.mcp_servers()), ['github'])
+        for bad in ('not json', '[]', '{}', '{"servers":[]}', '{"servers":{' + ','.join(f'"s{i}":{{"type":"local","command":["x"]}}' for i in range(11)) + '}}'):
+            manifest.write_text(bad)
+            self.assertEqual(self.pc.mcp_servers(), {}, bad[:40])
+            self.assertEqual(self.pc.mcp_status(), {'servers': []})
+        manifest.unlink()
+        self.assertEqual(self.pc.mcp_servers(), {})
+
+    def test_operator_mcp_servers_merge_into_opencode_config(self):
+        (self.pc.root / 'mcp.json').write_text(json.dumps({'servers': {'github': {'type': 'local', 'command': ['synthetic-mcp']}}}))
+        self.pc.confirm_mcp('github')
+        config = self.pc.config([('opencode', 'synthetic:free'), LOCAL])
+        self.assertIn('friday-computer', config['mcp'])
+        self.assertEqual(config['mcp']['github'], {'type': 'local', 'command': ['synthetic-mcp'], 'environment': {}, 'enabled': True})
+        self.assertEqual(decision(self.pc.settings(), 'mcp_github_list_repos', '*'), 'ask')
+
     def test_computer_off_overrides_full_mode(self):
         settings = Settings(mode='full', computer_use=False, allow=['computer']).model_dump()
         for tool in (COMPUTER + '_screenshot', COMPUTER + '_action'):
@@ -96,6 +147,96 @@ class PcTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException): await self.pc.start(Prompt(prompt='Synthetic task'))
         with self.assertRaises(HTTPException): await self.pc.send(self.session, 'Continue')
         self.assertEqual(self.pc.calls, [])
+
+    def test_pc_schedule_validation_matches_agent_schedules(self):
+        future = time.time() + 3600
+        self.pc.schedule(PcSchedule(prompt='Owned nightly check', run_at=future))
+        self.pc.schedule(PcSchedule(prompt='Owned hourly check', run_at=future, interval_seconds=3600, max_runs=5, timezone='America/New_York'))
+        for body in (PcSchedule(prompt='Owned past', run_at=time.time() - 1),
+                     PcSchedule(prompt='Owned quick', run_at=future, interval_seconds=30),
+                     PcSchedule(prompt='Owned many', run_at=future, interval_seconds=900, max_runs=101),
+                     PcSchedule(prompt='Owned once', run_at=future, max_runs=2)):
+            with self.assertRaises(HTTPException): self.pc.schedule(body)
+        with self.assertRaises(HTTPException):
+            self.pc.schedule(PcSchedule(prompt='Owned zone', run_at=future, timezone='Invalid/Zone'))
+        self.assertEqual(len(self.pc.scheduled()), 2)
+
+    async def test_due_pc_schedule_runs_once_and_recurs_without_bursts(self):
+        created = self.pc.schedule(PcSchedule(prompt='Owned recurring check', run_at=time.time() + 3600, interval_seconds=900, max_runs=3))
+        due = time.time() - 2000
+        with self.pc.db() as db: db.execute('UPDATE pc_schedules SET next_run=? WHERE id=?', (due, created['id']))
+        started = await self.pc.run_due_schedules()
+        self.assertEqual(len(started), 1)
+        record = self.pc.record(started[0]['session'])
+        self.assertEqual(record['source'], 'schedule')
+        self.assertEqual(self.pc.scheduled()[0]['remaining'], 3)
+        with self.pc.db() as db: db.execute("UPDATE sessions SET state='idle' WHERE id=?", (started[0]['session'],))
+        self.pc._settle_schedule_success(started[0]['session'])
+        state = self.pc.scheduled()[0]
+        self.assertEqual(state['remaining'], 2)
+        self.assertGreater(state['next_run'], time.time())
+        # A retry of the same due time reuses the same session and never consumes a second run.
+        with self.pc.db() as db: db.execute('UPDATE pc_schedules SET next_run=?, remaining=2 WHERE id=?', (due, created['id']))
+        before = [session['id'] for session in self.pc.sessions(200)]
+        again = await self.pc.run_due_schedules()
+        self.assertEqual([run['session'] for run in again], [started[0]['session']])
+        self.assertEqual([session['id'] for session in self.pc.sessions(200)], before)
+        self.assertEqual(self.pc.scheduled()[0]['remaining'], 2)
+        self.pc.cancel_schedule(created['id'])
+        one_shot = self.pc.schedule(PcSchedule(prompt='Owned once', run_at=time.time() + 3600))
+        with self.pc.db() as db: db.execute('UPDATE pc_schedules SET next_run=? WHERE id=?', (time.time() - 1, one_shot['id']))
+        once = await self.pc.run_due_schedules()
+        self.assertEqual(len(once), 1)
+        with self.pc.db() as db: db.execute("UPDATE sessions SET state='idle' WHERE id=?", (once[0]['session'],))
+        self.pc._settle_schedule_success(once[0]['session'])
+        self.assertNotIn(one_shot['id'], [row['id'] for row in self.pc.scheduled()])
+
+    async def test_pc_schedule_cancel_and_disabled_skip(self):
+        created = self.pc.schedule(PcSchedule(prompt='Owned cancellable', run_at=time.time() + 3600))
+        self.assertEqual(self.pc.cancel_schedule(created['id']), {'id': created['id']})
+        self.assertEqual(self.pc.scheduled(), [])
+        with self.assertRaises(HTTPException): self.pc.cancel_schedule('f' * 32)
+        with self.assertRaises(HTTPException): self.pc.cancel_schedule('../owned')
+        kept = self.pc.schedule(PcSchedule(prompt='Owned paused', run_at=time.time() + 3600))
+        self.pc.save_settings(Settings(enabled=False).model_dump())
+        with self.pc.db() as db: db.execute('UPDATE pc_schedules SET next_run=? WHERE id=?', (time.time() - 1, kept['id']))
+        self.assertEqual(await self.pc.run_due_schedules(), [])
+        self.assertEqual(len(self.pc.scheduled()), 1)
+
+    async def test_failed_schedule_run_does_not_consume_repeat(self):
+        created = self.pc.schedule(PcSchedule(prompt='Owned flaky check', run_at=time.time() + 3600, interval_seconds=900, max_runs=3))
+        with self.pc.db() as db: db.execute('UPDATE pc_schedules SET next_run=? WHERE id=?', (time.time() - 1, created['id']))
+        started = await self.pc.run_due_schedules()
+        self.assertEqual(self.pc.scheduled()[0]['remaining'], 3)
+        with self.pc.db() as db: db.execute("UPDATE sessions SET state='error' WHERE id=?", (started[0]['session'],))
+        self.pc._release_schedule_failure(started[0]['session'])
+        self.assertEqual(self.pc.scheduled()[0]['remaining'], 3)
+        again = await self.pc.run_due_schedules()
+        self.assertEqual(len(again), 1)
+        self.assertNotEqual(again[0]['session'], started[0]['session'])
+        with self.pc.db() as db: db.execute("UPDATE sessions SET state='idle' WHERE id=?", (again[0]['session'],))
+        self.pc._settle_schedule_success(again[0]['session'])
+        self.assertEqual(self.pc.scheduled()[0]['remaining'], 2)
+
+    def test_pc_schedules_schema_upgrade_allows_new_inserts(self):
+        legacy_root = Path(self.tmp.name) / 'legacy-agent'
+        legacy_pc = legacy_root / 'pc'
+        legacy_pc.mkdir(parents=True)
+        with sqlite3.connect(legacy_pc / 'pc.sqlite') as db:
+            db.execute('CREATE TABLE sessions(id TEXT PRIMARY KEY, source TEXT, title TEXT, created REAL, model INTEGER, state TEXT)')
+            db.execute('CREATE TABLE requests(id TEXT PRIMARY KEY,digest TEXT NOT NULL,session TEXT NOT NULL)')
+            db.execute('CREATE TABLE session_models(session TEXT PRIMARY KEY,chain TEXT NOT NULL)')
+            db.execute('CREATE TABLE pc_schedules(id TEXT PRIMARY KEY, prompt TEXT NOT NULL, title TEXT, source TEXT NOT NULL, next_run REAL NOT NULL, interval_seconds INTEGER NOT NULL, remaining INTEGER NOT NULL, created REAL NOT NULL)')
+            db.execute('INSERT INTO pc_schedules VALUES(?,?,?,?,?,?,?,?)',
+                       ('legacy', 'Old nightly', None, 'schedule', time.time() + 7200, 0, 5, time.time()))
+        legacy = PcAgent(legacy_root)
+        with legacy.db() as db:
+            columns = {row[1] for row in db.execute('PRAGMA table_info(pc_schedules)')}
+            self.assertIn('max_runs', columns)
+            self.assertEqual(db.execute('SELECT max_runs FROM pc_schedules WHERE id=?', ('legacy',)).fetchone()[0], 5)
+        future = time.time() + 3600
+        created = legacy.schedule(PcSchedule(prompt='After upgrade', run_at=future))
+        self.assertEqual(created['remaining'], 1)
 
     async def test_idempotent_start_does_not_repeat_work_and_conflicting_payload_fails(self):
         prompt = Prompt(prompt='Owned fixture', request_id='owned-1')

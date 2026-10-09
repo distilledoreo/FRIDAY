@@ -56,9 +56,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -88,6 +90,7 @@ internal fun UserMessage(
     actionsEnabled: Boolean,
     onCopy: (String) -> Unit,
     onEdit: (Int) -> Unit,
+    onBranch: ((Int) -> Unit)? = null,
 ) {
     var menu by remember { mutableStateOf(false) }
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
@@ -127,6 +130,16 @@ internal fun UserMessage(
                         onEdit(item.index)
                     },
                 )
+                if (onBranch != null) {
+                    DropdownMenuItem(
+                        text = { Text("Branch from here") },
+                        enabled = actionsEnabled,
+                        onClick = {
+                            menu = false
+                            onBranch(item.index)
+                        },
+                    )
+                }
             }
         }
     }
@@ -139,6 +152,9 @@ internal fun AssistantMessage(
     onCopy: (String) -> Unit,
     onRegenerate: () -> Unit,
     onChoose: ((String) -> Unit)? = null,
+    onCanvas: ((String) -> Unit)? = null,
+    onShare: ((String) -> Unit)? = null,
+    onFeedback: ((Boolean) -> Unit)? = null,
 ) {
     val plain = remember(item.text) { if (UiBlocks.contains(item.text)) UiBlocks.plainText(item.text) else item.text }
     Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -165,6 +181,16 @@ internal fun AssistantMessage(
                 SmallIconButton(AppIcons.ContentCopy, "Copy") { onCopy(plain) }
                 if (item.isLatest) {
                     SmallIconButton(Icons.Filled.Refresh, "Regenerate", enabled = actionsEnabled, onClick = onRegenerate)
+                }
+            }
+            if (item.isLatest && actionsEnabled && (onCanvas != null || onShare != null || onFeedback != null)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    onCanvas?.let { canvas -> TextButton(shape = MaterialTheme.shapes.small, onClick = { canvas(item.text) }) { Text("Canvas") } }
+                    onShare?.let { share -> TextButton(shape = MaterialTheme.shapes.small, onClick = { share(plain) }) { Text("Share") } }
+                    onFeedback?.let { feedback ->
+                        TextButton(shape = MaterialTheme.shapes.small, onClick = { feedback(true) }) { Text("Good") }
+                        TextButton(shape = MaterialTheme.shapes.small, onClick = { feedback(false) }) { Text("Bad") }
+                    }
                 }
             }
         }
@@ -423,3 +449,40 @@ private fun SmallIconButton(
 
 internal fun domainOf(url: String): String =
     runCatching { URI(url).host?.removePrefix("www.") }.getOrNull() ?: url
+
+/** A drafted answer, edited side by side with the chat and saved to files. */
+@Composable
+internal fun CanvasSheet(
+    doc: CanvasDoc,
+    busy: Boolean,
+    onTitle: (String) -> Unit,
+    onBody: (String) -> Unit,
+    onSave: () -> Unit,
+    onCopy: (String) -> Unit,
+    onClose: () -> Unit,
+) {
+    FridaySheet(onDismiss = onClose) { _, _, close ->
+        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Canvas", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(
+                value = doc.title,
+                onValueChange = onTitle,
+                label = { Text("Title") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = doc.body,
+                onValueChange = onBody,
+                modifier = Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(min = 200.dp),
+                minLines = 8,
+                maxLines = 30,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(shape = MaterialTheme.shapes.small, onClick = onSave, enabled = !busy && doc.body.isNotBlank()) { Text("Save to files") }
+                TextButton(shape = MaterialTheme.shapes.small, onClick = { onCopy(doc.body) }) { Text("Copy") }
+                TextButton(shape = MaterialTheme.shapes.small, onClick = { close?.invoke(); onClose() }) { Text("Close") }
+            }
+        }
+    }
+}

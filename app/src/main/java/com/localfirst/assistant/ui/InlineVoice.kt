@@ -36,7 +36,16 @@ import kotlin.math.sin
 
 /** Voice mode inside the conversation: a live waveform, what was heard, and round controls. */
 @Composable
-internal fun InlineVoice(voice: VoiceUiState, onPause: () -> Unit, onResume: () -> Unit, onInterrupt: () -> Unit, onClose: () -> Unit) {
+internal fun InlineVoice(
+    voice: VoiceUiState,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onInterrupt: () -> Unit,
+    onClose: () -> Unit,
+    sharingScreen: Boolean = false,
+    onCamera: (() -> Unit)? = null,
+    onShareScreen: (() -> Unit)? = null,
+) {
     val palette = LocalFridayPalette.current
     val paused = voice.phase == VoicePhase.PAUSED
     Column(
@@ -85,6 +94,21 @@ internal fun InlineVoice(voice: VoiceUiState, onPause: () -> Unit, onResume: () 
             VoiceControl("End", onClose, description = "End voice conversation",
                 container = if (palette.dark) Color(0xFF4A2626) else Color(0xFFF7DEDB), content = if (palette.dark) Color(0xFFF2B8B5) else Color(0xFF8C1D18)) {
                 Icon(Icons.Filled.Close, null, Modifier.size(22.dp))
+            }
+        }
+        if (onCamera != null || onShareScreen != null) {
+            Row(horizontalArrangement = Arrangement.spacedBy(28.dp), verticalAlignment = Alignment.Top) {
+                onCamera?.let { take ->
+                    VoiceControl("Show FRIDAY", take, description = "Take a photo to include with your next message") {
+                        Icon(LineIcons.Camera, null, Modifier.size(22.dp))
+                    }
+                }
+                onShareScreen?.let { share ->
+                    VoiceControl(if (sharingScreen) "Stop sharing" else "Share screen", share,
+                        description = if (sharingScreen) "Stop including your screen" else "Include your screen with your next message") {
+                        Icon(LineIcons.Screen, null, Modifier.size(22.dp))
+                    }
+                }
             }
         }
     }

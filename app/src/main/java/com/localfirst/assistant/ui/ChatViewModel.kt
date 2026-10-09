@@ -102,6 +102,9 @@ data class ChatUiState(
     val accountContent: JSONObject? = null,
     val pcStatus: JSONObject? = null,
     val pcSessions: List<JSONObject> = emptyList(),
+    val pcSchedules: List<JSONObject> = emptyList(),
+    /** Operator MCP service connections with their phone-confirmation state, if the PC reports them. */
+    val pcMcp: JSONObject? = null,
     val pcSessionId: String? = null,
     val pcSession: JSONObject? = null,
     /** Full views for PC sessions linked from this chat's tool results, keyed by session id. */
@@ -148,6 +151,8 @@ data class ChatUiState(
     val imageStatus: String? = null,
     /** Index of the user message being edited, if any. */
     val editingIndex: Int? = null,
+    /** An answer open in the canvas editor, if any. */
+    val canvas: CanvasDoc? = null,
     val busy: Boolean = false,
     val error: String? = null,
     val conversations: List<ConversationSummary> = emptyList(),
@@ -180,7 +185,13 @@ data class DraftAttachment(
 /** The running task's latest step and page, read from its events. */
 data class FridayLive(val taskId: String, val activity: String, val screenshotId: String?, val screenshotUrl: String?, val lastSeq: Long)
 
+/** One refresh of the native PC agent: status, sessions, schedules, and the open session's view. */
+private data class PcSnapshot(val status: org.json.JSONObject, val sessions: List<org.json.JSONObject>, val schedules: List<org.json.JSONObject>, val view: org.json.JSONObject?)
+
 data class PendingApproval(val toolName: String, val prompt: String)
+
+/** A document drafted from an answer: edited on the phone, saved to files. */
+data class CanvasDoc(val title: String, val body: String)
 
 class ChatViewModel(
     private val settingsStore: ServerSettingsStore,
@@ -264,6 +275,18 @@ class ChatViewModel(
         if (app != null) viewModelScope.launch {
             voiceState.collect { if (it == null) VoiceForegroundService.stop(app) }
         }
+        syncWakeWord()
+    }
+
+    /** Starts or stops the "Hey FRIDAY" listener to match the saved setting. */
+    private fun syncWakeWord() {
+        val context = app ?: return
+        if (_state.value.settings.wakeWord &&
+            com.localfirst.assistant.phone.PermissionBroker.isGranted(context, android.Manifest.permission.RECORD_AUDIO)) {
+            com.localfirst.assistant.voice.WakeWordService.start(context)
+        } else {
+            com.localfirst.assistant.voice.WakeWordService.stop(context)
+        }
     }
 
     fun onDraftChange(value: String) {
@@ -304,6 +327,7 @@ class ChatViewModel(
         if (uris.size > remaining) _state.update { it.copy(error = "You can attach up to $MAX_ATTACHMENTS files per message.") }
         for (uri in uris.take(remaining)) {
             val image = importer.isImage(uri)
+            val audio = !image && importer.isAudio(uri)
             val draft = DraftAttachment(
                 id = UUID.randomUUID().toString(),
                 name = importer.displayName(uri),
@@ -318,6 +342,8 @@ class ChatViewModel(
                     runCatching {
                         if (image) {
                             importer.importImage(uri, draft.name, attachmentPrivacy.incognito, ephemeralId)
+                        } else if (audio) {
+                            importer.importAudio(uri, settings.searchBaseUrl, settings.searchApiKey.trim().ifEmpty { null }, attachmentPrivacy.incognito, ephemeralId)
                         } else {
                             importer.importDocument(uri, settings.searchBaseUrl, settings.searchApiKey.trim().ifEmpty { null }, attachmentPrivacy.incognito, ephemeralId)
                         }
@@ -1007,6 +1033,111 @@ class ChatViewModel(
     }
     fun discussDailyBrief() = chatAbout("Help me plan my day. Check my calendar and daily brief for today, then tell me what to prioritize.")
 
+    /** Starts a deep-research task from the draft: a fixed multi-step plan, approved in Activity, reported back for discussion. */
+    fun proposeDeepResearch() {
+        val query = _state.value.draft.trim()
+        val grounding = com.localfirst.assistant.grounding.GroundingPrecheck
+        if (query.isEmpty() || _state.value.busy || _state.value.workspaceBusy || _state.value.privacy.incognito) return
+        if (grounding.blocksWeb(query) || grounding.privateRequest(query)) {
+            _state.update { it.copy(error = "This looks private: public deep research needs a version without personal details.") }; return
+        }
+        if (query.length > 7900) { _state.update { it.copy(error = "This research prompt exceeds the task limit. Use a focused public question.") }; return }
+        proposeAgentTask("Research this thoroughly: $query",
+            listOf("Find primary authoritative sources", "Read the relevant passages and dates",
+                "Check material claims, conflicting evidence and limits", "Write a structured report with citations and uncertainty"))
+        _state.update { it.copy(showWorkspace = true, workspaceDestination = WorkspaceDestination.ACTIVITY) }
+    }
+
+    /** Copies this chat from [index] (a user message) into a new branch and opens it. */
+    fun branchFrom(index: Int) {
+        val current = _state.value
+        if (current.busy || current.workspaceBusy || !current.privacy.persist) return
+        val prefix = current.messages.take(index + 1)
+        if (prefix.isEmpty() || prefix.last() !is Message.User) return
+        viewModelScope.launch {
+            turnJob?.cancel()
+            turnJob?.join()
+            val id = UUID.randomUUID().toString()
+            val now = clock()
+            withContext(Dispatchers.IO) {
+                conversationStore.save(StoredConversation(
+                    ConversationSummary(id, current.title + " (branch)", now, now, current.projectId), prefix))
+            }
+            refreshConversationList()
+            switchTo(id)
+        }
+    }
+
+    /** Saves this chat as a Markdown file on the computer and opens it. */
+    fun exportChat() {
+        val current = _state.value
+        if (current.messages.isEmpty() || current.workspaceBusy || current.privacy.incognito) return
+        workspaceAction {
+            val name = (current.title.ifBlank { "Chat" }.replace(Regex("[^A-Za-z0-9 _-]"), "").trim().ifBlank { "Chat" }.take(80) + ".md")
+            val result = workspace?.request("/workspace/create-file", "POST",
+                JSONObject().put("name", name).put("content", com.localfirst.assistant.presentation.ChatExport.markdown(current.title, current.messages)))
+                ?: error("Computer unavailable.")
+            val uri = runCatching { JSONObject(result).optString("url").takeIf { it.isNotBlank() } }.getOrNull()
+            if (uri != null) workspace?.openArtifact(uri)
+            "Chat exported to $name."
+        }
+    }
+
+    /** Shares [text] through Android's share sheet. */
+    fun shareText(text: String) {
+        val context = app ?: return
+        val trimmed = text.trim().take(20000)
+        if (trimmed.isEmpty()) return
+        context.startActivity(android.content.Intent.createChooser(
+            android.content.Intent(android.content.Intent.ACTION_SEND).putExtra(android.content.Intent.EXTRA_TEXT, trimmed).setType("text/plain"),
+            "Share").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
+    /** Opens an answer in the canvas editor. */
+    fun openCanvas(text: String) {
+        val plain = com.localfirst.assistant.presentation.UiBlocks.plainText(text).trim().take(20000)
+        if (plain.isBlank() || _state.value.busy) return
+        _state.update { it.copy(canvas = CanvasDoc(it.title.take(80), plain)) }
+    }
+
+    fun updateCanvas(title: String, body: String) {
+        _state.update { it.copy(canvas = it.canvas?.copy(title = title.take(80), body = body.take(50000))) }
+    }
+
+    fun closeCanvas() { _state.update { it.copy(canvas = null) } }
+
+    /** Saves the canvas document as a Markdown file on the computer. */
+    fun saveCanvas() {
+        val doc = _state.value.canvas ?: return
+        if (doc.body.isBlank() || _state.value.workspaceBusy || _state.value.privacy.incognito) return
+        workspaceAction {
+            val name = (doc.title.ifBlank { "Draft" }.replace(Regex("[^A-Za-z0-9 _-]"), "").trim().ifBlank { "Draft" }.take(80) + ".md")
+            workspace?.request("/workspace/create-file", "POST", JSONObject().put("name", name).put("content", doc.body))
+                ?: error("Computer unavailable.")
+            _state.update { it.copy(canvas = null) }
+            "Draft saved to $name."
+        }
+    }
+
+    /** Remembers answer feedback as a lesson for future chats. Tapping is the explicit ask. */
+    fun saveAnswerFeedback(question: String, answer: String, liked: Boolean) {
+        if (_state.value.workspaceBusy || _state.value.privacy.incognito) return
+        val text = ((if (liked) "User liked this answer; reuse the style. " else "User disliked this answer; avoid this style. ") +
+            "Q: ${question.trim().take(300)} A: ${com.localfirst.assistant.presentation.UiBlocks.plainText(answer).trim().take(500)}").take(900)
+        workspaceAction {
+            val client = workspace ?: error("PC memory unavailable.")
+            val query = Uri.encode(question.trim().take(100).ifBlank { text.take(100) })
+            val existing = runCatching {
+                JSONArray(client.request("/workspace/memory/memories?q=$query&offset=0&limit=200"))
+            }.getOrNull()
+            val duplicate = existing?.let { rows -> (0 until rows.length()).any { rows.optJSONObject(it)?.optString("text") == text } } == true
+            if (duplicate) return@workspaceAction "Already noted — no duplicate saved."
+            client.request("/workspace/memory/memories", "POST", JSONObject().put("text", text)
+                .put("category", "preference").put("scope", _state.value.projectId.orEmpty()).put("pinned", true))
+            if (liked) "Noted — I'll reuse what worked." else "Noted — I'll avoid that style."
+        }
+    }
+
     /** Starts a new chat in the current project and sends [text]: the dashboard's quick actions. */
     fun chatAbout(text: String) {
         val message = text.trim().take(4000)
@@ -1140,19 +1271,61 @@ class ChatViewModel(
         if (_state.value.privacy.incognito || pcRefreshJob?.isActive == true) return
         pcRefreshJob = viewModelScope.launch {
             try {
-                val result = withContext(Dispatchers.IO) {
+                val snapshot = withContext(Dispatchers.IO) {
                     val client = workspace ?: error("Computer unavailable")
-                    Triple(JSONObject(client.request("/workspace/pc/status")),
-                        jsonRows(JSONArray(client.request("/workspace/pc/sessions"))),
-                        sessionId?.let { JSONObject(client.request("/workspace/pc/sessions/$it")) })
+                    PcSnapshot(
+                        status = JSONObject(client.request("/workspace/pc/status")),
+                        sessions = jsonRows(JSONArray(client.request("/workspace/pc/sessions"))),
+                        schedules = runCatching { jsonRows(JSONArray(client.request("/workspace/pc/schedules"))) }.getOrDefault(emptyList()),
+                        view = sessionId?.let { JSONObject(client.request("/workspace/pc/sessions/$it")) },
+                    )
+                }
+                val mcp = withContext(Dispatchers.IO) {
+                    runCatching { workspace?.let { JSONObject(it.request("/workspace/pc/mcp")) } }.getOrNull()
                 }
                 _state.update { current ->
                     if (current.privacy.incognito) current
-                    else current.copy(pcStatus=result.first, pcSessions=result.second,
-                        pcSession=if (current.pcSessionId == sessionId) result.third else current.pcSession, pcError=null)
+                    else current.copy(pcStatus=snapshot.status, pcSessions=snapshot.sessions,
+                        pcSchedules=snapshot.schedules, pcMcp=mcp,
+                        pcSession=if (current.pcSessionId == sessionId) snapshot.view else current.pcSession, pcError=null)
                 }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { _state.update { if(it.privacy.incognito)it else it.copy(pcError="The PC agent could not be reached. Check the computer connection and native OpenCode setup.") } }
+        }
+    }
+
+    /** Cancels a scheduled PC task; runs keep their sessions. */
+    fun cancelPcSchedule(id: String) {
+        if (!id.matches(Regex("[a-f0-9]{32}"))) return
+        pcAction {
+            withContext(Dispatchers.IO) { workspace?.request("/workspace/pc/schedules/$id", "DELETE") ?: error("Computer unavailable") }
+        }
+    }
+
+    /** Saves the PC's MAC address for Wake-on-LAN; blank clears it. */
+    fun saveWakeMac(mac: String) {
+        val trimmed = mac.trim().take(32)
+        if (trimmed.isNotEmpty() && com.localfirst.assistant.phone.WakeOnLan.parseMac(trimmed) == null) {
+            _state.update { it.copy(pcError = "Enter the MAC as six hex pairs, like AA:BB:CC:DD:EE:FF.") }; return
+        }
+        val updated = _state.value.settings.copy(pcMac = trimmed)
+        settingsStore.save(updated)
+        _state.update { it.copy(settings = updated, pcError = null) }
+    }
+
+    /** Sends a Wake-on-LAN packet; only works on the same Wi-Fi as the PC. */
+    fun wakePc() {
+        val context = app ?: return
+        val mac = _state.value.settings.pcMac
+        if (mac.isBlank() || _state.value.privacy.incognito || _state.value.pcBusy) return
+        viewModelScope.launch {
+            _state.update { it.copy(pcBusy = true, pcError = null) }
+            try {
+                val status = com.localfirst.assistant.phone.WakeOnLan.wake(context, mac)
+                _state.update { it.copy(workspaceStatus = status) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _state.update { it.copy(pcError = e.message ?: "The wake packet could not be sent.") } }
+            finally { _state.update { it.copy(pcBusy = false) } }
         }
     }
 
@@ -1164,6 +1337,14 @@ class ChatViewModel(
             catch (e: CancellationException) { throw e }
             catch (e: Exception) { _state.update { it.copy(pcError="The PC request could not be confirmed. Check its current task state before trying again.") } }
             finally { _state.update { it.copy(pcBusy=false) }; refreshPc(); refreshChatPc() }
+        }
+    }
+
+    /** Allows a new or changed operator MCP server to run, after reviewing it here. */
+    fun confirmMcpServer(name: String) {
+        if (!name.matches(Regex("[a-z0-9-]{1,32}"))) return
+        pcAction {
+            withContext(Dispatchers.IO) { workspace?.request("/workspace/pc/mcp/$name/confirm", "POST") ?: error("Computer unavailable") }
         }
     }
 
@@ -1657,6 +1838,16 @@ class ChatViewModel(
             else if (!_state.value.settings.androidAuto && CarMessaging.connected.value) CarMessaging.greet(context)
         }
         _state.update { it.copy(settings = normalized, showSettings = false, settingsError = null, error = null) }
+        viewModelScope.launch {
+            if (normalized.wakeWord && app != null &&
+                !com.localfirst.assistant.phone.PermissionBroker.isGranted(app, android.Manifest.permission.RECORD_AUDIO) &&
+                !com.localfirst.assistant.phone.PermissionBroker.ensure(app, android.Manifest.permission.RECORD_AUDIO)) {
+                val reverted = normalized.copy(wakeWord = false)
+                settingsStore.save(reverted)
+                _state.update { it.copy(settings = reverted, error = "Microphone permission is needed for the wake phrase; it was left off.") }
+            }
+            syncWakeWord()
+        }
     }
 
     companion object {

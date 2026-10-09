@@ -125,7 +125,7 @@ class VoiceController(
                 // A cancelled reply may still be wrapping up.
                 withTimeoutOrNull(5_000) { chat.first { !it.busy } }
                 set(VoicePhase.LISTENING, heard = "")
-                val text = when (val result = io.input.listen(::onPartial, ::onLevel)) {
+                val text = when (val result = io.input.listen(::onPartial, ::onLevel, VOICE_SILENCE_MS)) {
                     is ListenResult.Heard -> result.text
                     ListenResult.Silence -> {
                         if (++quiet >= 2) return pauseWith("Tap to talk.")
@@ -315,5 +315,8 @@ class VoiceController(
 
         /** Talking again within this long after sending, before any reply is spoken, continues the same message. */
         const val CONTINUE_WINDOW_MS = 8_000L
+
+        /** Silence ending a voice-mode utterance: shorter than dictation so answers start sooner. */
+        const val VOICE_SILENCE_MS = 700L
     }
 }

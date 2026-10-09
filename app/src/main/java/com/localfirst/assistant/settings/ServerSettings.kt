@@ -13,6 +13,8 @@ data class ServerSettings(
     val searchApiKey: String = "",
     /** In voice mode, start talking to interrupt the assistant. */
     val voiceBargeIn: Boolean = true,
+    /** Listen for "Hey FRIDAY" with a foreground mic service and open voice chat on match. Uses more battery. */
+    val wakeWord: Boolean = false,
     /** [VOICE_COMPUTER]: Parakeet + Kokoro on the search service's computer. [VOICE_PHONE]: Android speech. */
     val voiceEngine: String = VOICE_COMPUTER,
     /** Kokoro voice for the computer engine. */
@@ -21,6 +23,8 @@ data class ServerSettings(
     val voicePhoneMicDevices: Set<String> = emptySet(),
     /** Show replies in Android Auto as messages, and accept replies from the car. */
     val androidAuto: Boolean = true,
+    /** The PC's MAC address for Wake-on-LAN; blank disables waking. */
+    val pcMac: String = "",
 ) {
     fun validate(): String? {
         val url = baseUrl.trim()
@@ -66,10 +70,12 @@ class ServerSettingsStore(
             ?: ServerSettings.DEFAULT_SEARCH_BASE_URL,
         searchApiKey = prefs.getString(KEY_SEARCH_API_KEY, "") ?: "",
         voiceBargeIn = prefs.getBoolean(KEY_VOICE_BARGE_IN, true),
+        wakeWord = prefs.getBoolean(KEY_WAKE_WORD, false),
         voiceEngine = prefs.getString(KEY_VOICE_ENGINE, ServerSettings.VOICE_COMPUTER) ?: ServerSettings.VOICE_COMPUTER,
         voiceName = prefs.getString(KEY_VOICE_NAME, ServerSettings.DEFAULT_VOICE) ?: ServerSettings.DEFAULT_VOICE,
         voicePhoneMicDevices = prefs.getStringSet(KEY_VOICE_PHONE_MIC, null)?.toSet().orEmpty(),
         androidAuto = prefs.getBoolean(KEY_ANDROID_AUTO, true),
+        pcMac = prefs.getString(KEY_PC_MAC, "") ?: "",
     )
 
     fun save(settings: ServerSettings) {
@@ -81,10 +87,12 @@ class ServerSettingsStore(
             .putString(KEY_SEARCH_URL, settings.searchBaseUrl.trim())
             .putString(KEY_SEARCH_API_KEY, settings.searchApiKey.trim())
             .putBoolean(KEY_VOICE_BARGE_IN, settings.voiceBargeIn)
+            .putBoolean(KEY_WAKE_WORD, settings.wakeWord)
             .putString(KEY_VOICE_ENGINE, settings.voiceEngine)
             .putString(KEY_VOICE_NAME, settings.voiceName)
             .putStringSet(KEY_VOICE_PHONE_MIC, settings.voicePhoneMicDevices.toSet())
             .putBoolean(KEY_ANDROID_AUTO, settings.androidAuto)
+            .putString(KEY_PC_MAC, settings.pcMac.trim())
             .apply()
     }
 
@@ -97,9 +105,11 @@ class ServerSettingsStore(
         const val KEY_SEARCH_URL = "search_base_url"
         const val KEY_SEARCH_API_KEY = "search_api_key"
         const val KEY_VOICE_BARGE_IN = "voice_barge_in"
+        const val KEY_WAKE_WORD = "wake_word"
         const val KEY_VOICE_ENGINE = "voice_engine"
         const val KEY_VOICE_NAME = "voice_name"
         const val KEY_VOICE_PHONE_MIC = "voice_phone_mic_devices"
         const val KEY_ANDROID_AUTO = "android_auto"
+        const val KEY_PC_MAC = "pc_mac"
     }
 }

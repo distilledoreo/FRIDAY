@@ -1,7 +1,7 @@
 import tempfile,time,unittest
 from pathlib import Path
-from ..store import MemoryStore
-from ..continuity import apply_updates,recall,list_situations,resolve,remove,DAY
+from desktop.memory.store import MemoryStore
+from desktop.memory.continuity import apply_updates,recall,list_situations,resolve,remove,DAY
 
 class ContinuityTest(unittest.TestCase):
     def setUp(self):

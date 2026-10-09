@@ -440,7 +440,7 @@ class ComputerSpeechInput(
     private val audio: DuplexAudio,
     private val client: ComputerVoiceClient,
 ) : SpeechInput {
-    override suspend fun listen(onPartial: (String) -> Unit, onLevel: (Float) -> Unit): ListenResult = coroutineScope {
+    override suspend fun listen(onPartial: (String) -> Unit, onLevel: (Float) -> Unit, completeSilenceMs: Long): ListenResult = coroutineScope {
         val levels = launch { audio.level.collect(onLevel) }
         try {
             hear(onPartial)

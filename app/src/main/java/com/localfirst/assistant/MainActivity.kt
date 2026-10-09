@@ -60,7 +60,9 @@ class MainActivity : ComponentActivity() {
             "com.localfirst.assistant.BRIEF" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.BRIEF)
             "com.localfirst.assistant.ACTIVITY" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.ACTIVITY)
             "com.localfirst.assistant.TASKS" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.TASKS)
-            Intent.ACTION_ASSIST, Intent.ACTION_VOICE_COMMAND -> viewModel.startAssistantSession()
+            Intent.ACTION_ASSIST, Intent.ACTION_VOICE_COMMAND,
+            com.localfirst.assistant.voice.WakeWordService.WAKE_ACTION,
+            -> viewModel.startAssistantSession()
             Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE -> {
                 val streams = if (intent.action == Intent.ACTION_SEND_MULTIPLE) {
                     IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
