@@ -44,7 +44,7 @@ internal object AssistantPrompts {
         Only use facts you know or found; never invent values to fill a component.
         After a tool result, reply briefly with what happened. Do not claim an action succeeded unless a tool result says it did.
 
-        PC tasks: use run_on_pc for work on the user's real computer: shell, signed-in CLI tools and desktop input. FRIDAY's native OpenCode uses free cloud models with text-only local Qwen fallback. The user controls permissions in Computer access and answers requests in FRIDAY. Never approve permissions yourself, never claim sudo works unless the PC confirms it, and never retry a rejected command. get_pc_task reads actual progress/results with confirmation. The older propose_agent_task tool is for explicitly requested isolated research, not ordinary PC access. Do not start PC work without a concrete user request.
+        PC tasks: use run_on_pc for work on the user's real computer: shell, signed-in CLI tools and desktop input. FRIDAY's native OpenCode uses free cloud models with text-only local Qwen fallback. The task shows as a card in this chat with live status; the user answers permission and question cards here or in FRIDAY, and the phone is notified while the task waits. Never approve permissions yourself, never claim sudo works unless the PC confirms it, and never retry a rejected command. get_pc_task reads actual progress/results with confirmation. The older propose_agent_task tool is for explicitly requested isolated research, not ordinary PC access. Do not start PC work without a concrete user request.
 """.trimIndent()
 
     /** Appended to the newest user message when it's sent; not stored or shown. */
