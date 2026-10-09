@@ -66,7 +66,7 @@ Each phase needs its own meaningful tests and deployable artifact. No mock-only 
 
 Account-route validation failures return generic errors without credential inputs; secrets use protected model fields. All 131 Android tests/build/lint pass. All 67 backend checks pass in aggregate: 64 from the full opt-in suite and three Docker checks rerun with the required docker group. Tests include a real local synthetic TLS/IMAP exchange and offline Docker/OpenCode/Chromium with fake inference. Production API-only deployment passed idle checks, backed up the fresh gateway, and preserved its source and persistent inference pause. Live authentication/private-mail-target/redacted-validation/outgoing gates pass; APK signer and authenticated/private download checksums verified. No real provider login, send, local inference, or device verification occurred.
 
-APK SHA-256: `4a346bb58812debc97c89aec893a0d18c1939533a61c7b617612c58b1dad660e`. Download: http://100.64.0.1:8081/local-assistant-0.10.0.apk. Natural-chat/scoped cloud account access, approved outgoing executors, morning briefs/proposal check-ins, wake word and expanded grounding remain active.
+APK SHA-256: `4a346bb58812debc97c89aec893a0d18c1939533a61c7b617612c58b1dad660e`. Download: the private APK server: local-assistant-0.10.0.apk. Natural-chat/scoped cloud account access, approved outgoing executors, morning briefs/proposal check-ins, wake word and expanded grounding remain active.
 
 ## Account chat and scoped cloud checkpoint
 
@@ -78,7 +78,7 @@ Snapshots are untrusted source data, capped at 120 KiB, passed only through the 
 
 All 132 Android tests/build/lint and all 73 full CPU-only backend checks pass, including a real offline OpenCode run receiving synthetic scoped data through fake cloud inference, plus existing Docker/Chromium tests. API-only production deployment preserved the fresh gateway source and persistent inference pause. Live synthetic exact-scope binding, proposal-only/no-execution and unsupported-side-effect gates pass; the synthetic account was removed and task canceled. APK signer and authenticated/private download checksums verified. No actual provider consent/login, outgoing action, local inference or physical phone verification occurred.
 
-APK SHA-256: `b4e77af48fcc3f05c3adf7b1180a7bb7695b9cbc2f8442b5435e13fa2976cdcf`. Download: http://100.64.0.1:8081/local-assistant-0.11.0.apk. Sending remains disabled (`outgoing_ready: false`). Approved outgoing executors, morning briefs/proposal check-ins, phone wake word/car evaluation and expanded grounding remain. OAuth client IDs, device verification and authorized GPU image-quality comparison remain external prerequisites. The full goal remains active.
+APK SHA-256: `b4e77af48fcc3f05c3adf7b1180a7bb7695b9cbc2f8442b5435e13fa2976cdcf`. Download: the private APK server: local-assistant-0.11.0.apk. Sending remains disabled (`outgoing_ready: false`). Approved outgoing executors, morning briefs/proposal check-ins, phone wake word/car evaluation and expanded grounding remain. OAuth client IDs, device verification and authorized GPU image-quality comparison remain external prerequisites. The full goal remains active.
 
 ## Exact outgoing review checkpoint
 
@@ -90,7 +90,7 @@ SMTP supports verified implicit TLS/465 or required STARTTLS/587 with public DNS
 
 All 133 Android tests/build/lint and all 87 full CPU-only backend tests pass. Verification includes synthetic Gmail/Graph writes, real local TLS SMTP/465 and STARTTLS/587 (including cancellation before body), rejection/no-STARTTLS cases, stale calendar/identity guards, secret redaction, uncertain receipts/restart/no-replay, and real offline Docker/OpenCode/Chromium with fake inference. Live synthetic email/calendar drafts reject approval with 503 while activation is off; no approval, claim or model event is recorded. Temporary encrypted test accounts were removed and drafts canceled. API-only deployment preserved fresh gateway source and the persistent inference pause. APK signer and authenticated/private download checksums verified. No real provider consent/send, local inference or physical phone verification occurred.
 
-APK SHA-256: `b4327cc2aaa353427f8151d3333da6f9b6e51270c2542bdab2b8d17f219e670f`. Download: http://100.64.0.1:8081/local-assistant-0.12.0.apk. Pinned agent image: `sha256:9bc4dbfe9b1707601808c57a6d3149879ab41cc2383cf4480a380588b739a27f`.
+APK SHA-256: `b4327cc2aaa353427f8151d3333da6f9b6e51270c2542bdab2b8d17f219e670f`. Download: the private APK server: local-assistant-0.12.0.apk. Pinned agent image: `sha256:9bc4dbfe9b1707601808c57a6d3149879ab41cc2383cf4480a380588b739a27f`.
 
 Remaining implementation includes morning briefs/proposal check-ins, evaluated phone wake word/car behavior, expanded grounding and richer goal/quota reporting. OAuth client registration, real provider/phone execution checks and authorized GPU image-quality comparison remain external prerequisites. The full roadmap stays active.
 
@@ -104,7 +104,7 @@ Morning invitations and occasional check-in notices are off by default. Enabling
 
 All 134 Android tests/build/lint pass. 102 distinct backend checks pass in aggregate: the full 101-test CPU-only suite and 15 final changed brief checks (including the added concurrent opt-out guard); real offline Docker/OpenCode/Chromium use fake inference. The memory suite passed 21 checks; one optional semantic-encoder check was skipped because no test encoder path was supplied. Final continuity checks passed again. Tests cover source opt-ins, bounded Unicode previews, local DST windows, removed accounts/preferences changes, private project boundaries, quiet hours/cooldown/dismissal, cancellation/host slot cleanup and concurrent claims. API-only deployment backed up and preserved fresh gateway source, model files and the inference pause. It updated only the agent module and a hash-guarded situation helper. Live authenticated default/missing-source/redacted-input/scoped-follow-up/off-notice gates passed; the temporary synthetic follow-up was deleted. APK signer and authenticated/private download checksums verified.
 
-APK SHA-256: `b760005d1a18e93a1db679dc2daa7597d794bb2e522c2b4b220d74b60edad62c`. Download: http://100.64.0.1:8081/local-assistant-0.13.0.apk. Outgoing activation remains false. Real OAuth/provider execution and physical phone notification/layout behavior remain unverified. Evaluated local wake word/car behavior, expanded grounding, richer multi-step goal/quota reporting and calendars beyond primary remain. OAuth clients and authorized GPU image-quality testing are still prerequisites. The full goal remains active.
+APK SHA-256: `b760005d1a18e93a1db679dc2daa7597d794bb2e522c2b4b220d74b60edad62c`. Download: the private APK server: local-assistant-0.13.0.apk. Outgoing activation remains false. Real OAuth/provider execution and physical phone notification/layout behavior remain unverified. Evaluated local wake word/car behavior, expanded grounding, richer multi-step goal/quota reporting and calendars beyond primary remain. OAuth clients and authorized GPU image-quality testing are still prerequisites. The full goal remains active.
 
 ## Grounded public research checkpoint — 0.14.0
 
@@ -118,7 +118,7 @@ For eligible public research questions, Propose deeper research in Activity save
 
 Verification: all 142 Android tests (127 core, 15 app), build and lint pass. All 115 backend tests pass on the new image; a further four engine checks explicitly exercised offline OpenCode/Chromium screenshots with fake inference. Tests cover later passages, Unicode bounds, validation redaction, cancellation/capacity, provenance-only audit, exact private-to-public consent and enforced no-search. Live authenticated public IANA page/search reads returned bounded passages; private/unsupported URL rejection, unchanged fresh gateway, retained inference pause and same-signer authenticated/private APK checksums passed. API-only deployment changed no model services. No real phone, provider action, semantic grounded-answer quality or local/GPU inference was verified.
 
-APK SHA-256: `e7666f2eaaa7910f1459fc06a21492cf8bb981c4e15f60b0a40245f629e4d6b6`. Download: http://100.64.0.1:8081/local-assistant-0.14.0.apk. Sending remains disabled. Evaluated local wake word/car behavior, richer multi-step goal/quota reporting, calendars beyond primary, real OAuth/provider/device verification and authorized GPU image-quality comparison remain. The full goal stays active.
+APK SHA-256: `e7666f2eaaa7910f1459fc06a21492cf8bb981c4e15f60b0a40245f629e4d6b6`. Download: the private APK server: local-assistant-0.14.0.apk. Sending remains disabled. Evaluated local wake word/car behavior, richer multi-step goal/quota reporting, calendars beyond primary, real OAuth/provider/device verification and authorized GPU image-quality comparison remain. The full goal stays active.
 
 ## Mobile redesign checkpoint — 0.16.0
 

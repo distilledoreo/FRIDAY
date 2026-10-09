@@ -14,6 +14,7 @@ def enable(app, auth, llm, search, fetch, fetch_request_type, data_dir):
         response = await llm.post('/v1/chat/completions', json={
             'model': model_id, 'messages': messages, 'tools': tools, 'stream': False,
             'temperature': 0.3, 'max_tokens': 2048, 'chat_template_kwargs': {'enable_thinking': False},
+            'id_slot': 1,  # background slot: keeps the phone chat's cache intact
         })
         response.raise_for_status()
         return response.json()['choices'][0]['message']

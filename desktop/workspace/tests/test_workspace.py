@@ -38,7 +38,7 @@ class StorageTests(unittest.TestCase):
         info = self.workspace.put_file(b'value\n2\n3\n', 'input.csv')
         result = self.workspace.analyze('''import os, socket, glob
 +import pandas as pd
-+assert not os.path.exists('/home/user/assistant-server/.env')
++assert not os.path.exists(HOST_ENV)
 +try:
 +    socket.create_connection(('127.0.0.1',8700), timeout=1)
 +    raise AssertionError('host network accessible')
@@ -47,7 +47,7 @@ class StorageTests(unittest.TestCase):
 +print('sum:', int(df.value.sum()))
 +df.to_excel('/work/result.xlsx', index=False)
 +os.symlink('/usr/bin/python3', '/work/unsafe.txt')
-+'''.replace('\n+', '\n'), [info['id']])
++'''.replace('\n+', '\n').replace('HOST_ENV', repr(str(Path.home() / 'assistant-server' / '.env'))), [info['id']])
         self.assertTrue(result['success'], result['output'])
         self.assertIn('sum: 5', result['output'])
         self.assertEqual([f['name'] for f in result['artifacts']], ['result.xlsx'])
