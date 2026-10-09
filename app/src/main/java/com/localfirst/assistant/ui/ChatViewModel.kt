@@ -1034,7 +1034,12 @@ class ChatViewModel(
     /** Starts a deep-research task from the draft: a fixed multi-step plan, approved in Activity, reported back for discussion. */
     fun proposeDeepResearch() {
         val query = _state.value.draft.trim()
+        val grounding = com.localfirst.assistant.grounding.GroundingPrecheck
         if (query.isEmpty() || _state.value.busy || _state.value.workspaceBusy || _state.value.privacy.incognito) return
+        if (grounding.blocksWeb(query) || grounding.privateRequest(query)) {
+            _state.update { it.copy(error = "This looks private: public deep research needs a version without personal details.") }; return
+        }
+        if (query.length > 7900) { _state.update { it.copy(error = "This research prompt exceeds the task limit. Use a focused public question.") }; return }
         proposeAgentTask("Research this thoroughly: $query",
             listOf("Find primary authoritative sources", "Read the relevant passages and dates",
                 "Check material claims, conflicting evidence and limits", "Write a structured report with citations and uncertainty"))
@@ -1118,9 +1123,15 @@ class ChatViewModel(
         val text = ((if (liked) "User liked this answer; reuse the style. " else "User disliked this answer; avoid this style. ") +
             "Q: ${question.trim().take(300)} A: ${com.localfirst.assistant.presentation.UiBlocks.plainText(answer).trim().take(500)}").take(900)
         workspaceAction {
-            workspace?.request("/workspace/memory/memories", "POST", JSONObject().put("text", text)
-                .put("category", "feedback").put("scope", _state.value.projectId.orEmpty()).put("pinned", true))
-                ?: error("PC memory unavailable.")
+            val client = workspace ?: error("PC memory unavailable.")
+            val query = Uri.encode(question.trim().take(100).ifBlank { text.take(100) })
+            val existing = runCatching {
+                JSONArray(client.request("/workspace/memory/memories?q=$query&offset=0&limit=200"))
+            }.getOrNull()
+            val duplicate = existing?.let { rows -> (0 until rows.length()).any { rows.optJSONObject(it)?.optString("text") == text } } == true
+            if (duplicate) return@workspaceAction "Already noted — no duplicate saved."
+            client.request("/workspace/memory/memories", "POST", JSONObject().put("text", text)
+                .put("category", "preference").put("scope", _state.value.projectId.orEmpty()).put("pinned", true))
             if (liked) "Noted — I'll reuse what worked." else "Noted — I'll avoid that style."
         }
     }

@@ -18,6 +18,7 @@ object AudioDecode {
     const val TARGET_RATE = 16_000
     const val MAX_SECONDS = 120
     const val MAX_BYTES = 16 * 1024 * 1024
+    private const val OUTPUT_DRAIN_MS = 10_000L
 
     /** Linear resampling to 16 kHz mono; pure for tests. */
     fun resampleTo16k(samples: ShortArray, rate: Int): ShortArray {
@@ -55,6 +56,7 @@ object AudioDecode {
                 val mono = mutableListOf<Short>()
                 var sawInputEos = false
                 var sawOutputEos = false
+                var inputEosAt = 0L
                 val info = MediaCodec.BufferInfo()
                 var channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT, 1).coerceAtLeast(1)
                 var rate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE, TARGET_RATE)
@@ -65,9 +67,12 @@ object AudioDecode {
                             val buffer = codec.getInputBuffer(index)!!
                             buffer.clear()
                             val sample = extractor.readSampleData(buffer, 0)
-                            if (sample < 0 || bytesRead + sample > MAX_BYTES) {
+                            // The duration cap stops feeding input but still drains the
+                            // codec, so the kept audio ends cleanly instead of cut off.
+                            if (sample < 0 || bytesRead + sample > MAX_BYTES || mono.size >= rate * MAX_SECONDS) {
                                 codec.queueInputBuffer(index, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                                 sawInputEos = true
+                                inputEosAt = android.os.SystemClock.elapsedRealtime()
                             } else {
                                 bytesRead += sample
                                 codec.queueInputBuffer(index, 0, sample, extractor.sampleTime, 0)
@@ -92,8 +97,10 @@ object AudioDecode {
                         }
                         codec.releaseOutputBuffer(index, false)
                         if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) sawOutputEos = true
-                        if (mono.size > rate * MAX_SECONDS) sawOutputEos = true
-                    } else if (index == MediaCodec.INFO_TRY_AGAIN_LATER && sawInputEos) {
+                    } else if (index == MediaCodec.INFO_TRY_AGAIN_LATER && sawInputEos &&
+                        android.os.SystemClock.elapsedRealtime() - inputEosAt > OUTPUT_DRAIN_MS
+                    ) {
+                        // The codec went quiet after input ended: take what drained.
                         sawOutputEos = true
                     }
                 }
