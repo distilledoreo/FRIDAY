@@ -55,6 +55,11 @@ data class ToolStep(
     /** Failure reason when [state] is [ToolStepState.FAILED]. */
     val detail: String? = null,
     val sources: List<SourceLink> = emptyList(),
+    val imageResult: String? = null,
+    /** Actual completed tool output, derived from persisted messages for native previews. */
+    val resultContent: String? = null,
+    /** The task FRIDAY proposed (JSON from propose_agent_task), shown as a card with Start and live status. */
+    val agentTask: String? = null,
 )
 
 enum class ToolStepState { RUNNING, DONE, FAILED }
@@ -143,6 +148,9 @@ object Transcript {
             label = label,
             detail = result?.takeIf { !it.success }?.content,
             sources = result?.sources.orEmpty(),
+            resultContent = result?.takeIf { it.success }?.content,
+            imageResult = result?.takeIf { it.success && call.name == "generate_image" }?.content,
+            agentTask = result?.takeIf { it.success && call.name == "propose_agent_task" }?.content,
         )
     }
 }
@@ -184,6 +192,7 @@ internal object ToolLabels {
         }
 
         return when (name) {
+            "generate_image" -> when (state) { ToolStepState.RUNNING -> "Generating image · temporarily using the GPU"; ToolStepState.DONE -> "Generated image · chat model restored"; ToolStepState.FAILED -> "Image generation did not finish" }
             "web_search" -> {
                 val subject = quoted("query")?.let { " for $it" }.orEmpty()
                 pick("Searching the web$subject", "Searched the web$subject", "Web search failed$subject")

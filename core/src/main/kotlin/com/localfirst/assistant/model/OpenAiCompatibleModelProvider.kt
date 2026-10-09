@@ -26,6 +26,7 @@ import kotlinx.serialization.json.JsonElement
 class OpenAiCompatibleModelProvider(
     private val config: OpenAiCompatibleConfig,
 ) : ModelProvider {
+    @Volatile var incognito: Boolean = false
     override suspend fun sendConversation(
         messages: List<Message>,
         tools: List<ToolDefinition>,
@@ -58,7 +59,7 @@ class OpenAiCompatibleModelProvider(
             }
             thread(isDaemon = true, name = "model-stream") {
                 val result = try {
-                    val opened = open(payload, stream = true)
+                    val opened = open(payload, stream = true, cancelled = cancelled)
                     connection.set(opened)
                     try {
                         if (cancelled.get()) throw CancellationException("Stopped.")
@@ -146,6 +147,24 @@ class OpenAiCompatibleModelProvider(
         else -> ModelProviderException(e.message ?: "Model request failed.", e)
     }
 
+    /** Sends the opening of a new chat, built exactly like a real request, marked as a prime; failures are ignored. */
+    override suspend fun prime(messages: List<Message>, tools: List<ToolDefinition>) {
+        if (incognito) return
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                val connection = (URI(resolveChatCompletionsUrl(config.baseUrl)).toURL().openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"; connectTimeout = config.connectTimeoutMillis; readTimeout = 15_000; doOutput = true
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    setRequestProperty("X-Assistant-Prime", "1")
+                    config.apiKey?.trim()?.takeIf { it.isNotEmpty() }?.let { setRequestProperty("Authorization", "Bearer $it") }
+                }
+                connection.outputStream.use { it.write(payload(messages, tools, stream = true).toByteArray()) }
+                connection.responseCode
+                connection.disconnect()
+            }
+        }
+    }
+
     private fun payload(messages: List<Message>, tools: List<ToolDefinition>, stream: Boolean): String {
         val body = buildChatCompletionRequest(
             model = config.model,
@@ -157,7 +176,19 @@ class OpenAiCompatibleModelProvider(
     }
 
     /** Opens the connection and sends [payload]. Connection failures are translated here. */
-    private fun open(payload: String, stream: Boolean): HttpURLConnection {
+    private fun open(payload: String, stream: Boolean, cancelled: AtomicBoolean = AtomicBoolean(false)): HttpURLConnection {
+        val deadline = System.nanoTime() + 600_000_000_000L
+        while (!cancelled.get()) {
+            val connection = openOnce(payload, stream)
+            if (connection.responseCode != 503 || connection.getHeaderField("X-Assistant-GPU-Busy") != "1") return connection
+            connection.disconnect()
+            if (System.nanoTime() > deadline) throw ModelProviderException("GPU handoff is taking too long. Your chat is saved; retry when the computer is ready.")
+            repeat(12) { if (cancelled.get()) throw CancellationException("Stopped while waiting for GPU"); Thread.sleep(250) }
+        }
+        throw CancellationException("Stopped while waiting for GPU")
+    }
+
+    private fun openOnce(payload: String, stream: Boolean): HttpURLConnection {
         val endpoint = resolveChatCompletionsUrl(config.baseUrl)
         val url = try {
             URI(endpoint).toURL()
@@ -170,6 +201,7 @@ class OpenAiCompatibleModelProvider(
             readTimeout = config.readTimeoutMillis
             doOutput = true
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            if (incognito) setRequestProperty("X-Assistant-Incognito", "1")
             setRequestProperty("Accept", if (stream) "text/event-stream" else "application/json")
             val key = config.apiKey?.trim().orEmpty()
             if (key.isNotEmpty()) {

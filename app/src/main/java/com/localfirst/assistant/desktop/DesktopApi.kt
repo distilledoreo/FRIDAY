@@ -19,6 +19,7 @@ internal fun desktopRequest(
 ): Pair<Int, ByteArray> {
     val url = URI(baseUrl.trim().trimEnd('/') + path).toURL()
     val connection = (url.openConnection() as HttpURLConnection).apply {
+        instanceFollowRedirects = false
         requestMethod = method
         connectTimeout = 8_000
         readTimeout = timeoutMs
@@ -34,7 +35,15 @@ internal fun desktopRequest(
         body?.let { b -> connection.outputStream.use { it.write(b) } }
         val code = connection.responseCode
         val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-        return code to (stream?.use { it.readBytes() } ?: ByteArray(0))
+        return code to (stream?.use { val output = java.io.ByteArrayOutputStream()
+            val buffer = ByteArray(8192)
+            while (true) {
+                val n = it.read(buffer)
+                if (n < 0) break
+                if (output.size() + n > 30 * 1024 * 1024) throw java.io.IOException("Computer response exceeds 30 MB.")
+                output.write(buffer, 0, n)
+            }
+            output.toByteArray() } ?: ByteArray(0))
     } finally {
         connection.disconnect()
     }

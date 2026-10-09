@@ -13,6 +13,43 @@ import androidx.compose.ui.graphics.vector.addPathNodes
  * pulling in the very large material-icons-extended artifact.
  */
 internal object AppIcons {
+    val Image: ImageVector by lazy {
+        materialIcon(name = "Filled.Image") {
+            materialPath {
+                moveTo(21f, 19f); verticalLineTo(5f); curveTo(21f, 3.9f, 20.1f, 3f, 19f, 3f); horizontalLineTo(5f)
+                curveTo(3.9f, 3f, 3f, 3.9f, 3f, 5f); verticalLineTo(19f); curveTo(3f, 20.1f, 3.9f, 21f, 5f, 21f)
+                horizontalLineTo(19f); curveTo(20.1f, 21f, 21f, 20.1f, 21f, 19f); close()
+                moveTo(8.5f, 13.5f); lineTo(11f, 16.51f); lineTo(14.5f, 12f); lineTo(19f, 18f); horizontalLineTo(5f); close()
+            }
+        }
+    }
+
+    val Computer: ImageVector by lazy {
+        materialIcon(name = "Filled.Computer") {
+            materialPath {
+                moveTo(20f, 18f); curveTo(21.1f, 18f, 21.99f, 17.1f, 21.99f, 16f)
+                lineTo(22f, 6f); curveTo(22f, 4.9f, 21.1f, 4f, 20f, 4f)
+                horizontalLineTo(4f); curveTo(2.9f, 4f, 2f, 4.9f, 2f, 6f)
+                verticalLineTo(16f); curveTo(2f, 17.1f, 2.9f, 18f, 4f, 18f)
+                horizontalLineTo(0f); verticalLineTo(20f); horizontalLineTo(24f); verticalLineTo(18f); close()
+                moveTo(4f, 6f); horizontalLineTo(20f); verticalLineTo(16f); horizontalLineTo(4f); close()
+            }
+        }
+    }
+
+    val Folder: ImageVector by lazy {
+        materialIcon(name = "Filled.Folder") {
+            materialPath {
+                moveTo(10f, 4f); horizontalLineTo(4f)
+                curveTo(2.9f, 4f, 2f, 4.9f, 2f, 6f)
+                verticalLineTo(18f); curveTo(2f, 19.1f, 2.9f, 20f, 4f, 20f)
+                horizontalLineTo(20f); curveTo(21.1f, 20f, 22f, 19.1f, 22f, 18f)
+                verticalLineTo(8f); curveTo(22f, 6.9f, 21.1f, 6f, 20f, 6f)
+                horizontalLineTo(12f); close()
+            }
+        }
+    }
+
     val ArrowUpward: ImageVector by lazy {
         materialIcon(name = "Filled.ArrowUpward") {
             materialPath {

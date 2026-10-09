@@ -20,7 +20,7 @@ class Endpointer(
     private val frameMs: Int = 20,
     private val margin: Double = 15.0,
     private val minDbfs: Double = -45.0,
-    private val playingExtraMargin: Double = 6.0,
+    playingExtraMargin: Double = 6.0,
     onsetMs: Int = 200,
     endSilenceMs: Int = 1_000,
     preRollMs: Int = 800,
@@ -56,6 +56,9 @@ class Endpointer(
 
     /** True while the assistant's voice is playing. Set from the playback thread. */
     @Volatile var playing = false
+
+    /** How much louder than usual speech must be while [playing]. Raised when the voice comes from speakers the mic can hear. */
+    @Volatile var playingExtraMargin = playingExtraMargin
 
     /** Level of the last frame, 0..1, for UI. */
     var level = 0f
@@ -122,6 +125,12 @@ class Endpointer(
     }
 
     val speaking: Boolean get() = inSpeech
+
+    /** The last [ms] of the utterance in progress, or null between utterances. */
+    fun recent(ms: Int): ShortArray? {
+        if (!inSpeech) return null
+        return join(utterance.takeLast((ms / frameMs).coerceAtLeast(1)))
+    }
 
     private fun join(frames: List<ShortArray>): ShortArray {
         val out = ShortArray(frames.sumOf { it.size })

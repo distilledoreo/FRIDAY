@@ -12,8 +12,8 @@ android {
         applicationId = "com.localfirst.assistant"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 35
+        versionName = "0.18.1"
     }
 
     buildTypes {
@@ -38,15 +38,22 @@ android {
     buildFeatures {
         compose = true
     }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all { it.systemProperty("roborazzi.test.record", "true") }
+    }
 }
 
 dependencies {
     implementation(project(":core"))
+    implementation("com.google.android.gms:play-services-auth:22.0.0")
     implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.car.app)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.serialization.json)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
@@ -55,4 +62,9 @@ dependencies {
     implementation(libs.markdown.renderer.m3)
 
     testImplementation(libs.junit)
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi:1.40.0")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.40.0")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

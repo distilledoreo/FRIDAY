@@ -69,6 +69,7 @@ data class Attachment(
     val pageImages: List<String> = emptyList(),
     /** Shown with the attachment and passed to the model, e.g. "Text cut at 60,000 characters." */
     val note: String? = null,
+    val remoteFileId: String? = null,
 ) {
     /** Every image the model should see for this attachment. */
     val imagePaths: List<String> get() = if (kind == AttachmentKind.IMAGE) listOfNotNull(path) else pageImages

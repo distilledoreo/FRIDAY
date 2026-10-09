@@ -2,6 +2,11 @@ package com.localfirst.assistant.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,6 +18,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Create
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.automirrored.filled.List
+import com.localfirst.assistant.conversation.AssistantProject
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
@@ -47,35 +57,63 @@ import java.util.Calendar
 
 @Composable
 internal fun ChatDrawer(
+    width: androidx.compose.ui.unit.Dp = 320.dp,
     conversations: List<ConversationSummary>,
     currentId: String?,
     onNewChat: () -> Unit,
+    onIncognito: () -> Unit,
     onOpen: (String) -> Unit,
     onRename: (String, String) -> Unit,
     onDelete: (String) -> Unit,
     onOpenSettings: () -> Unit,
+    query: String = "",
+    onQuery: (String) -> Unit = {},
+    projects: List<AssistantProject> = emptyList(),
+    activeProjectId: String? = null,
+    onProject: (String) -> Unit,
+    onProjects: () -> Unit,
+    onTasks: () -> Unit,
+    onActivity: () -> Unit,
+    onFiles: () -> Unit,
+    onImages: () -> Unit,
 ) {
     var renaming by remember { mutableStateOf<ConversationSummary?>(null) }
     var deleting by remember { mutableStateOf<ConversationSummary?>(null) }
     val startOfToday = remember(conversations) { startOfToday() }
-    val grouped = remember(conversations, startOfToday) {
-        conversations.groupBy { ConversationGroups.label(it.updatedAt, startOfToday) }
+    val visibleChats = if (query.isNotBlank()) conversations else conversations.filter { chat ->
+        chat.projectId == null || projects.none { it.id == chat.projectId }
+    }
+    val grouped = remember(visibleChats, startOfToday) {
+        visibleChats.groupBy { ConversationGroups.label(it.updatedAt, startOfToday) }
     }
 
-    ModalDrawerSheet(modifier = Modifier.fillMaxHeight()) {
+    ModalDrawerSheet(modifier = Modifier.fillMaxHeight().width(width)) {
         Column(modifier = Modifier.fillMaxHeight()) {
-            NavigationDrawerItem(
-                label = { Text("New chat", style = MaterialTheme.typography.titleMedium) },
-                icon = { Icon(Icons.Filled.Create, contentDescription = null) },
-                selected = false,
-                onClick = onNewChat,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            )
+            Spacer(Modifier.height(64.dp))
+            OutlinedTextField(value = query, onValueChange = onQuery, placeholder = { Text("Search chats") },
+                leadingIcon = { Icon(LineIcons.Search, null, Modifier.size(22.dp)) }, singleLine = true,
+                shape = MaterialTheme.shapes.small,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp))
             LazyColumn(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                if (conversations.isEmpty()) {
+                if (query.isBlank()) {
+                    item { DrawerRow("New chat", LineIcons.NewChat, onNewChat) }
+                    item { DrawerRow("Incognito chat", LineIcons.Incognito, onIncognito) }
+                    item { DrawerRow("FRIDAY", LineIcons.Friday, onActivity) }
+                    item { DrawerRow("Library", LineIcons.Library, onFiles) }
+                    item { DrawerRow("Images", LineIcons.Images, onImages) }
+                    item {
+                        Text("Projects", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 6.dp))
+                    }
+                    items(projects, key = { "project:${it.id}" }) { project ->
+                        DrawerRow(project.name, LineIcons.Project, { onProject(project.id) }, selected = activeProjectId == project.id)
+                    }
+                    item { DrawerRow(if (projects.isEmpty()) "Create a project" else "All projects", if (projects.isEmpty()) LineIcons.Add else LineIcons.Library, onProjects, quiet = true) }
+                }
+                if (visibleChats.isEmpty()) {
                     item {
                         Text(
-                            text = "Your chats will appear here.",
+                            text = if (query.isBlank()) "Your chats will appear here." else "No matching chats.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(16.dp),
@@ -103,13 +141,7 @@ internal fun ChatDrawer(
                 }
             }
             HorizontalDivider()
-            NavigationDrawerItem(
-                label = { Text("Settings") },
-                icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
-                selected = false,
-                onClick = onOpenSettings,
-                modifier = Modifier.padding(12.dp),
-            )
+            Box(Modifier.padding(12.dp)) { DrawerRow("Settings", LineIcons.Settings, onOpenSettings) }
         }
     }
 
@@ -117,12 +149,12 @@ internal fun ChatDrawer(
         var title by remember(summary.id) { mutableStateOf(summary.title) }
         AlertDialog(
             onDismissRequest = { renaming = null },
-            title = { Text("Rename chat") },
+            title = { FridayDialogWindow(); Text("Rename chat") },
             text = {
                 OutlinedTextField(value = title, onValueChange = { title = it }, singleLine = true)
             },
             confirmButton = {
-                TextButton(
+                TextButton(shape = MaterialTheme.shapes.small,
                     enabled = title.isNotBlank(),
                     onClick = {
                         onRename(summary.id, title)
@@ -130,31 +162,31 @@ internal fun ChatDrawer(
                     },
                 ) { Text("Rename") }
             },
-            dismissButton = { TextButton(onClick = { renaming = null }) { Text("Cancel") } },
+            dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { renaming = null }) { Text("Cancel") } },
         )
     }
 
     deleting?.let { summary ->
         AlertDialog(
             onDismissRequest = { deleting = null },
-            title = { Text("Delete chat?") },
+            title = { FridayDialogWindow(); Text("Delete chat?") },
             text = { Text("“${summary.title}” will be deleted from this phone. This can't be undone.") },
             confirmButton = {
-                TextButton(
+                TextButton(shape = MaterialTheme.shapes.small,
                     onClick = {
                         onDelete(summary.id)
                         deleting = null
                     },
                 ) { Text("Delete", color = MaterialTheme.colorScheme.error) }
             },
-            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
+            dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { deleting = null }) { Text("Cancel") } },
         )
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ConversationRow(
+internal fun ConversationRow(
     summary: ConversationSummary,
     selected: Boolean,
     onOpen: () -> Unit,
@@ -163,11 +195,11 @@ private fun ConversationRow(
 ) {
     var menu by remember { mutableStateOf(false) }
     Surface(
-        shape = RoundedCornerShape(12.dp),
+        shape = MaterialTheme.shapes.small,
         color = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(MaterialTheme.shapes.small)
             .combinedClickable(onClick = onOpen, onLongClick = { menu = true }),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 16.dp)) {
@@ -180,7 +212,7 @@ private fun ConversationRow(
             )
             Box {
                 IconButton(onClick = { menu = true }) {
-                    Icon(Icons.Filled.MoreVert, contentDescription = "Chat options")
+                    Icon(LineIcons.More, contentDescription = "Chat options", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .7f))
                 }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     DropdownMenuItem(
@@ -213,3 +245,15 @@ private fun startOfToday(): Long = Calendar.getInstance().apply {
     set(Calendar.SECOND, 0)
     set(Calendar.MILLISECOND, 0)
 }.timeInMillis
+
+/** One sidebar destination: a thin line icon and a label, in the drawer's quiet style. */
+@Composable
+private fun DrawerRow(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit, selected: Boolean = false, quiet: Boolean = false) {
+    NavigationDrawerItem(
+        shape = MaterialTheme.shapes.small,
+        label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (quiet) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface) },
+        icon = { Icon(icon, contentDescription = null, modifier = Modifier.size(22.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+        selected = selected,
+        onClick = onClick,
+    )
+}

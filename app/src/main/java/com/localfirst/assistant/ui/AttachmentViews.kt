@@ -30,7 +30,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -51,9 +54,10 @@ import kotlinx.coroutines.withContext
 
 /** Loads a stored JPEG scaled down to about [maxEdgePx], off the main thread. */
 @Composable
-private fun rememberImage(path: String?, maxEdgePx: Int): ImageBitmap? {
-    val image by produceState<ImageBitmap?>(null, path, maxEdgePx) {
-        value = path?.let { p ->
+internal fun rememberImage(path: String?, maxEdgePx: Int): ImageBitmap? {
+    var image by remember(path, maxEdgePx) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(path, maxEdgePx) {
+        image = path?.let { p ->
             withContext(Dispatchers.IO) {
                 runCatching {
                     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -75,7 +79,7 @@ private fun Thumbnail(path: String?, size: Int, onClick: (() -> Unit)? = null) {
         contentAlignment = Alignment.Center,
         modifier = Modifier
             .size(size.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(MaterialTheme.shapes.medium)
             .background(MaterialTheme.colorScheme.surfaceContainerHighest)
             .let { if (onClick != null) it.clickable(onClick = onClick) else it },
     ) {
@@ -157,7 +161,7 @@ private fun FileChip(
     onClick: (() -> Unit)? = null,
 ) {
     Surface(
-        shape = RoundedCornerShape(12.dp),
+        shape = MaterialTheme.shapes.medium,
         color = if (failed) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
         modifier = Modifier.widthIn(max = 260.dp).let { if (onClick != null) it.clickable(onClick = onClick) else it },
     ) {
@@ -194,8 +198,9 @@ private fun documentDetail(doc: Attachment): String {
 }
 
 @Composable
-private fun ImageViewer(path: String, onDismiss: () -> Unit) {
+internal fun ImageViewer(path: String, onDismiss: () -> Unit) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        FridayDialogWindow()
         val image = rememberImage(path, maxEdgePx = 2048)
         Box(
             contentAlignment = Alignment.Center,

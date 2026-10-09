@@ -1,6 +1,13 @@
 # Local Android Assistant
 
-Phase 1 MVP. The Android app is the assistant: it keeps the conversation, decides which tools exist, and runs them. A computer on your network serves two independent things: an OpenAI-compatible chat model, and an optional search service. This repo includes the search service. It does not include a model server, voice, cloud model providers, long-term memory, or paid search APIs.
+
+Current Android interface: **FRIDAY 0.18.1** uses a minimal adaptive home, sidebar, optional real-data dashboard, inline voice and native rich-response foundation. Dark/light/accent/motion controls live in Appearance. See [redesign contract and validation](desktop/FRIDAY-REDESIGN.md). The existing data, integrations and assistant task controls remain in place.
+
+Version **0.18.1** fixes stale voice replies and reads comments before tools run. Long quiet waits get up to two brief, interruptible voice cues; real replies and approval questions take priority.
+
+Version **0.18.0** completes Claude’s native computer-use draft: real PC shell and desktop tools through OpenCode, phone approvals and configurable access, free cloud models with text-only local fallback. See [Computer access](desktop/FRIDAY-COMPUTER.md).
+
+The Android assistant supports persistent chat, voice, attachments, phone tools, a PC workspace, local image generation, and PC-hosted memory. A computer on your private network serves the chat model and authenticated workspace APIs. Version 0.5 adds ChatGPT export import, source-linked semantic recall and recent-situation continuity. See [PC memory](desktop/memory/README.md) and [continuity plan](desktop/memory/PLAN.md).
 
 Milestones implemented:
 
@@ -11,6 +18,10 @@ Milestones implemented:
 5. Phone control: apps, web, maps, media and Spotify, alarms and timers, flashlight, battery, contacts, calls and texts (approved in the chat), and the calendar.
 6. Voice mode and assistant registration: a hands-free voice conversation with barge-in, and the app can be the phone's default digital assistant.
 7. Images and file attachments: photos, camera capture, PDFs, Word documents, and text/code files, with previews and saved attachments.
+
+## FRIDAY 0.14 public evidence
+
+Phone search/page tools retrieve bounded public static passages with source provenance, dates and explicit snippet/unavailable states. Chat enforces no-search requests and separate exact public-query/URL confirmation after private tool results or recalled memory. Citation status checks link coverage only; factual support still requires checking the supplied passages. Eligible deeper research is proposed in Activity and runs only after approval. Private account-scoped agent tasks cannot use public web tools. See [delivery and verification](desktop/FRIDAY-ROADMAP.md). Sending remains disabled pending real provider/device verification and explicit activation.
 
 ## Layout
 
@@ -234,4 +245,4 @@ Unreachable hosts, timeouts, HTTP errors, non-JSON bodies, unknown tool names, i
 
 ## Not in this build
 
-Voice, cloud model providers, model routing, long-term memory, image/video/file PC tools, paid hosted search APIs, and a permission dialog are specified for later and are not implemented.
+Connected Google/Microsoft and TLS IMAP account integrations are implemented; real provider consent/actions remain unverified, and production sending is disabled. Video generation and paid hosted search APIs are not implemented. A real ChatGPT export, physical phone behavior and two-device behavior still need user/device validation.

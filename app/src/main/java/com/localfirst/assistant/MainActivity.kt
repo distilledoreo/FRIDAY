@@ -7,12 +7,15 @@ import androidx.core.content.IntentCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.lifecycle.ViewModelProvider
 import com.localfirst.assistant.phone.PermissionBroker
 import com.localfirst.assistant.ui.ChatScreen
 import com.localfirst.assistant.ui.ChatViewModel
-import com.localfirst.assistant.ui.ChatViewModelFactory
 import com.localfirst.assistant.ui.theme.AssistantTheme
+import com.localfirst.assistant.settings.AppearanceSettingsStore
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 
 class MainActivity : ComponentActivity() {
     private lateinit var viewModel: ChatViewModel
@@ -21,10 +24,13 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         PermissionBroker.attach(this)
-        viewModel = ViewModelProvider(this, ChatViewModelFactory(application))[ChatViewModel::class.java]
+        viewModel = (application as AssistantApp).chat()
         if (savedInstanceState == null) handleLaunch(intent)
         setContent {
-            AssistantTheme {
+            val appearanceStore=remember { AppearanceSettingsStore(applicationContext) }
+            val appearance by appearanceStore.state.collectAsState()
+            DisposableEffect(appearanceStore) { onDispose { appearanceStore.close() } }
+            AssistantTheme(preferences=appearance,onPreferencesChange=appearanceStore::save) {
                 ChatScreen(viewModel)
             }
         }
@@ -39,7 +45,7 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         // Android blocks the mic for apps in the background.
-        if (!isChangingConfigurations) viewModel.pauseVoice()
+        if (!isChangingConfigurations) { viewModel.pauseVoice(); viewModel.onAppLeft() }
     }
 
     override fun onDestroy() {
@@ -50,6 +56,10 @@ class MainActivity : ComponentActivity() {
     /** Opened as the phone's assistant or from a headset's voice button: start a voice chat. */
     private fun handleLaunch(intent: Intent?) {
         when (intent?.action) {
+            Intent.ACTION_VIEW -> { viewModel.handleAccountCallback(intent.data); intent.data = null }
+            "com.localfirst.assistant.BRIEF" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.BRIEF)
+            "com.localfirst.assistant.ACTIVITY" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.ACTIVITY)
+            "com.localfirst.assistant.TASKS" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.TASKS)
             Intent.ACTION_ASSIST, Intent.ACTION_VOICE_COMMAND -> viewModel.startAssistantSession()
             Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE -> {
                 val streams = if (intent.action == Intent.ACTION_SEND_MULTIPLE) {

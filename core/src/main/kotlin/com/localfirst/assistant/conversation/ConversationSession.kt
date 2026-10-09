@@ -21,6 +21,7 @@ class ConversationSession(
     initialMessages: List<Message> = emptyList(),
     /** Approves tools that require confirmation. Null refuses them. */
     var confirmer: ToolConfirmer? = null,
+    private val checkpoint: suspend () -> Unit = {},
 ) {
     var modelProvider: ModelProvider = modelProvider
 
@@ -32,11 +33,17 @@ class ConversationSession(
 
     /** Added to the latest user message when it is sent (not stored), e.g. the current time. */
     var latestUserNote: String? = null
+    /** Per-turn network policy; also enforced against unadvertised model calls. */
+    var blockedTools: Set<String> = emptySet()
+    var confirmedTools: Set<String> = emptySet()
 
     private val messages = initialMessages.toMutableList()
     private val mutex = Mutex()
 
     fun snapshot(): List<Message> = messages.toList()
+
+    /** Lets the server prepare this chat's opening (system prompt and tools) before the first message. */
+    suspend fun primeOpening() = modelProvider.prime(engine.outboundMessages(systemPrompt, emptyList()), toolRegistry.definitions().filter { it.name !in blockedTools })
 
     suspend fun submitUserMessage(
         text: String,
@@ -115,6 +122,9 @@ class ConversationSession(
             onUpdate = onUpdate,
             confirmer = confirmer,
             latestUserNote = latestUserNote,
+            checkpoint = checkpoint,
+            blockedTools = blockedTools,
+            confirmedTools = confirmedTools,
         )
 
     private fun truncateAfter(index: Int) {

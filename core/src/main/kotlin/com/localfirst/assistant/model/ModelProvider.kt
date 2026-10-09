@@ -9,6 +9,12 @@ import com.localfirst.assistant.tools.ToolDefinition
  * client without changing session or tool code.
  */
 interface ModelProvider {
+    /**
+     * Lets the server prepare for a conversation that starts with [messages] (the system prompt)
+     * and [tools], before the user's first message. Optional; nothing is generated.
+     */
+    suspend fun prime(messages: List<Message>, tools: List<ToolDefinition>) {}
+
     suspend fun sendConversation(
         messages: List<Message>,
         tools: List<ToolDefinition>,
