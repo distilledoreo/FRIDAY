@@ -28,7 +28,68 @@ fun phoneTools(phone: PhoneActions, now: () -> LocalDateTime = LocalDateTime::no
     SendTextTool(phone),
     AddCalendarEventTool(phone),
     UpcomingEventsTool(phone, now),
+) + (phone as? PhoneAccessibilityActions)?.let(::accessibilityTools).orEmpty()
+
+private fun accessibilityTools(accessibility: PhoneAccessibilityActions): List<Tool> = listOf(
+    ReadPhoneScreenTool(accessibility),
+    ControlPhoneScreenTool(accessibility),
 )
+
+private class ReadPhoneScreenTool(private val accessibility: PhoneAccessibilityActions) : PhoneTool(
+    name = "read_phone_screen",
+    description = "Read visible, non-password text and clickable element bounds on the phone's current screen. Requires the user to enable FRIDAY's accessibility service in Android Settings. Screen content is returned to the current chat model.",
+    inputSchema = objectSchema { },
+) {
+    override suspend fun run(args: JsonObject) = accessibility.readScreen()
+}
+
+private class ControlPhoneScreenTool(private val accessibility: PhoneAccessibilityActions) : PhoneTool(
+    name = "control_phone_screen",
+    description = "Control the phone screen using a tap, swipe, replacement text in the focused field, or Android global action. Coordinates are normalized from 0 (left/top) to 1000 (right/bottom); use clickable bounds from read_phone_screen. Each action requires user confirmation. Requires FRIDAY accessibility to be enabled.",
+    inputSchema = objectSchema {
+        string("action", "Action to perform.", required = true, enum = listOf("tap", "swipe", "enter_text", "back", "home", "recents", "notifications", "quick_settings", "power_dialog", "lock_screen"))
+        integer("x", "Tap x coordinate from 0 to 1000.", min = 0, max = 1000)
+        integer("y", "Tap y coordinate from 0 to 1000.", min = 0, max = 1000)
+        integer("from_x", "Swipe start x coordinate from 0 to 1000.", min = 0, max = 1000)
+        integer("from_y", "Swipe start y coordinate from 0 to 1000.", min = 0, max = 1000)
+        integer("to_x", "Swipe end x coordinate from 0 to 1000.", min = 0, max = 1000)
+        integer("to_y", "Swipe end y coordinate from 0 to 1000.", min = 0, max = 1000)
+        integer("duration_ms", "Swipe duration in milliseconds, 100 to 2000. Defaults to 400.", min = 100, max = 2000)
+        string("text", "Text to enter into the currently focused field; max 1000 characters.")
+    },
+) {
+    override val requiresConfirmation = true
+
+    override suspend fun confirmationPrompt(arguments: JsonObject): String {
+        val action = Args.string(arguments, "action", maxLength = 30)
+        return when (action) {
+            "tap" -> "Tap the phone screen at (${Args.int(arguments, "x", 0..1000)}, ${Args.int(arguments, "y", 0..1000)})"
+            "swipe" -> {
+                Args.optionalInt(arguments, "duration_ms", 100..2000)
+                "Swipe on the phone screen from (${Args.int(arguments, "from_x", 0..1000)}, ${Args.int(arguments, "from_y", 0..1000)}) to (${Args.int(arguments, "to_x", 0..1000)}, ${Args.int(arguments, "to_y", 0..1000)})"
+            }
+            "enter_text" -> "Replace the focused phone field's text with: “${Args.string(arguments, "text", 1000)}”"
+            else -> {
+                if (GlobalPhoneAction.entries.none { it.wireName == action }) {
+                    throw IllegalArgumentException("Unsupported phone action '$action'.")
+                }
+                "Perform the phone action “$action”"
+            }
+        }
+    }
+
+    override suspend fun run(args: JsonObject): String = when (val action = Args.string(args, "action", maxLength = 30)) {
+        "tap" -> accessibility.tap(Args.int(args, "x", 0..1000), Args.int(args, "y", 0..1000))
+        "swipe" -> accessibility.swipe(
+            Args.int(args, "from_x", 0..1000), Args.int(args, "from_y", 0..1000),
+            Args.int(args, "to_x", 0..1000), Args.int(args, "to_y", 0..1000),
+            Args.optionalInt(args, "duration_ms", 100..2000) ?: 400,
+        )
+        "enter_text" -> accessibility.enterText(Args.string(args, "text", maxLength = 1000))
+        else -> accessibility.globalAction(GlobalPhoneAction.entries.firstOrNull { it.wireName == action }
+            ?: throw IllegalArgumentException("Unsupported phone action '$action'."))
+    }
+}
 
 /** Turns bad arguments and [PhoneActionException]s into failed results the model can read. */
 abstract class PhoneTool(

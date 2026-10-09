@@ -57,7 +57,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /** The Android side of the phone tools. Every action goes through an explicit Android API or intent. */
-class AndroidPhoneActions(context: Context) : PhoneActions {
+class AndroidPhoneActions(context: Context) : PhoneActions,
+    com.localfirst.assistant.tools.phone.PhoneAccessibilityActions by PhoneControlAccessibilityService.Actions() {
     private val context = context.applicationContext
     private val pm: PackageManager get() = context.packageManager
 

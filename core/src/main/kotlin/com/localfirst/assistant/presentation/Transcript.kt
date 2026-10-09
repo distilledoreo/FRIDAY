@@ -199,6 +199,11 @@ internal object ToolLabels {
 
         return when (name) {
             "generate_image" -> when (state) { ToolStepState.RUNNING -> "Generating image · temporarily using the GPU"; ToolStepState.DONE -> "Generated image · chat model restored"; ToolStepState.FAILED -> "Image generation did not finish" }
+            "read_phone_screen" -> pick("Reading the phone screen", "Read the phone screen", "Couldn't read the phone screen")
+            "control_phone_screen" -> {
+                val action = str("action")?.replace('_', ' ') ?: "screen"
+                pick("Controlling phone · $action", "Controlled phone · $action", "Couldn't control phone · $action")
+            }
             "web_search" -> {
                 val subject = quoted("query")?.let { " for $it" }.orEmpty()
                 pick("Searching the web$subject", "Searched the web$subject", "Web search failed$subject")

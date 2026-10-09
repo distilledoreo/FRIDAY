@@ -33,6 +33,20 @@ interface PhoneActions {
     suspend fun upcomingEvents(from: LocalDateTime, to: LocalDateTime): List<CalendarEntry>
 }
 
+/** Optional screen-control capability backed by Android's user-enabled accessibility service. */
+interface PhoneAccessibilityActions {
+    suspend fun readScreen(): String
+    suspend fun tap(x: Int, y: Int): String
+    suspend fun swipe(fromX: Int, fromY: Int, toX: Int, toY: Int, durationMillis: Int): String
+    suspend fun enterText(text: String): String
+    suspend fun globalAction(action: GlobalPhoneAction): String
+}
+
+enum class GlobalPhoneAction(val wireName: String) {
+    BACK("back"), HOME("home"), RECENTS("recents"), NOTIFICATIONS("notifications"),
+    QUICK_SETTINGS("quick_settings"), POWER_DIALOG("power_dialog"), LOCK_SCREEN("lock_screen"),
+}
+
 class PhoneActionException(message: String) : Exception(message)
 
 enum class MediaAction(val wireName: String) {

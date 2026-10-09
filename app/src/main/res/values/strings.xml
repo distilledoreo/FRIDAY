@@ -3,4 +3,6 @@
     <string name="app_name">FRIDAY</string>
     <string name="friday_voice">FRIDAY voice</string>
     <string name="friday_voice_start">Start FRIDAY voice</string>
+    <string name="accessibility_service_name">FRIDAY phone control</string>
+    <string name="accessibility_service_description">Lets FRIDAY read visible, non-password screen text and perform screen gestures and navigation actions when you ask. Screen text is shared with the current chat model. You can turn this service off at any time in Accessibility settings.</string>
 </resources>

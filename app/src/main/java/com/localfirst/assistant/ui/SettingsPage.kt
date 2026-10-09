@@ -51,6 +51,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.ui.window.Dialog
 import com.localfirst.assistant.phone.MediaListenerService
+import com.localfirst.assistant.phone.PhoneControlAccessibilityService
 import com.localfirst.assistant.settings.ServerSettings
 import com.localfirst.assistant.voice.connectedBluetoothAudio
 
@@ -204,8 +205,10 @@ internal fun SettingsPage(
 private fun PhoneAccessSection() {
     val context = LocalContext.current
     var enabled by remember { mutableStateOf(MediaListenerService.isEnabled(context)) }
+    var accessibilityEnabled by remember { mutableStateOf(PhoneControlAccessibilityService.isEnabled(context)) }
     LifecycleResumeEffect(Unit) {
         enabled = MediaListenerService.isEnabled(context)
+        accessibilityEnabled = PhoneControlAccessibilityService.isEnabled(context)
         onPauseOrDispose { }
     }
     Text("Phone access", style = MaterialTheme.typography.titleMedium)
@@ -230,6 +233,17 @@ private fun PhoneAccessSection() {
         },
     ) {
         Text(if (enabled) "Notification access: allowed" else "Allow notification access")
+    }
+    Text(
+        text = "Phone control uses Android's Accessibility service to read visible non-password text and perform gestures, replace text in a focused field, and use system navigation. Read screen content is sent to the current chat model. Each control action asks for confirmation in chat. Enable it only if you want FRIDAY to operate other apps; you can turn it off here in Android Settings at any time.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    OutlinedButton(
+        shape = MaterialTheme.shapes.small,
+        onClick = { runCatching { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) } },
+    ) {
+        Text(if (accessibilityEnabled) "Phone control: enabled" else "Enable phone control")
     }
 }
 
