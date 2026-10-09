@@ -86,6 +86,7 @@ class PcTests(unittest.IsolatedAsyncioTestCase):
 
     def test_operator_mcp_servers_merge_and_fail_closed(self):
         self.assertEqual(self.pc.mcp_servers(), {})
+        self.assertEqual(self.pc.mcp_status(), {'servers': []})
         manifest = self.pc.root / 'mcp.json'
         manifest.write_text(json.dumps({'servers': {
             'github': {'type': 'local', 'command': ['synthetic-mcp', 'serve'], 'environment': {'GITHUB_TOKEN': 'synthetic'}, 'enabled': True},
@@ -95,18 +96,36 @@ class PcTests(unittest.IsolatedAsyncioTestCase):
             'friday-computer': {'type': 'local', 'command': ['synthetic-reserved']},
             'plain': {'type': 'remote', 'url': 'http://mcp.example.com/mcp'},
         }}))
+        # New servers wait for phone confirmation before they may run.
+        self.assertEqual(self.pc.mcp_servers(), {})
+        self.assertEqual(self.pc.mcp_status(), {'servers': [
+            {'name': 'github', 'type': 'local', 'confirmed': False},
+            {'name': 'notion', 'type': 'remote', 'confirmed': False}]})
+        self.assertEqual(self.pc.confirm_mcp('github'), {'name': 'github', 'confirmed': True})
+        self.assertEqual(self.pc.confirm_mcp('notion'), {'name': 'notion', 'confirmed': True})
         servers = self.pc.mcp_servers()
         self.assertEqual(set(servers), {'github', 'notion'})
         self.assertEqual(servers['github'], {'type': 'local', 'command': ['synthetic-mcp', 'serve'], 'environment': {'GITHUB_TOKEN': 'synthetic'}, 'enabled': True})
         self.assertEqual(servers['notion'], {'type': 'remote', 'url': 'https://mcp.notion.com/mcp', 'headers': {}, 'enabled': True})
+        with self.assertRaises(HTTPException): self.pc.confirm_mcp('missing')
+        with self.assertRaises(HTTPException): self.pc.confirm_mcp('../owned')
+        with self.assertRaises(HTTPException): self.pc.confirm_mcp('friday-computer')
+        # A changed entry needs confirmation again.
+        manifest.write_text(json.dumps({'servers': {'github': {'type': 'local', 'command': ['synthetic-changed']}}}))
+        self.assertEqual(self.pc.mcp_servers(), {})
+        self.assertEqual(self.pc.mcp_status(), {'servers': [{'name': 'github', 'type': 'local', 'confirmed': False}]})
+        self.pc.confirm_mcp('github')
+        self.assertEqual(list(self.pc.mcp_servers()), ['github'])
         for bad in ('not json', '[]', '{}', '{"servers":[]}', '{"servers":{' + ','.join(f'"s{i}":{{"type":"local","command":["x"]}}' for i in range(11)) + '}}'):
             manifest.write_text(bad)
             self.assertEqual(self.pc.mcp_servers(), {}, bad[:40])
+            self.assertEqual(self.pc.mcp_status(), {'servers': []})
         manifest.unlink()
         self.assertEqual(self.pc.mcp_servers(), {})
 
     def test_operator_mcp_servers_merge_into_opencode_config(self):
         (self.pc.root / 'mcp.json').write_text(json.dumps({'servers': {'github': {'type': 'local', 'command': ['synthetic-mcp']}}}))
+        self.pc.confirm_mcp('github')
         config = self.pc.config([('opencode', 'synthetic:free'), LOCAL])
         self.assertIn('friday-computer', config['mcp'])
         self.assertEqual(config['mcp']['github'], {'type': 'local', 'command': ['synthetic-mcp'], 'environment': {}, 'enabled': True})

@@ -129,6 +129,23 @@ internal fun PcSettingsPage(state: ChatUiState, vm: ChatViewModel) {
                 .put("allow",JSONArray(allow.lines().map(String::trim).filter(String::isNotBlank)))
                 .put("deny",JSONArray(deny.lines().map(String::trim).filter(String::isNotBlank))))
         },enabled=editable,shape=MaterialTheme.shapes.small) { Text("Save access settings") }
+        state.pcMcp?.optJSONArray("servers")?.let { servers ->
+            Text("Connected services",style=MaterialTheme.typography.titleSmall)
+            Text("Operator-configured tool servers from the PC's mcp.json. A new or changed server waits here until you confirm it; its tool calls still ask approval one by one afterwards.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            if (servers.length() == 0) Text("No service connections configured.",style=MaterialTheme.typography.bodyMedium)
+            for (i in 0 until servers.length()) {
+                val server = servers.optJSONObject(i) ?: continue
+                val name = server.optString("name")
+                Row(Modifier.fillMaxWidth().heightIn(min=56.dp),verticalAlignment=Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(2.dp)) {
+                        Text(name,style=MaterialTheme.typography.bodyLarge)
+                        Text(server.optString("type"),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (server.optBoolean("confirmed")) Text("Confirmed",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    else TextButton(onClick={ vm.confirmMcpServer(name) },enabled=editable) { Text("Confirm") }
+                }
+            }
+        }
     }
 }
 

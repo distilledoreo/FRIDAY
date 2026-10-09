@@ -38,6 +38,10 @@ DEFAULTS = {'enabled': True, 'mode': 'ask_changes', 'computer_use': True, 'allow
 MAX_MCP_SERVERS = 10
 MCP_NAME = re.compile(r'[a-z0-9-]{1,32}')
 RESERVED_MCP = frozenset({'friday-computer', 'friday'})
+
+
+def _digest(entry):
+    return hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()
 LOCAL = ('friday-local', 'qwen3.8-27b')
 
 # Commands that only look at things. Anything else asks in "ask before changes".
@@ -184,6 +188,7 @@ class PcAgent:
             db.execute('CREATE TABLE IF NOT EXISTS session_models(session TEXT PRIMARY KEY,chain TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS pc_schedules(id TEXT PRIMARY KEY, prompt TEXT NOT NULL, title TEXT, source TEXT NOT NULL, next_run REAL NOT NULL, interval_seconds INTEGER NOT NULL, remaining INTEGER NOT NULL, created REAL NOT NULL, max_runs INTEGER NOT NULL)')
             self._migrate_pc_schema(db)
+            db.execute('CREATE TABLE IF NOT EXISTS mcp_known(name TEXT PRIMARY KEY,digest TEXT NOT NULL)')
             with contextlib.suppress(sqlite3.OperationalError):
                 db.execute('ALTER TABLE sessions ADD COLUMN schedule TEXT')
             with contextlib.suppress(sqlite3.OperationalError):
@@ -260,16 +265,8 @@ class PcAgent:
         return value
 
     # ---- MCP service connections ----
-    def mcp_servers(self):
-        """Operator-configured MCP servers from ``mcp.json``, merged into the OpenCode config.
-
-        ``{"servers": {"github": {"type": "local", "command": [...], "environment": {...}, "enabled": true},
-        "notion": {"type": "remote", "url": "https://...", "enabled": true}}}``. Like the outgoing
-        activation file, this is a trusted operator attestation: server commands and credentials run
-        on the user's own PC. Tool calls from these servers arrive as permission prompts in chat and
-        FRIDAY like everything else; unknown tools ask by default. Fail closed: anything invalid
-        yields no extra servers.
-        """
+    def mcp_file(self):
+        """Validated operator servers from ``mcp.json`` (name to OpenCode entry), regardless of confirmation."""
         try:
             raw = json.loads((self.root / 'mcp.json').read_text())
             declared = raw['servers'] if isinstance(raw, dict) else None
@@ -282,6 +279,38 @@ class PcAgent:
             try: servers[name] = self._mcp_entry(entry)
             except (ValueError, KeyError, TypeError): continue
         return servers
+
+    def mcp_servers(self):
+        """Operator-configured MCP servers from ``mcp.json``, merged into the OpenCode config.
+
+        ``{"servers": {"github": {"type": "local", "command": [...], "environment": {...}, "enabled": true},
+        "notion": {"type": "remote", "url": "https://...", "enabled": true}}}``. Like the outgoing
+        activation file, this is a trusted operator attestation: server commands and credentials run
+        on the user's own PC. A new or changed server stays out of the config until the phone
+        confirms it; tool calls from confirmed servers arrive as permission prompts in chat and
+        FRIDAY like everything else, and unknown tools ask by default. Fail closed: anything invalid
+        yields no extra servers.
+        """
+        declared = self.mcp_file()
+        with self.db() as db:
+            known = {row['name']: row['digest'] for row in db.execute('SELECT name, digest FROM mcp_known')}
+        return {name: entry for name, entry in declared.items() if known.get(name) == _digest(entry)}
+
+    def mcp_status(self):
+        """Every valid file server with its confirmation state, for the phone's review screen."""
+        declared = self.mcp_file()
+        with self.db() as db:
+            known = {row['name']: row['digest'] for row in db.execute('SELECT name, digest FROM mcp_known')}
+        return {'servers': [{'name': name, 'type': entry['type'], 'confirmed': known.get(name) == _digest(entry)} for name, entry in sorted(declared.items())]}
+
+    def confirm_mcp(self, name):
+        """Allow a new or changed file server to run. The phone calls this after human review."""
+        if not isinstance(name, str) or not MCP_NAME.match(name) or name in RESERVED_MCP: raise HTTPException(404, 'Not one of FRIDAY’s service connections')
+        entry = self.mcp_file().get(name)
+        if entry is None: raise HTTPException(404, 'Not one of FRIDAY’s service connections')
+        with self.db() as db:
+            db.execute('INSERT OR REPLACE INTO mcp_known VALUES(?,?)', (name, _digest(entry)))
+        return {'name': name, 'confirmed': True}
 
     @staticmethod
     def _mcp_entry(entry):
@@ -888,6 +917,12 @@ def routes(app, auth, agent):
 
     @router.get('/approvals')
     async def approvals(): return await agent.pending()
+
+    @router.get('/mcp')
+    async def mcp(): return agent.mcp_status()
+
+    @router.post('/mcp/{name}/confirm')
+    async def confirm_mcp(name: str): return agent.confirm_mcp(name)
 
     @router.post('/permissions/{permission_id}')
     async def reply(permission_id: str, body: Reply): return await agent.reply(permission_id, body)
