@@ -183,11 +183,13 @@ class PcAgent:
             db.execute('CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY,digest TEXT NOT NULL,session TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS session_models(session TEXT PRIMARY KEY,chain TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS pc_schedules(id TEXT PRIMARY KEY, prompt TEXT NOT NULL, title TEXT, source TEXT NOT NULL, next_run REAL NOT NULL, interval_seconds INTEGER NOT NULL, remaining INTEGER NOT NULL, created REAL NOT NULL, max_runs INTEGER NOT NULL)')
-            # Failed schedule runs refund one repeat; these columns link error sessions back to their schedule.
+            self._migrate_pc_schema(db)
             with contextlib.suppress(sqlite3.OperationalError):
                 db.execute('ALTER TABLE sessions ADD COLUMN schedule TEXT')
             with contextlib.suppress(sqlite3.OperationalError):
-                db.execute('ALTER TABLE sessions ADD COLUMN refunded INTEGER DEFAULT 0')
+                db.execute('ALTER TABLE sessions ADD COLUMN schedule_due REAL')
+            with contextlib.suppress(sqlite3.OperationalError):
+                db.execute('ALTER TABLE sessions ADD COLUMN schedule_settled INTEGER NOT NULL DEFAULT 0')
             # Preserve the old index-based model identity when upgrading an existing install.
             with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
                 config = json.loads(self.config_path.read_text())
@@ -201,6 +203,44 @@ class PcAgent:
         try:
             with connection: yield connection
         finally: connection.close()
+
+    @staticmethod
+    def _migrate_pc_schema(db):
+        """Upgrade pc.sqlite from older installs (e.g. pc_schedules without max_runs)."""
+        schedule_columns = {row[1] for row in db.execute('PRAGMA table_info(pc_schedules)')}
+        if 'max_runs' not in schedule_columns:
+            db.execute('ALTER TABLE pc_schedules ADD COLUMN max_runs INTEGER NOT NULL DEFAULT 1')
+            db.execute('UPDATE pc_schedules SET max_runs = remaining')
+
+    @staticmethod
+    def _schedule_request_id(schedule_id, due_at):
+        return f'pcs-{schedule_id}-{int(due_at)}'
+
+    def _settle_schedule_success(self, session_id):
+        """Consume one schedule repeat after a successful PC session. Idempotent per session."""
+        with self.db() as db:
+            row = db.execute('SELECT schedule, schedule_due, schedule_settled, state FROM sessions WHERE id=?', (session_id,)).fetchone()
+            if not row or not row['schedule'] or row['schedule_settled'] or row['state'] != 'idle': return
+            if db.execute('UPDATE sessions SET schedule_settled=1 WHERE id=? AND schedule_settled=0', (session_id,)).rowcount != 1: return
+            sched = db.execute('SELECT * FROM pc_schedules WHERE id=?', (row['schedule'],)).fetchone()
+            if not sched or sched['remaining'] <= 0: return
+            due = row['schedule_due'] if row['schedule_due'] is not None else sched['next_run']
+            if sched['interval_seconds']:
+                skipped = max(0, int((time.time() - due) // sched['interval_seconds']))
+                next_run = due + (skipped + 1) * sched['interval_seconds']
+                db.execute('UPDATE pc_schedules SET next_run=?, remaining=remaining-1 WHERE id=? AND remaining>0', (next_run, row['schedule']))
+            else:
+                db.execute('UPDATE pc_schedules SET remaining=0 WHERE id=?', (row['schedule'],))
+            db.execute('DELETE FROM pc_schedules WHERE remaining<=0')
+
+    def _release_schedule_failure(self, session_id):
+        """Failed schedule runs do not consume a repeat; drop idempotency so the due slot can retry."""
+        with self.db() as db:
+            row = db.execute('SELECT schedule, schedule_due, schedule_settled FROM sessions WHERE id=?', (session_id,)).fetchone()
+            if not row or not row['schedule'] or row['schedule_settled']: return
+            request_id = self._schedule_request_id(row['schedule'], row['schedule_due'])
+            db.execute('DELETE FROM requests WHERE id=?', (request_id,))
+            db.execute('UPDATE sessions SET schedule=NULL, schedule_due=NULL, schedule_settled=1 WHERE id=?', (session_id,))
 
     # ---- settings ----
     def settings(self):
@@ -530,6 +570,7 @@ class PcAgent:
                             if not pending['permissions'] and not pending['questions'] and not running:
                                 await self.call('POST', f'/session/{session_id}/abort')
                                 with self.db() as db: db.execute("UPDATE sessions SET state='error' WHERE id=?", (session_id,))
+                                self._release_schedule_failure(session_id)
                                 return
                     continue
                 retrying_since = None
@@ -538,7 +579,10 @@ class PcAgent:
                 last = next((m for m in reversed(messages) if m['info']['role'] == 'assistant'), None)
                 error = (last or {}).get('info', {}).get('error')
                 if error and error.get('name') != 'MessageAbortedError' and retryable(error) and await self.fallback(session_id): continue
-                with self.db() as db: db.execute('UPDATE sessions SET state=? WHERE id=?', ('error' if error else 'idle', session_id))
+                final = 'error' if error else 'idle'
+                with self.db() as db: db.execute('UPDATE sessions SET state=? WHERE id=?', (final, session_id))
+                if final == 'idle': self._settle_schedule_success(session_id)
+                else: self._release_schedule_failure(session_id)
                 return
             except asyncio.CancelledError: raise
             except Exception:
@@ -661,33 +705,36 @@ class PcAgent:
         return {'id': schedule_id}
 
     async def run_due_schedules(self):
-        """Start one session per due schedule. Idempotent per (schedule, due time); failures and a
-        full task queue retry on the next tick without consuming the run. A run that starts and
-        then fails refunds one repeat, capped at its max_runs."""
+        """Start one session per due schedule. Idempotent per (schedule, due time). Repeats advance
+        only after the linked session finishes successfully; failures do not consume a run."""
         if not self.settings()['enabled']: return []
-        with self.db() as db:
-            failed = [dict(row) for row in db.execute("SELECT id, schedule FROM sessions WHERE state='error' AND refunded=0 AND schedule IS NOT NULL")]
-            for row in failed:
-                db.execute('UPDATE pc_schedules SET remaining = CASE WHEN remaining < max_runs THEN remaining + 1 ELSE remaining END WHERE id=?', (row['schedule'],))
-                db.execute('UPDATE sessions SET refunded=1 WHERE id=?', (row['id'],))
         now = time.time()
         with self.db() as db:
             due = [dict(row) for row in db.execute('SELECT * FROM pc_schedules WHERE remaining>0 AND next_run<=? ORDER BY next_run LIMIT 5', (now,))]
         started = []
         for row in due:
-            request_id = f"pcs-{row['id']}-{int(row['next_run'])}"
+            due_at = row['next_run']
+            with self.db() as db:
+                existing = db.execute(
+                    'SELECT id, state FROM sessions WHERE schedule=? AND schedule_due=? AND schedule_settled=0',
+                    (row['id'], due_at),
+                ).fetchone()
+            if existing:
+                if existing['state'] in ('busy', 'waiting'):
+                    continue
+                if existing['state'] == 'idle':
+                    self._settle_schedule_success(existing['id'])
+                    continue
+                if existing['state'] == 'error':
+                    self._release_schedule_failure(existing['id'])
+            request_id = self._schedule_request_id(row['id'], due_at)
             try:
                 result = await self.start(Prompt(prompt=row['prompt'], title=row['title'], source='schedule', request_id=request_id))
             except HTTPException:
                 continue
             with self.db() as db:
-                db.execute('UPDATE sessions SET schedule=? WHERE id=?', (row['id'], result['id']))
-                if row['interval_seconds']:
-                    skipped = max(0, int((time.time() - row['next_run']) // row['interval_seconds']))
-                    db.execute('UPDATE pc_schedules SET next_run=?, remaining=? WHERE id=?',
-                               (row['next_run'] + (skipped + 1) * row['interval_seconds'], row['remaining'] - 1, row['id']))
-                else:
-                    db.execute('UPDATE pc_schedules SET remaining=0 WHERE id=?', (row['id'],))
+                db.execute('UPDATE sessions SET schedule=?, schedule_due=?, schedule_settled=0 WHERE id=?',
+                           (row['id'], due_at, result['id']))
             started.append({'schedule': row['id'], 'session': result['id']})
         with self.db() as db:
             db.execute('DELETE FROM pc_schedules WHERE remaining<=0')

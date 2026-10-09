@@ -1,5 +1,6 @@
 import fnmatch
 import json
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -149,19 +150,26 @@ class PcTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(started), 1)
         record = self.pc.record(started[0]['session'])
         self.assertEqual(record['source'], 'schedule')
+        self.assertEqual(self.pc.scheduled()[0]['remaining'], 3)
+        with self.pc.db() as db: db.execute("UPDATE sessions SET state='idle' WHERE id=?", (started[0]['session'],))
+        self.pc._settle_schedule_success(started[0]['session'])
         state = self.pc.scheduled()[0]
         self.assertEqual(state['remaining'], 2)
         self.assertGreater(state['next_run'], time.time())
-        # A retry of the same due time reuses the same session and consumes one run, never two sessions.
+        # A retry of the same due time reuses the same session and never consumes a second run.
         with self.pc.db() as db: db.execute('UPDATE pc_schedules SET next_run=?, remaining=2 WHERE id=?', (due, created['id']))
         before = [session['id'] for session in self.pc.sessions(200)]
         again = await self.pc.run_due_schedules()
         self.assertEqual([run['session'] for run in again], [started[0]['session']])
         self.assertEqual([session['id'] for session in self.pc.sessions(200)], before)
-        self.assertEqual(self.pc.scheduled()[0]['remaining'], 1)
+        self.assertEqual(self.pc.scheduled()[0]['remaining'], 2)
+        self.pc.cancel_schedule(created['id'])
         one_shot = self.pc.schedule(PcSchedule(prompt='Owned once', run_at=time.time() + 3600))
         with self.pc.db() as db: db.execute('UPDATE pc_schedules SET next_run=? WHERE id=?', (time.time() - 1, one_shot['id']))
-        await self.pc.run_due_schedules()
+        once = await self.pc.run_due_schedules()
+        self.assertEqual(len(once), 1)
+        with self.pc.db() as db: db.execute("UPDATE sessions SET state='idle' WHERE id=?", (once[0]['session'],))
+        self.pc._settle_schedule_success(once[0]['session'])
         self.assertNotIn(one_shot['id'], [row['id'] for row in self.pc.scheduled()])
 
     async def test_pc_schedule_cancel_and_disabled_skip(self):
@@ -176,20 +184,40 @@ class PcTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.pc.run_due_schedules(), [])
         self.assertEqual(len(self.pc.scheduled()), 1)
 
-    async def test_failed_schedule_run_refunds_one_repeat_capped_at_max(self):
+    async def test_failed_schedule_run_does_not_consume_repeat(self):
         created = self.pc.schedule(PcSchedule(prompt='Owned flaky check', run_at=time.time() + 3600, interval_seconds=900, max_runs=3))
         with self.pc.db() as db: db.execute('UPDATE pc_schedules SET next_run=? WHERE id=?', (time.time() - 1, created['id']))
         started = await self.pc.run_due_schedules()
-        self.assertEqual(self.pc.scheduled()[0]['remaining'], 2)
+        self.assertEqual(self.pc.scheduled()[0]['remaining'], 3)
         with self.pc.db() as db: db.execute("UPDATE sessions SET state='error' WHERE id=?", (started[0]['session'],))
-        await self.pc.run_due_schedules()
+        self.pc._release_schedule_failure(started[0]['session'])
         self.assertEqual(self.pc.scheduled()[0]['remaining'], 3)
-        # The same failure refunds only once, and never past max_runs.
-        await self.pc.run_due_schedules()
-        self.assertEqual(self.pc.scheduled()[0]['remaining'], 3)
-        with self.pc.db() as db: db.execute("UPDATE sessions SET state='error', refunded=0, schedule=? WHERE id=?", (created['id'], self.session))
-        await self.pc.run_due_schedules()
-        self.assertEqual(self.pc.scheduled()[0]['remaining'], 3)
+        again = await self.pc.run_due_schedules()
+        self.assertEqual(len(again), 1)
+        self.assertNotEqual(again[0]['session'], started[0]['session'])
+        with self.pc.db() as db: db.execute("UPDATE sessions SET state='idle' WHERE id=?", (again[0]['session'],))
+        self.pc._settle_schedule_success(again[0]['session'])
+        self.assertEqual(self.pc.scheduled()[0]['remaining'], 2)
+
+    def test_pc_schedules_schema_upgrade_allows_new_inserts(self):
+        legacy_root = Path(self.tmp.name) / 'legacy-agent'
+        legacy_pc = legacy_root / 'pc'
+        legacy_pc.mkdir(parents=True)
+        with sqlite3.connect(legacy_pc / 'pc.sqlite') as db:
+            db.execute('CREATE TABLE sessions(id TEXT PRIMARY KEY, source TEXT, title TEXT, created REAL, model INTEGER, state TEXT)')
+            db.execute('CREATE TABLE requests(id TEXT PRIMARY KEY,digest TEXT NOT NULL,session TEXT NOT NULL)')
+            db.execute('CREATE TABLE session_models(session TEXT PRIMARY KEY,chain TEXT NOT NULL)')
+            db.execute('CREATE TABLE pc_schedules(id TEXT PRIMARY KEY, prompt TEXT NOT NULL, title TEXT, source TEXT NOT NULL, next_run REAL NOT NULL, interval_seconds INTEGER NOT NULL, remaining INTEGER NOT NULL, created REAL NOT NULL)')
+            db.execute('INSERT INTO pc_schedules VALUES(?,?,?,?,?,?,?,?)',
+                       ('legacy', 'Old nightly', None, 'schedule', time.time() + 7200, 0, 5, time.time()))
+        legacy = PcAgent(legacy_root)
+        with legacy.db() as db:
+            columns = {row[1] for row in db.execute('PRAGMA table_info(pc_schedules)')}
+            self.assertIn('max_runs', columns)
+            self.assertEqual(db.execute('SELECT max_runs FROM pc_schedules WHERE id=?', ('legacy',)).fetchone()[0], 5)
+        future = time.time() + 3600
+        created = legacy.schedule(PcSchedule(prompt='After upgrade', run_at=future))
+        self.assertEqual(created['remaining'], 1)
 
     async def test_idempotent_start_does_not_repeat_work_and_conflicting_payload_fails(self):
         prompt = Prompt(prompt='Owned fixture', request_id='owned-1')
