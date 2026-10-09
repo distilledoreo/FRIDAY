@@ -23,6 +23,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.localfirst.assistant.presentation.UiBlock
+import com.localfirst.assistant.presentation.UiBlocks
 import com.localfirst.assistant.ui.theme.LocalFridayPalette
 
 /** Draws one of FRIDAY's components. [onChoose] sends a choice as the user's reply; null disables choices. */
@@ -37,6 +38,9 @@ internal fun FridayComponent(block: UiBlock, key: String, onChoose: ((String) ->
         is UiBlock.Timeline -> TimelineCard(block)
         is UiBlock.Weather -> WeatherCard(block)
         is UiBlock.Links -> LinkCards(block)
+        is UiBlock.Calculator -> CalculatorCard(block, key, onChoose)
+        is UiBlock.Chart -> ChartCard(block)
+        is UiBlock.Form -> FormCard(block, key, onChoose)
     }
 }
 
@@ -250,5 +254,175 @@ private fun LinkCards(block: UiBlock.Links) {
             }
         }
         Spacer(Modifier.height(6.dp))
+    }
+}
+
+/** A live calculator: sliders adjust the variables, the result recomputes on the phone. */
+@Composable
+private fun CalculatorCard(block: UiBlock.Calculator, key: String, onChoose: ((String) -> Unit)?) {
+    val accent = LocalFridayPalette.current.accent
+    var values by rememberSaveable(key) { mutableStateOf(block.vars.map { it.default }) }
+    val inputs = remember(values) { block.vars.mapIndexed { i, v -> v.name to values[i] }.toMap() }
+    val result = remember(block.formula, inputs) { UiBlocks.FormulaEval.check(block.formula, inputs) }
+    ComponentCard {
+        CardTitle(block.title)
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(block.formula, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            block.vars.forEachIndexed { i, v ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(v.label, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(UiBlocks.formatNumber(values[i]), style = MaterialTheme.typography.bodyMedium, color = com.localfirst.assistant.ui.theme.readableAccent(accent, MaterialTheme.colorScheme.surface))
+                }
+                Slider(
+                    value = values[i].toFloat().coerceIn(v.min.toFloat(), v.max.toFloat()),
+                    onValueChange = { raw ->
+                        val stepped = (kotlin.math.round((raw - v.min.toFloat()) / v.step.toFloat()) * v.step.toFloat() + v.min.toFloat()).toDouble().coerceIn(v.min, v.max)
+                        values = values.toMutableList().apply { this[i] = stepped }
+                    },
+                    valueRange = v.min.toFloat()..v.max.toFloat(),
+                    colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent),
+                )
+            }
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(block.result ?: "Result", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                Text(
+                    result?.let { UiBlocks.formatNumber(it) } ?: "—",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = if (result == null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            if (onChoose != null && result != null) {
+                TextButton(
+                    shape = MaterialTheme.shapes.small,
+                    onClick = { onChoose("${block.result ?: "Result"}: ${UiBlocks.formatNumber(result)}") },
+                ) { Text("Send result") }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+    }
+}
+
+private val chartColors
+    @Composable get() = listOf(
+        LocalFridayPalette.current.accent,
+        androidx.compose.ui.graphics.Color(0xFF6F9BDE),
+        androidx.compose.ui.graphics.Color(0xFF6DBE8B),
+    )
+
+/** A small bar or line chart drawn from the model's numbers; no interaction beyond reading it. */
+@Composable
+private fun ChartCard(block: UiBlock.Chart) {
+    val colors = chartColors
+    val peak = block.series.flatMap { it.values }.map { kotlin.math.abs(it) }.maxOrNull()?.takeIf { it > 0 } ?: 1.0
+    val hasNegative = block.series.any { s -> s.values.any { it < 0 } }
+    val labels = block.labels.ifEmpty { block.series.first().values.indices.map { "${it + 1}" } }
+    ComponentCard {
+        CardTitle(block.title)
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                block.series.forEachIndexed { i, s ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.foundation.Canvas(Modifier.size(10.dp)) { drawCircle(colors[i % colors.size]) }
+                        Spacer(Modifier.width(6.dp))
+                        Text(s.name, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+            androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().height(170.dp)) {
+                val barGroup = size.width / labels.size
+                // Zero sits mid-chart when negatives exist, at the bottom otherwise.
+                fun y(v: Double) = if (hasNegative) (size.height * (1 - (v / peak * 0.5 + 0.5) * 0.9)).toFloat()
+                    else (size.height * (1 - v / peak * 0.9)).toFloat()
+                val base = y(0.0)
+                if (block.kind == "line") {
+                    block.series.forEachIndexed { si, s ->
+                        val color = colors[si % colors.size]
+                        val points = s.values.mapIndexed { i, v -> androidx.compose.ui.geometry.Offset(barGroup * (i + 0.5f), y(v)) }
+                        for (i in 0 until points.size - 1) drawLine(color, points[i], points[i + 1], strokeWidth = 5f)
+                        points.forEach { drawCircle(color, 9f, it) }
+                    }
+                } else {
+                    val count = block.series.size
+                    block.series.first().values.indices.forEach { i ->
+                        block.series.forEachIndexed { si, s ->
+                            val width = barGroup / count * 0.7f
+                            val left = (barGroup * i + barGroup / count * si + barGroup / count * 0.15f).toFloat()
+                            val top = y(s.values[i])
+                            drawRect(
+                                color = colors[si % colors.size],
+                                topLeft = androidx.compose.ui.geometry.Offset(left, minOf(top, base)),
+                                size = androidx.compose.ui.geometry.Size(width, kotlin.math.abs(top - base).coerceAtLeast(2f)),
+                            )
+                        }
+                    }
+                }
+            }
+            Row(Modifier.fillMaxWidth()) {
+                labels.forEach { label ->
+                    Text(label, Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                }
+            }
+        }
+    }
+}
+
+/** Short inputs the user fills in and sends back as one reply. */
+@Composable
+private fun FormCard(block: UiBlock.Form, key: String, onChoose: ((String) -> Unit)?) {
+    var texts by rememberSaveable(key) { mutableStateOf(List(block.fields.size) { "" }) }
+    var picked by rememberSaveable(key + "-choice") { mutableStateOf(List(block.fields.size) { -1 }) }
+    val accent = LocalFridayPalette.current.accent
+    fun answer(i: Int): String? {
+        val field = block.fields[i]
+        return when (field.kind) {
+            "choice" -> picked[i].takeIf { it >= 0 }?.let { field.options[it] }
+            "number" -> texts[i].trim().takeIf { it.toDoubleOrNull() != null }
+            else -> texts[i].trim().takeIf(String::isNotEmpty)
+        }
+    }
+    val ready = onChoose != null && block.fields.indices.all { answer(it) != null }
+    ComponentCard {
+        CardTitle(block.title)
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            block.prompt?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            block.fields.forEachIndexed { i, field ->
+                when (field.kind) {
+                    "choice" -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(field.label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            field.options.forEachIndexed { oi, option ->
+                                val selected = picked[i] == oi
+                                Surface(
+                                    onClick = { picked = picked.toMutableList().apply { this[i] = oi } }, shape = RoundedCornerShape(16.dp),
+                                    color = if (selected) accent.copy(alpha = .2f) else accent.copy(alpha = .07f),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, accent.copy(alpha = if (selected) .7f else .3f)),
+                                ) {
+                                    Text(option, Modifier.padding(horizontal = 12.dp, vertical = 7.dp), style = MaterialTheme.typography.bodyMedium)
+                                }
+                            }
+                        }
+                    }
+                    else -> OutlinedTextField(
+                        value = texts[i],
+                        onValueChange = { texts = texts.toMutableList().apply { this[i] = it.take(500) } },
+                        label = { Text(field.label) },
+                        singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            keyboardType = if (field.kind == "number") androidx.compose.ui.text.input.KeyboardType.Number else androidx.compose.ui.text.input.KeyboardType.Text,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+            Button(
+                onClick = {
+                    val lines = block.fields.mapIndexed { i, field -> "${field.label}: ${answer(i)}" }
+                    onChoose?.invoke(listOfNotNull(block.prompt, lines.joinToString("\n")).joinToString("\n"))
+                },
+                enabled = ready,
+                shape = MaterialTheme.shapes.small,
+            ) { Text(block.submit ?: "Send") }
+        }
     }
 }
