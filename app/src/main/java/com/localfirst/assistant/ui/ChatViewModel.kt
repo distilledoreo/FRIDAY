@@ -149,6 +149,8 @@ data class ChatUiState(
     val imageStatus: String? = null,
     /** Index of the user message being edited, if any. */
     val editingIndex: Int? = null,
+    /** An answer open in the canvas editor, if any. */
+    val canvas: CanvasDoc? = null,
     val busy: Boolean = false,
     val error: String? = null,
     val conversations: List<ConversationSummary> = emptyList(),
@@ -185,6 +187,9 @@ data class FridayLive(val taskId: String, val activity: String, val screenshotId
 private data class PcSnapshot(val status: org.json.JSONObject, val sessions: List<org.json.JSONObject>, val schedules: List<org.json.JSONObject>, val view: org.json.JSONObject?)
 
 data class PendingApproval(val toolName: String, val prompt: String)
+
+/** A document drafted from an answer: edited on the phone, saved to files. */
+data class CanvasDoc(val title: String, val body: String)
 
 class ChatViewModel(
     private val settingsStore: ServerSettingsStore,
@@ -320,6 +325,7 @@ class ChatViewModel(
         if (uris.size > remaining) _state.update { it.copy(error = "You can attach up to $MAX_ATTACHMENTS files per message.") }
         for (uri in uris.take(remaining)) {
             val image = importer.isImage(uri)
+            val audio = !image && importer.isAudio(uri)
             val draft = DraftAttachment(
                 id = UUID.randomUUID().toString(),
                 name = importer.displayName(uri),
@@ -334,6 +340,8 @@ class ChatViewModel(
                     runCatching {
                         if (image) {
                             importer.importImage(uri, draft.name, attachmentPrivacy.incognito, ephemeralId)
+                        } else if (audio) {
+                            importer.importAudio(uri, settings.searchBaseUrl, settings.searchApiKey.trim().ifEmpty { null }, attachmentPrivacy.incognito, ephemeralId)
                         } else {
                             importer.importDocument(uri, settings.searchBaseUrl, settings.searchApiKey.trim().ifEmpty { null }, attachmentPrivacy.incognito, ephemeralId)
                         }
@@ -1022,6 +1030,100 @@ class ChatViewModel(
         syncFollowups(); "Proposal dismissed."
     }
     fun discussDailyBrief() = chatAbout("Help me plan my day. Check my calendar and daily brief for today, then tell me what to prioritize.")
+
+    /** Starts a deep-research task from the draft: a fixed multi-step plan, approved in Activity, reported back for discussion. */
+    fun proposeDeepResearch() {
+        val query = _state.value.draft.trim()
+        if (query.isEmpty() || _state.value.busy || _state.value.workspaceBusy || _state.value.privacy.incognito) return
+        proposeAgentTask("Research this thoroughly: $query",
+            listOf("Find primary authoritative sources", "Read the relevant passages and dates",
+                "Check material claims, conflicting evidence and limits", "Write a structured report with citations and uncertainty"))
+        _state.update { it.copy(showWorkspace = true, workspaceDestination = WorkspaceDestination.ACTIVITY) }
+    }
+
+    /** Copies this chat from [index] (a user message) into a new branch and opens it. */
+    fun branchFrom(index: Int) {
+        val current = _state.value
+        if (current.busy || current.workspaceBusy || !current.privacy.persist) return
+        val prefix = current.messages.take(index + 1)
+        if (prefix.isEmpty() || prefix.last() !is Message.User) return
+        viewModelScope.launch {
+            turnJob?.cancel()
+            turnJob?.join()
+            val id = UUID.randomUUID().toString()
+            val now = clock()
+            withContext(Dispatchers.IO) {
+                conversationStore.save(StoredConversation(
+                    ConversationSummary(id, current.title + " (branch)", now, now, current.projectId), prefix))
+            }
+            refreshConversationList()
+            switchTo(id)
+        }
+    }
+
+    /** Saves this chat as a Markdown file on the computer and opens it. */
+    fun exportChat() {
+        val current = _state.value
+        if (current.messages.isEmpty() || current.workspaceBusy || current.privacy.incognito) return
+        workspaceAction {
+            val name = (current.title.ifBlank { "Chat" }.replace(Regex("[^A-Za-z0-9 _-]"), "").trim().ifBlank { "Chat" }.take(80) + ".md")
+            val result = workspace?.request("/workspace/create-file", "POST",
+                JSONObject().put("name", name).put("content", com.localfirst.assistant.presentation.ChatExport.markdown(current.title, current.messages)))
+                ?: error("Computer unavailable.")
+            val uri = runCatching { JSONObject(result).optString("url").takeIf { it.isNotBlank() } }.getOrNull()
+            if (uri != null) workspace?.openArtifact(uri)
+            "Chat exported to $name."
+        }
+    }
+
+    /** Shares [text] through Android's share sheet. */
+    fun shareText(text: String) {
+        val context = app ?: return
+        val trimmed = text.trim().take(20000)
+        if (trimmed.isEmpty()) return
+        context.startActivity(android.content.Intent.createChooser(
+            android.content.Intent(android.content.Intent.ACTION_SEND).putExtra(android.content.Intent.EXTRA_TEXT, trimmed).setType("text/plain"),
+            "Share").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
+    /** Opens an answer in the canvas editor. */
+    fun openCanvas(text: String) {
+        val plain = com.localfirst.assistant.presentation.UiBlocks.plainText(text).trim().take(20000)
+        if (plain.isBlank() || _state.value.busy) return
+        _state.update { it.copy(canvas = CanvasDoc(it.title.take(80), plain)) }
+    }
+
+    fun updateCanvas(title: String, body: String) {
+        _state.update { it.copy(canvas = it.canvas?.copy(title = title.take(80), body = body.take(50000))) }
+    }
+
+    fun closeCanvas() { _state.update { it.copy(canvas = null) } }
+
+    /** Saves the canvas document as a Markdown file on the computer. */
+    fun saveCanvas() {
+        val doc = _state.value.canvas ?: return
+        if (doc.body.isBlank() || _state.value.workspaceBusy || _state.value.privacy.incognito) return
+        workspaceAction {
+            val name = (doc.title.ifBlank { "Draft" }.replace(Regex("[^A-Za-z0-9 _-]"), "").trim().ifBlank { "Draft" }.take(80) + ".md")
+            workspace?.request("/workspace/create-file", "POST", JSONObject().put("name", name).put("content", doc.body))
+                ?: error("Computer unavailable.")
+            _state.update { it.copy(canvas = null) }
+            "Draft saved to $name."
+        }
+    }
+
+    /** Remembers answer feedback as a lesson for future chats. Tapping is the explicit ask. */
+    fun saveAnswerFeedback(question: String, answer: String, liked: Boolean) {
+        if (_state.value.workspaceBusy || _state.value.privacy.incognito) return
+        val text = ((if (liked) "User liked this answer; reuse the style. " else "User disliked this answer; avoid this style. ") +
+            "Q: ${question.trim().take(300)} A: ${com.localfirst.assistant.presentation.UiBlocks.plainText(answer).trim().take(500)}").take(900)
+        workspaceAction {
+            workspace?.request("/workspace/memory/memories", "POST", JSONObject().put("text", text)
+                .put("category", "feedback").put("scope", _state.value.projectId.orEmpty()).put("pinned", true))
+                ?: error("PC memory unavailable.")
+            if (liked) "Noted — I'll reuse what worked." else "Noted — I'll avoid that style."
+        }
+    }
 
     /** Starts a new chat in the current project and sends [text]: the dashboard's quick actions. */
     fun chatAbout(text: String) {

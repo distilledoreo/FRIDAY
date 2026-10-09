@@ -35,6 +35,10 @@ class AttachmentImporter(context: Context) {
         app.contentResolver.getType(uri)?.startsWith("image/") == true
     }.getOrDefault(false)
 
+    fun isAudio(uri: Uri): Boolean = runCatching {
+        app.contentResolver.getType(uri)?.startsWith("audio/") == true
+    }.getOrDefault(false)
+
     fun displayName(uri: Uri): String = runCatching {
         app.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
             if (c.moveToFirst()) c.getString(0) else null
@@ -55,6 +59,44 @@ class AttachmentImporter(context: Context) {
         workspace.useEphemeralSession(ephemeralId)
         val remote = runCatching { workspace.upload(out, name) }.getOrNull()
         Attachment(id = id, kind = AttachmentKind.IMAGE, name = name, mimeType = "image/jpeg", path = out.absolutePath, remoteFileId = remote)
+    }
+
+    /**
+     * Transcribes an audio file with the computer's speech recognition and
+     * attaches the transcript as a document, so chat, analysis, and memory
+     * treat it like any other text. Only the transcript is kept.
+     */
+    suspend fun importAudio(uri: Uri, baseUrl: String, apiKey: String?, incognito: Boolean = false, ephemeralId: String? = null): Attachment = withContext(Dispatchers.IO) {
+        if (baseUrl.isBlank()) throw IOException("Set the search service address to transcribe audio on your computer.")
+        val name = displayName(uri)
+        val mime = app.contentResolver.getType(uri) ?: "application/octet-stream"
+        require(mime.startsWith("audio/")) { "$name is not an audio file." }
+        val pcm = try {
+            AudioDecode.decode(app, uri)
+        } catch (e: IOException) {
+            throw IOException("Couldn't decode $name.")
+        }
+        if (pcm.isEmpty()) throw IOException("No audio found in $name.")
+        val wav = com.localfirst.assistant.voice.Wav.encode(pcm, AudioDecode.TARGET_RATE)
+        val (code, body) = try {
+            desktopRequest(baseUrl, apiKey, "POST", "/transcribe", wav, "audio/wav", timeoutMs = 180_000)
+        } catch (e: IOException) {
+            throw IOException("Couldn't reach your computer to transcribe $name.")
+        }
+        val text = runCatching { JSONObject(String(body)).optString("text").trim() }.getOrNull().orEmpty()
+        if (code != 200 || text.isBlank()) throw IOException(if (code == 413) "$name is longer than two minutes." else "No speech found in $name.")
+        val dir = if (incognito) File(app.cacheDir, "incognito/attachments").apply { mkdirs() } else this@AttachmentImporter.dir
+        val id = UUID.randomUUID().toString()
+        val minutes = pcm.size / AudioDecode.TARGET_RATE / 60
+        val seconds = pcm.size / AudioDecode.TARGET_RATE % 60
+        Attachment(
+            id = id,
+            kind = AttachmentKind.DOCUMENT,
+            name = name,
+            mimeType = mime,
+            note = "Transcribed from ${if (minutes > 0) "${minutes}m " else ""}${seconds}s of audio on your computer.",
+            text = text.take(60000),
+        )
     }
 
     suspend fun importDocument(uri: Uri, baseUrl: String, apiKey: String?, incognito: Boolean = false, ephemeralId: String? = null): Attachment = withContext(Dispatchers.IO) {
