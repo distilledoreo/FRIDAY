@@ -1,4 +1,5 @@
 import fnmatch
+import json
 import tempfile
 import time
 import unittest
@@ -111,16 +112,95 @@ class PcTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(restored.process)
         self.assertEqual(restored.watchers, {})
 
-    async def test_catalog_requires_zero_pricing_vision_and_tools(self):
+    async def test_catalog_requires_zero_pricing_and_tools_and_includes_strong_text_models(self):
         def model(identifier, price='0', image=True, tools=True):
             return {'id':identifier,'pricing':{'prompt':price,'completion':'0'},'architecture':{'input_modalities':['text','image'] if image else ['text']},'supported_parameters':['tools'] if tools else []}
-        response = httpx.Response(200, json={'data':[model('owned:free'),model('paid:free',price='1'),model('noimage:free',image=False),model('notools:free',tools=False),model('notmarked')]})
-        client = AsyncMock()
-        client.__aenter__.return_value = client
-        client.get.return_value = response
-        with patch('desktop.agent.pc.httpx.AsyncClient', return_value=client):
+        async def respond(request):
+            if request.url.path.endswith('/models'):
+                return httpx.Response(200, json={'data':[model('v/owned:free'),model('v/paid:free',price='1'),model('v/noimage:free',image=False),model('v/notools:free',tools=False)]})
+            return httpx.Response(200, json={'data':[{'source':'artificial-analysis','model_permaslug':'v/owned','intelligence_index':40}]})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            self.pc.ranking.client = client
+            self.pc.ranking.key = lambda: 'fixture'
             chain = await PcAgent.models(self.pc)
-        self.assertEqual(chain, [('openrouter','owned:free'),LOCAL])
+            self.assertEqual(chain, [('openrouter','v/owned:free'),('openrouter','v/noimage:free'),LOCAL])
+            self.pc.save_settings(Settings(computer_use=False).model_dump())
+            chain = await PcAgent.models(self.pc)
+            self.assertEqual(chain, [('openrouter','v/owned:free'),('openrouter','v/noimage:free'),LOCAL])
+
+    async def test_live_model_identity_and_fallback_order_are_pinned_until_human_followup(self):
+        a, b, c = [('openrouter', 'v/'+name+':free') for name in ('a','b','c')]
+        self.pc.models = AsyncMock(return_value=[a,b,LOCAL])
+        await self.pc.send(self.session, 'Owned first turn')
+        self.pc.models.return_value = [c,a,b,LOCAL]
+        self.assertEqual((await self.pc.view(self.session))['model'], a[1])
+        self.assertTrue(await self.pc.fallback(self.session))
+        self.assertEqual(self.pc.calls[-1][2]['json']['model']['modelID'], b[1])
+        self.assertEqual((await self.pc.view(self.session))['model'], b[1])
+        await self.pc.send(self.session, 'Owned human followup')
+        self.assertEqual(self.pc.calls[-1][2]['json']['model']['modelID'], c[1])
+        self.assertEqual(self.pc.record(self.session)['model'], 0)
+
+    async def test_saved_fallback_cannot_reintroduce_removed_or_paid_model(self):
+        a, b = [('openrouter','v/'+name+':free') for name in ('a','b')]
+        self.pc.models = AsyncMock(return_value=[a,b,LOCAL])
+        await self.pc.send(self.session, 'Owned first turn')
+        self.pc.models.return_value = [a,LOCAL]
+        self.assertTrue(await self.pc.fallback(self.session))
+        self.assertEqual(self.pc.calls[-1][2]['json']['model']['providerID'], LOCAL[0])
+        self.assertEqual(self.pc.record(self.session)['model'], 2)
+
+    async def test_upgrading_index_based_history_preserves_previous_model(self):
+        self.pc.config_path.write_text(json.dumps({'provider':{'openrouter':{'models':{'v/old-first:free':{},'v/old-next:free':{}}}}}))
+        with self.pc.db() as db: db.execute('UPDATE sessions SET model=1 WHERE id=?', (self.session,))
+        restored = PcAgent(Path(self.tmp.name))
+        self.assertEqual((await restored.session_chain(self.session))[1], ('openrouter','v/old-next:free'))
+        self.assertEqual(restored.record(self.session)['model'], 1)
+
+    async def test_daily_config_change_does_not_stop_active_work(self):
+        self.pc.process = SimpleNamespace(returncode=None)
+        self.pc.client = AsyncMock()
+        self.pc.client.get.return_value = httpx.Response(200, json={'healthy':True})
+        self.pc.config_digest = 'previous-day'
+        self.assertIs(await PcAgent.ensure(self.pc), self.pc.client)
+        self.assertEqual(self.pc.stopped, 0)
+
+    async def test_uncertain_live_activity_defers_config_reload(self):
+        with self.pc.db() as db: db.execute("UPDATE sessions SET state='idle'")
+        self.pc.process = SimpleNamespace(returncode=None)
+        self.pc.client = AsyncMock()
+        self.pc.client.get.side_effect = [httpx.Response(200, json={'healthy':True}), RuntimeError('Owned activity query failure')]
+        self.pc.config_digest = 'previous-day'
+        self.assertIs(await PcAgent.ensure(self.pc), self.pc.client)
+        self.assertEqual(self.pc.stopped, 0)
+
+    async def test_new_catalog_entries_wait_for_registration_without_hiding_existing_rank_changes(self):
+        self.pc.ranking.refresh = AsyncMock()
+        self.pc.ranking.ranked = lambda **kwargs: [{'id':'v/new:free'},{'id':'v/registered:free'}]
+        self.pc.model_registry = {'v/registered:free'}
+        self.assertEqual(await PcAgent.models(self.pc), [('openrouter','v/registered:free'),LOCAL])
+        self.pc.model_registry = None
+        self.assertEqual((await PcAgent.models(self.pc))[0], ('openrouter','v/new:free'))
+
+    def test_cloud_config_uses_actual_modalities_limits_and_zero_price_cap(self):
+        self.pc.ranking.catalog['v/text-preview'] = {'input_modalities':['text'],'context':65536,'output':8192}
+        model = self.pc.config([('openrouter','v/text-preview'),LOCAL])['provider']['openrouter']['models']['v/text-preview']
+        self.assertFalse(model['attachment'])
+        self.assertEqual(model['modalities']['input'], ['text'])
+        self.assertEqual(model['limit'], {'context':65536,'output':8192})
+        self.assertEqual(model['options']['provider']['max_price'], {'prompt':0,'completion':0})
+
+    def test_desktop_helper_has_ranked_vision_only_failover_and_no_permission_grants(self):
+        self.pc.ranking.ranked = lambda vision=False: [{'id':name} for name in (['v/best-vision:free','v/next-vision:free'] if vision else ['v/text-preview','v/best-vision:free','v/next-vision:free'])]
+        config = self.pc.config([('openrouter',name) for name in ('v/text-preview','v/best-vision:free','v/next-vision:free')] + [LOCAL])
+        helper = config['agent']['friday-desktop']
+        self.assertEqual(config['model'], 'openrouter/v/text-preview')
+        self.assertEqual(helper['model'], 'friday-vision/v/best-vision:free')
+        self.assertEqual(list(config['provider']['friday-vision']['models']), ['v/best-vision:free','v/next-vision:free'])
+        self.assertNotIn('permission', helper)
+        self.assertFalse(config['agent']['friday']['tools'][COMPUTER+'_screenshot'])
+        self.pc.save_settings(Settings(computer_use=False).model_dump())
+        self.assertNotIn('friday-desktop', self.pc.config([LOCAL])['agent'])
 
     def test_incomplete_desktop_inputs_rejected_before_touching_display(self):
         from desktop.agent.computer import Input

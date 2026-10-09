@@ -4,6 +4,8 @@ FRIDAY also runs OpenCode directly as the PC user, with shell and X11 screenshot
 
 The older isolated research agent described below remains available for explicit research jobs and existing schedules. Its restrictions describe that subsystem.
 
+Native PC tasks now use a daily Artificial Analysis Intelligence Index ranking of named zero-priced tool models, including free previews. Strong text-only models can drive reasoning/shell work; a separately ranked vision helper handles desktop work with the same phone permissions and free-only failover. Active turns keep their model identity/order; configuration updates wait for idle. See [model selection and verification](../FRIDAY-MODELS.md).
+
 # FRIDAY isolated cloud agent
 
 The PC gateway runs approved tasks through OpenCode 1.18.35 and the free-only OpenRouter broker. Android Activity lets the user review a plan, approve it, follow paged events and page previews, and cancel work. Models can propose tasks/actions but cannot approve them.
