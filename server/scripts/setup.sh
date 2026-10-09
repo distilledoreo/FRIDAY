@@ -32,7 +32,11 @@ python3 -m venv "$DEST/api/.venv"
 "$DEST/api/.venv/bin/pip" install -q -r "$DEST/api/requirements.txt"
 [ -f "$APP_REPO/desktop/agent/requirements-vault.txt" ] && "$DEST/api/.venv/bin/pip" install -q -r "$APP_REPO/desktop/agent/requirements-vault.txt"
 
-cp "$HERE"/systemd/*.service "$HERE"/systemd/*.timer "$HOME/.config/systemd/user/"
+# Units are only added, never replaced: an existing install may have customised them (paths, schedules).
+for unit in "$HERE"/systemd/*.service "$HERE"/systemd/*.timer; do
+  [ -e "$HOME/.config/systemd/user/$(basename "$unit")" ] || cp "$unit" "$HOME/.config/systemd/user/"
+done
 systemctl --user daemon-reload
-echo "Installed to $DEST. Next: fill llama/llama.env and api/imagegen/config.json, set VOICE_MODELS in .env,"
+echo "Installed to $DEST. To pick up code changes on a running install: systemctl --user restart assistant-api."
+echo "First install only: Next: fill llama/llama.env and api/imagegen/config.json, set VOICE_MODELS in .env,"
 echo "then: (cd $DEST && docker compose up -d) and systemctl --user enable --now llama-qwen38-mtp assistant-api friday-memory-backup.timer"
