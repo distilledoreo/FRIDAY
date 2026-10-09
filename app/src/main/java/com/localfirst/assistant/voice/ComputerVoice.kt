@@ -31,6 +31,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -492,45 +493,57 @@ class ComputerSpeaker(
     private val voiceName: String,
 ) : Speaker {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var queue = Channel<Deferred<Pair<String, Wav.Decoded>?>>(Channel.UNLIMITED)
+    private class PlaybackQueue {
+        val audio = Channel<Deferred<Pair<String, Wav.Decoded>?>>(Channel.UNLIMITED)
+        val pending = MutableStateFlow(0)
+    }
+    private var queue = PlaybackQueue()
     private var player: Job? = null
-    private val pending = MutableStateFlow(0)
 
     override suspend fun prepare(): Boolean = client.available()
 
     override fun enqueue(text: String) {
         if (text.isBlank()) return
-        pending.value++
+        val source = queue
+        source.pending.update { it + 1 }
         val audioFor = scope.async { runCatching { text to client.speak(text, voiceName) }.getOrNull() }
-        queue.trySend(audioFor)
-        if (player?.isActive != true) player = scope.launch { playLoop(queue) }
+        if (source.audio.trySend(audioFor).isFailure) {
+            audioFor.cancel()
+            source.pending.update { (it - 1).coerceAtLeast(0) }
+            return
+        }
+        if (player?.isActive != true) player = scope.launch { playLoop(source) }
     }
 
-    private suspend fun playLoop(source: Channel<Deferred<Pair<String, Wav.Decoded>?>>) {
-        for (next in source) {
+    private suspend fun playLoop(source: PlaybackQueue) {
+        for (next in source.audio) {
             try {
                 next.await()?.let { (text, wav) -> audio.play(wav, text) }
+            } catch (e: CancellationException) {
+                next.cancel()
+                throw e
             } finally {
-                pending.value = (pending.value - 1).coerceAtLeast(0)
+                source.pending.update { (it - 1).coerceAtLeast(0) }
             }
         }
     }
 
     override suspend fun awaitIdle() {
-        pending.first { it == 0 }
+        queue.pending.first { it == 0 }
     }
 
     override fun stop() {
+        val previous = queue
+        queue = PlaybackQueue()
         player?.cancel()
         player = null
-        queue.close()
+        previous.audio.close()
         while (true) {
-            val d = queue.tryReceive().getOrNull() ?: break
+            val d = previous.audio.tryReceive().getOrNull() ?: break
             d.cancel()
         }
-        queue = Channel(Channel.UNLIMITED)
         audio.stopPlayback()
-        pending.value = 0
+        previous.pending.value = 0
     }
 
     override fun shutdown() = stop()

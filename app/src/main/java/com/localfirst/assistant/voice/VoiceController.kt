@@ -1,6 +1,5 @@
 package com.localfirst.assistant.voice
 
-import com.localfirst.assistant.conversation.Message
 import com.localfirst.assistant.ui.ChatUiState
 import com.localfirst.assistant.ui.PendingApproval
 import kotlinx.coroutines.CancellationException
@@ -8,6 +7,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -16,6 +17,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 enum class VoicePhase { STARTING, LISTENING, THINKING, SPEAKING, CONFIRMING, PAUSED }
 
@@ -51,6 +54,8 @@ class VoiceController(
     private val stopTurn: () -> Unit,
     private val answerApproval: (Boolean) -> Unit,
     private val bargeInEnabled: () -> Boolean,
+    private val feedbackQuietMillis: Long = 6_000,
+    private val feedbackIntervalMillis: Long = 30_000,
 ) {
     private val _state = MutableStateFlow<VoiceUiState?>(null)
 
@@ -152,7 +157,7 @@ class VoiceController(
     /** Speaks the reply as it streams; returns when it's done or the user barged in. */
     private suspend fun speakReply() = coroutineScope {
         set(VoicePhase.THINKING)
-        val chunker = SpeechChunker()
+        val reply = ReplySpeech()
         var spoke = false
         val interrupted = CompletableDeferred<Unit>()
         interrupt = interrupted
@@ -167,26 +172,82 @@ class VoiceController(
 
         val speaking = launch {
             listenForBargeIn()
-            chat.first { s ->
-                for (chunk in chunker.update(replyText(s.messages), final = !s.busy)) {
-                    io.speaker.enqueue(chunk)
-                    spoke = true
-                    set(VoicePhase.SPEAKING, speaking = chunk)
-                }
-                val approval = s.pendingApproval
-                if (approval != null) {
-                    // The mic is needed for "yes" / "no".
-                    bargeIn?.cancel()
-                    bargeIn?.join()
+            val audioLock = Mutex()
+            fun nowMillis() = System.nanoTime() / 1_000_000
+            val feedback = VoiceWaitFeedback(nowMillis(), feedbackQuietMillis, feedbackIntervalMillis)
+            var audioPending = false
+            var fillerPlaying = false
+            var audioGeneration = 0
+            var idleWatcher: Job? = null
+            fun watchAudio() {
+                val generation = ++audioGeneration
+                idleWatcher?.cancel()
+                idleWatcher = launch {
                     io.speaker.awaitIdle()
-                    confirm(approval)
-                    set(VoicePhase.THINKING)
-                    listenForBargeIn()
+                    audioLock.withLock {
+                        if (generation == audioGeneration) {
+                            audioPending = false
+                            fillerPlaying = false
+                            feedback.audioFinished(nowMillis())
+                            if (chat.value.busy && chat.value.pendingApproval == null) set(VoicePhase.THINKING, speaking = "")
+                        }
+                    }
                 }
-                !s.busy && s.pendingApproval == null
             }
-            for (chunk in chunker.update(replyText(chat.value.messages), final = true)) io.speaker.enqueue(chunk)
-            io.speaker.awaitIdle()
+            val waiting = launch {
+                while (true) {
+                    delay(minOf(500, feedbackQuietMillis.coerceAtLeast(1)))
+                    audioLock.withLock {
+                        if (chat.value.busy && chat.value.pendingApproval == null && !audioPending) {
+                            feedback.next(nowMillis())?.let { line ->
+                                audioPending = true
+                                fillerPlaying = true
+                                io.speaker.enqueue(line)
+                                set(VoicePhase.SPEAKING, speaking = line)
+                                watchAudio()
+                            }
+                        }
+                    }
+                }
+            }
+            try {
+                chat.first { s ->
+                    val chunks = if (s.turnMessagesReady) reply.update(s.messages, s.busy) else emptyList()
+                    if (chunks.isNotEmpty()) audioLock.withLock {
+                        // Real speech always takes priority over a waiting acknowledgement.
+                        if (fillerPlaying) io.speaker.stop()
+                        fillerPlaying = false
+                        audioPending = true
+                        chunks.forEach(io.speaker::enqueue)
+                        spoke = true
+                        set(VoicePhase.SPEAKING, speaking = chunks.last())
+                        watchAudio()
+                    }
+                    val approval = s.pendingApproval
+                    if (approval != null) {
+                        audioLock.withLock {
+                            audioGeneration++
+                            idleWatcher?.cancel()
+                            if (fillerPlaying) io.speaker.stop()
+                            fillerPlaying = false
+                            audioPending = true
+                        }
+                        // The mic is needed for "yes" / "no".
+                        bargeIn?.cancel()
+                        bargeIn?.join()
+                        io.speaker.awaitIdle()
+                        confirm(approval)
+                        set(VoicePhase.THINKING)
+                        audioLock.withLock { audioPending = false; feedback.audioFinished(nowMillis()) }
+                        listenForBargeIn()
+                    }
+                    !s.busy && s.pendingApproval == null
+                }
+                io.speaker.awaitIdle()
+            } finally {
+                waiting.cancelAndJoin()
+                idleWatcher?.cancelAndJoin()
+            }
         }
 
         val userInterrupted = select {
@@ -196,7 +257,7 @@ class VoiceController(
         interrupt = null
         bargeIn?.cancel()
         if (userInterrupted) {
-            speaking.cancel()
+            speaking.cancelAndJoin()
             io.speaker.stop()
             if (chat.value.busy) stopTurn()
             // Talking again before the assistant said anything, soon after sending, means "I wasn't done".
@@ -225,15 +286,6 @@ class VoiceController(
         }
         _state.update { it?.copy(note = "Tap Approve or Deny.") }
         chat.first { it.pendingApproval != approval }
-    }
-
-    /** The assistant's text in the current turn: everything after the last user message. */
-    private fun replyText(messages: List<Message>): String {
-        val lastUser = messages.indexOfLast { it is Message.User }
-        // Components are spoken as plain sentences; one still streaming in waits until it's complete.
-        return com.localfirst.assistant.presentation.UiBlocks.plainText(messages.drop(lastUser + 1)
-            .filterIsInstance<Message.Assistant>()
-            .joinToString("\n\n") { it.content })
     }
 
     private fun onPartial(text: String) = _state.update { it?.copy(heard = text) }

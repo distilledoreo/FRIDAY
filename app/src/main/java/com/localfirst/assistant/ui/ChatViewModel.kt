@@ -81,6 +81,8 @@ data class ChatUiState(
     val groundingResearchAvailable: Boolean = false,
     val title: String = ConversationTitles.NEW_CHAT,
     val messages: List<Message> = emptyList(),
+    /** The message snapshot has been updated for this turn, after memory/search preparation. */
+    val turnMessagesReady: Boolean = false,
     val draft: String = "",
     val projectId: String? = null,
     val historyQuery: String = "",
@@ -548,13 +550,14 @@ class ChatViewModel(
     }
 
     private fun runTurn(block: suspend (onUpdate: (List<Message>) -> Unit) -> TurnOutcome) {
+        _state.update { it.copy(turnMessagesReady = false) }
         val isFirstExchange = session.snapshot().none { it is Message.Assistant }
         val now = ZonedDateTime.now()
         session.systemPrompt = try { openingPrompt(now) }
         catch (e: Exception) { _state.update { it.copy(error = "Couldn't read saved knowledge: ${e.message}") }; return }
         (provider as? com.localfirst.assistant.model.OpenAiCompatibleModelProvider)?.incognito = _state.value.privacy.incognito
         session.latestUserNote = AssistantPrompts.timeNote(now)
-        _state.update { it.copy(busy = true, error = null) }
+        _state.update { it.copy(busy = true, error = null, turnMessagesReady = false) }
         holdForeground()
         turnJob = viewModelScope.launch {
             var outcome: TurnOutcome? = null
@@ -590,7 +593,7 @@ class ChatViewModel(
                 } else _state.update { it.copy(groundingStatus = if (grounding.privateRequest(pendingRecallQuery)) "Private question: public web lookups require separate approval" else null, groundingSources = emptyList()) }
                 if (grounding.blocksWeb(pendingRecallQuery)) session.latestUserNote = session.latestUserNote.orEmpty() + "\nPublic web access is disabled for this turn by the user's request. State when current facts cannot be verified; do not invent citations."
                 outcome = block { messages ->
-                    _state.update { it.copy(messages = messages) }
+                    _state.update { it.copy(messages = messages, turnMessagesReady = true) }
                 }
             } catch (e: CancellationException) {
                 // Stopped by the user; the session already kept the partial answer.

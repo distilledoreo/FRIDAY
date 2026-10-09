@@ -2,6 +2,10 @@
 
 Goal: deliver the user's October 8 plan while preserving Claude's existing memory paging, 15-minute image limit, car microphone/echo/Android Auto support, and end-of-2024 cutoff guidance. The earlier TTFT experiment and inference embargo are finished; Claude documented the user-approved lift. Preserve his model flags and prompt cache. The 0.16 redesign was verified with fake models and native CPU-only UI checks; it made no model service/configuration changes. Production outgoing remains disabled pending actual verification and explicit setup.
 
+## Voice follow-up: 0.18.1
+
+Voice waits for the current turn’s message snapshot after preflight, so it cannot replay the previous answer. Each assistant bubble has its own speech cursor and closes at a tool boundary, allowing short comments to be read before/between tools. After six seconds of quiet, a turn gets at most two brief acknowledgements, at least 30 seconds apart. Real replies and approval questions interrupt filler; filler does not enter chat history or block continuation/barge-in. Playback queues keep separate cancellation counts. All 218 Android checks pass (155 core, 63 app), release/lint pass with 0 errors and 32 warnings. Physical-phone audio remains unverified. No backend or model configuration changes.
+
 ## Computer-use continuation: 0.18.0
 
 Claude’s native OpenCode draft is completed with real user-shell/X11 capabilities, persistent configurable permissions and human phone approvals. Free cloud vision/tool models precede text-only Qwen fallback; local inference waits for foreground/image work and uses background slot 1. Current-task and remembered approvals are distinct; incognito blocks PC chat tools. Existing isolated research, accounts, data and scheduled work remain available. Details and test limits: [Computer access](FRIDAY-COMPUTER.md). This completes the clarified computer-use continuation; broader roadmap/provider/device validation is still unfinished.

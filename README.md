@@ -1,7 +1,9 @@
 # Local Android Assistant
 
 
-Current Android interface: **FRIDAY 0.18.0** uses a minimal adaptive home, sidebar, optional real-data dashboard, inline voice and native rich-response foundation. Dark/light/accent/motion controls live in Appearance. See [redesign contract and validation](desktop/FRIDAY-REDESIGN.md). The existing data, integrations and assistant task controls remain in place.
+Current Android interface: **FRIDAY 0.18.1** uses a minimal adaptive home, sidebar, optional real-data dashboard, inline voice and native rich-response foundation. Dark/light/accent/motion controls live in Appearance. See [redesign contract and validation](desktop/FRIDAY-REDESIGN.md). The existing data, integrations and assistant task controls remain in place.
+
+Version **0.18.1** fixes stale voice replies and reads comments before tools run. Long quiet waits get up to two brief, interruptible voice cues; real replies and approval questions take priority.
 
 Version **0.18.0** completes Claude’s native computer-use draft: real PC shell and desktop tools through OpenCode, phone approvals and configurable access, free cloud models with text-only local fallback. See [Computer access](desktop/FRIDAY-COMPUTER.md).
 
