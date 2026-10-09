@@ -43,12 +43,24 @@ class WakeWordService : Service() {
 
     private val retryRunnable = Runnable { listen() }
     private val watchdogRunnable = Runnable { watchdog() }
+    private var generation = 0
+
+    override fun onCreate() {
+        super.onCreate()
+        generation = ++runningGeneration
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) { stopSelf(); return START_NOT_STICKY }
-        if (active.value) return START_STICKY
+        if (generation != runningGeneration) { stopSelf(); return START_NOT_STICKY }
+        if (active.value) {
+            if (!stopped && recognizer == null) listen()
+            handler.removeCallbacks(watchdogRunnable)
+            handler.postDelayed(watchdogRunnable, WATCHDOG_MS)
+            return START_STICKY
+        }
         if (!PermissionBroker.isGranted(this, Manifest.permission.RECORD_AUDIO) ||
             !SpeechRecognizer.isRecognitionAvailable(this)
         ) { stopSelf(); return START_NOT_STICKY }
@@ -154,7 +166,7 @@ class WakeWordService : Service() {
         handler.removeCallbacks(watchdogRunnable)
         runCatching { recognizer?.cancel(); recognizer?.destroy() }
         recognizer = null
-        active.value = false
+        if (generation == runningGeneration) active.value = false
         super.onDestroy()
     }
 
@@ -165,8 +177,9 @@ class WakeWordService : Service() {
         private const val RETRY_DELAY_MS = 1_000L
         private const val TRIGGER_COOLDOWN_MS = 15_000L
         private const val WATCHDOG_MS = 60_000L
+        @Volatile private var runningGeneration = 0
         val active = MutableStateFlow(false)
         fun start(context: Context) { context.startForegroundService(Intent(context, WakeWordService::class.java)) }
-        fun stop(context: Context) { active.value = false; context.stopService(Intent(context, WakeWordService::class.java)) }
+        fun stop(context: Context) { context.stopService(Intent(context, WakeWordService::class.java)) }
     }
 }
