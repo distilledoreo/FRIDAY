@@ -102,6 +102,8 @@ data class ChatUiState(
     val accountContent: JSONObject? = null,
     val pcStatus: JSONObject? = null,
     val pcSessions: List<JSONObject> = emptyList(),
+    /** Operator MCP service connections with their phone-confirmation state, if the PC reports them. */
+    val pcMcp: JSONObject? = null,
     val pcSessionId: String? = null,
     val pcSession: JSONObject? = null,
     /** Full views for PC sessions linked from this chat's tool results, keyed by session id. */
@@ -1158,9 +1160,13 @@ class ChatViewModel(
                         jsonRows(JSONArray(client.request("/workspace/pc/sessions"))),
                         sessionId?.let { JSONObject(client.request("/workspace/pc/sessions/$it")) })
                 }
+                val mcp = withContext(Dispatchers.IO) {
+                    runCatching { workspace?.let { JSONObject(it.request("/workspace/pc/mcp")) } }.getOrNull()
+                }
                 _state.update { current ->
                     if (current.privacy.incognito) current
                     else current.copy(pcStatus=result.first, pcSessions=result.second,
+                        pcMcp=mcp,
                         pcSession=if (current.pcSessionId == sessionId) result.third else current.pcSession, pcError=null)
                 }
             } catch (e: CancellationException) { throw e }
@@ -1176,6 +1182,14 @@ class ChatViewModel(
             catch (e: CancellationException) { throw e }
             catch (e: Exception) { _state.update { it.copy(pcError="The PC request could not be confirmed. Check its current task state before trying again.") } }
             finally { _state.update { it.copy(pcBusy=false) }; refreshPc(); refreshChatPc() }
+        }
+    }
+
+    /** Allows a new or changed operator MCP server to run, after reviewing it here. */
+    fun confirmMcpServer(name: String) {
+        if (!name.matches(Regex("[a-z0-9-]{1,32}"))) return
+        pcAction {
+            withContext(Dispatchers.IO) { workspace?.request("/workspace/pc/mcp/$name/confirm", "POST") ?: error("Computer unavailable") }
         }
     }
 
