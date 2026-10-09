@@ -57,14 +57,14 @@ fun androidVoiceIo(context: Context): VoiceIo {
 class AndroidSpeechInput(private val context: Context) : SpeechInput {
     private var onDeviceUsable = true
 
-    override suspend fun listen(onPartial: (String) -> Unit, onLevel: (Float) -> Unit): ListenResult =
+    override suspend fun listen(onPartial: (String) -> Unit, onLevel: (Float) -> Unit, completeSilenceMs: Long): ListenResult =
         withContext(Dispatchers.Main) {
             val onDevice = onDeviceUsable && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
                 SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
-            val first = attempt(onDevice, onPartial, onLevel)
+            val first = attempt(onDevice, onPartial, onLevel, completeSilenceMs.coerceIn(300L, 3_000L))
             if (onDevice && first is Attempt.LanguageUnavailable) {
                 onDeviceUsable = false
-                attempt(false, onPartial, onLevel).result
+                attempt(false, onPartial, onLevel, completeSilenceMs.coerceIn(300L, 3_000L)).result
             } else {
                 first.result
             }
@@ -79,7 +79,7 @@ class AndroidSpeechInput(private val context: Context) : SpeechInput {
         }
     }
 
-    private suspend fun attempt(onDevice: Boolean, onPartial: (String) -> Unit, onLevel: (Float) -> Unit): Attempt =
+    private suspend fun attempt(onDevice: Boolean, onPartial: (String) -> Unit, onLevel: (Float) -> Unit, completeSilenceMs: Long): Attempt =
         suspendCancellableCoroutine { cont ->
             if (!onDevice && !SpeechRecognizer.isRecognitionAvailable(context)) {
                 cont.resume(Attempt.Done(ListenResult.Failed("This phone has no speech recognition service.")))
@@ -145,7 +145,7 @@ class AndroidSpeechInput(private val context: Context) : SpeechInput {
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
                 putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1_000L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, completeSilenceMs)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
             }
             recognizer.startListening(intent)

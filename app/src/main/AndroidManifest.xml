@@ -102,6 +102,7 @@
         <receiver android:name=".car.CarReplyReceiver" android:exported="false" />
         <service android:name=".car.CarTurnService" android:exported="false" android:foregroundServiceType="shortService" />
         <service android:name=".voice.VoiceForegroundService" android:exported="false" android:foregroundServiceType="microphone" />
+        <service android:name=".voice.WakeWordService" android:exported="false" android:foregroundServiceType="microphone" />
         <service android:name=".voice.ScreenContextService" android:exported="false" android:foregroundServiceType="mediaProjection" />
         <provider
             android:name="androidx.core.content.FileProvider"

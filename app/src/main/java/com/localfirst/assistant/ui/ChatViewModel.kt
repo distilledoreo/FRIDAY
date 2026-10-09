@@ -264,6 +264,18 @@ class ChatViewModel(
         if (app != null) viewModelScope.launch {
             voiceState.collect { if (it == null) VoiceForegroundService.stop(app) }
         }
+        syncWakeWord()
+    }
+
+    /** Starts or stops the "Hey FRIDAY" listener to match the saved setting. */
+    private fun syncWakeWord() {
+        val context = app ?: return
+        if (_state.value.settings.wakeWord &&
+            com.localfirst.assistant.phone.PermissionBroker.isGranted(context, android.Manifest.permission.RECORD_AUDIO)) {
+            com.localfirst.assistant.voice.WakeWordService.start(context)
+        } else {
+            com.localfirst.assistant.voice.WakeWordService.stop(context)
+        }
     }
 
     fun onDraftChange(value: String) {
@@ -1657,6 +1669,16 @@ class ChatViewModel(
             else if (!_state.value.settings.androidAuto && CarMessaging.connected.value) CarMessaging.greet(context)
         }
         _state.update { it.copy(settings = normalized, showSettings = false, settingsError = null, error = null) }
+        viewModelScope.launch {
+            if (normalized.wakeWord && app != null &&
+                !com.localfirst.assistant.phone.PermissionBroker.isGranted(app, android.Manifest.permission.RECORD_AUDIO) &&
+                !com.localfirst.assistant.phone.PermissionBroker.ensure(app, android.Manifest.permission.RECORD_AUDIO)) {
+                val reverted = normalized.copy(wakeWord = false)
+                settingsStore.save(reverted)
+                _state.update { it.copy(settings = reverted, error = "Microphone permission is needed for the wake phrase; it was left off.") }
+            }
+            syncWakeWord()
+        }
     }
 
     companion object {

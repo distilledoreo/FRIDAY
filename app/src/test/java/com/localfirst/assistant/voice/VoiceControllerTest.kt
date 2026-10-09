@@ -26,6 +26,7 @@ class VoiceControllerTest {
     private val speaker = FakeSpeaker()
     private val heard = mutableListOf<ListenResult>()
     private val listens = mutableListOf<Int>()
+    private val silences = mutableListOf<Long>()
     private var bargeIn = CompletableDeferred<Unit>()
     private var stopCalls = 0
     private val answers = mutableListOf<Boolean>()
@@ -72,8 +73,9 @@ class VoiceControllerTest {
     private val io by lazy {
         VoiceIo(
             input = object : SpeechInput {
-                override suspend fun listen(onPartial: (String) -> Unit, onLevel: (Float) -> Unit): ListenResult {
+                override suspend fun listen(onPartial: (String) -> Unit, onLevel: (Float) -> Unit, completeSilenceMs: Long): ListenResult {
                     synchronized(listens) { listens += listens.size }
+                    synchronized(silences) { silences += completeSilenceMs }
                     delay(20)
                     return synchronized(heard) { if (heard.isEmpty()) ListenResult.Silence else heard.removeAt(0) }
                 }
@@ -117,6 +119,16 @@ class VoiceControllerTest {
         // One listen that heard something, then two quiet ones before pausing.
         assertEquals(3, listens.size)
         assertEquals("Tap to talk.", controller.state.value?.note)
+    }
+
+    @Test
+    fun voiceTurnsEndSoonerThanYesNoConfirmations() = runBlocking {
+        heard += ListenResult.Heard("hello there")
+        controller.start()
+        withTimeout(5_000) { controller.state.first { it?.phase == VoicePhase.PAUSED } }
+
+        val first = synchronized(silences) { silences.firstOrNull() }
+        assertEquals(VoiceController.VOICE_SILENCE_MS, first)
     }
 
     @Test
