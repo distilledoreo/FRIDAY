@@ -37,6 +37,15 @@ object TaskNotifications {
 
 /** Android chooses polling time; results are durable on the PC while the phone is offline. */
 class TaskPollService : JobService() {
+    companion object {
+        /** Unanswered PC approvals re-alert this often until answered or cleared. */
+        const val PC_REMIND_MS = 2 * 60 * 60 * 1000L
+
+        fun sha256Hex(text: String): String {
+            val digest = java.security.MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))
+            return digest.joinToString("") { "%02x".format(it) }
+        }
+    }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var running: Job? = null
     override fun onStartJob(params: JobParameters): Boolean {
@@ -85,8 +94,8 @@ class TaskPollService : JobService() {
                                 val text = report?.optJSONObject("result")?.optString("text").orEmpty()
                                 val watchKey = "watch-$parentId"
                                 prefs.edit().putString(key, signature).apply()
-                                if (text.isNotBlank() && prefs.getString(watchKey, null) != text.hashCode().toString()) {
-                                    prefs.edit().putString(watchKey, text.hashCode().toString()).apply()
+                                if (text.isNotBlank() && prefs.getString(watchKey, null) != sha256Hex(text)) {
+                                    prefs.edit().putString(watchKey, sha256Hex(text)).apply()
                                     val open = PendingIntent.getActivity(this@TaskPollService, watchKey.hashCode(),
                                         Intent(this@TaskPollService, MainActivity::class.java).setAction("com.localfirst.assistant.ACTIVITY"),
                                         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -124,37 +133,48 @@ class TaskPollService : JobService() {
                         val pcStatus = JSONObject(client.request("/workspace/pc/status"))
                         if (pcStatus.optBoolean("enabled")) {
                             val approvals = runCatching { JSONObject(client.request("/workspace/pc/approvals")) }.getOrNull()
+                            // Unanswered approvals re-alert until answered or cleared; answered ones are forgotten.
+                            val pendingKeys = mutableSetOf<String>()
                             approvals?.optJSONArray("permissions")?.let { permissions ->
                                 for (i in 0 until permissions.length()) {
                                     val request = permissions.optJSONObject(i) ?: continue
                                     val key = "pcperm-${request.optString("id")}"
-                                    if (prefs.contains(key) || sent >= 5) continue
-                                    val open = PendingIntent.getActivity(this@TaskPollService, key.hashCode(),
-                                        Intent(this@TaskPollService, MainActivity::class.java).setAction("com.localfirst.assistant.ACTIVITY"),
-                                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-                                    val notification = NotificationCompat.Builder(this@TaskPollService, TaskNotifications.CHANNEL)
-                                        .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("FRIDAY needs your permission")
-                                        .setContentText(request.optString("detail").ifBlank { "A PC task is waiting for approval." }.take(180))
-                                        .setContentIntent(open).setAutoCancel(true).build()
-                                    manager.notify(key.hashCode(), notification)
-                                    prefs.edit().putLong(key, System.currentTimeMillis()).apply(); sent++
+                                    pendingKeys += key
+                                    val firstSeen = prefs.getLong(key, 0L)
+                                    if ((firstSeen == 0L || System.currentTimeMillis() - firstSeen >= PC_REMIND_MS) && sent < 5) {
+                                        val open = PendingIntent.getActivity(this@TaskPollService, key.hashCode(),
+                                            Intent(this@TaskPollService, MainActivity::class.java).setAction("com.localfirst.assistant.ACTIVITY"),
+                                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                                        val notification = NotificationCompat.Builder(this@TaskPollService, TaskNotifications.CHANNEL)
+                                            .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("FRIDAY needs your permission")
+                                            .setContentText(request.optString("detail").ifBlank { "A PC task is waiting for approval." }.take(180))
+                                            .setContentIntent(open).setAutoCancel(true).build()
+                                        manager.notify(key.hashCode(), notification)
+                                        prefs.edit().putLong(key, System.currentTimeMillis()).apply(); sent++
+                                    }
                                 }
                             }
                             approvals?.optJSONArray("questions")?.let { questions ->
                                 for (i in 0 until questions.length()) {
                                     val request = questions.optJSONObject(i) ?: continue
                                     val key = "pcq-${request.optString("id")}"
-                                    if (prefs.contains(key) || sent >= 5) continue
-                                    val open = PendingIntent.getActivity(this@TaskPollService, key.hashCode(),
-                                        Intent(this@TaskPollService, MainActivity::class.java).setAction("com.localfirst.assistant.ACTIVITY"),
-                                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-                                    val notification = NotificationCompat.Builder(this@TaskPollService, TaskNotifications.CHANNEL)
-                                        .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("FRIDAY has a question")
-                                        .setContentText("A PC task needs your answer. Open FRIDAY to reply.".take(180))
-                                        .setContentIntent(open).setAutoCancel(true).build()
-                                    manager.notify(key.hashCode(), notification)
-                                    prefs.edit().putLong(key, System.currentTimeMillis()).apply(); sent++
+                                    pendingKeys += key
+                                    val firstSeen = prefs.getLong(key, 0L)
+                                    if ((firstSeen == 0L || System.currentTimeMillis() - firstSeen >= PC_REMIND_MS) && sent < 5) {
+                                        val open = PendingIntent.getActivity(this@TaskPollService, key.hashCode(),
+                                            Intent(this@TaskPollService, MainActivity::class.java).setAction("com.localfirst.assistant.ACTIVITY"),
+                                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                                        val notification = NotificationCompat.Builder(this@TaskPollService, TaskNotifications.CHANNEL)
+                                            .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("FRIDAY has a question")
+                                            .setContentText("A PC task needs your answer. Open FRIDAY to reply.".take(180))
+                                            .setContentIntent(open).setAutoCancel(true).build()
+                                        manager.notify(key.hashCode(), notification)
+                                        prefs.edit().putLong(key, System.currentTimeMillis()).apply(); sent++
+                                    }
                                 }
+                            }
+                            prefs.all.keys.filter { (it.startsWith("pcperm-") || it.startsWith("pcq-")) && it !in pendingKeys }.forEach {
+                                prefs.edit().remove(it).apply()
                             }
                             val sessions = runCatching { JSONArray(client.request("/workspace/pc/sessions")) }.getOrNull() ?: JSONArray()
                             for (i in 0 until sessions.length()) {

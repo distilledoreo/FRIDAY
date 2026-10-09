@@ -53,7 +53,7 @@ class FakePc(PcAgent):
 
     def add(self, identifier='ses_owned'):
         with self.db() as db:
-            db.execute('INSERT INTO sessions VALUES(?,?,?,?,?,?)', (identifier, 'test', 'Synthetic task', time.time(), 0, 'busy'))
+            db.execute('INSERT INTO sessions(id, source, title, created, model, state) VALUES(?,?,?,?,?,?)', (identifier, 'test', 'Synthetic task', time.time(), 0, 'busy'))
         return identifier
 
 
@@ -175,6 +175,21 @@ class PcTests(unittest.IsolatedAsyncioTestCase):
         with self.pc.db() as db: db.execute('UPDATE pc_schedules SET next_run=? WHERE id=?', (time.time() - 1, kept['id']))
         self.assertEqual(await self.pc.run_due_schedules(), [])
         self.assertEqual(len(self.pc.scheduled()), 1)
+
+    async def test_failed_schedule_run_refunds_one_repeat_capped_at_max(self):
+        created = self.pc.schedule(PcSchedule(prompt='Owned flaky check', run_at=time.time() + 3600, interval_seconds=900, max_runs=3))
+        with self.pc.db() as db: db.execute('UPDATE pc_schedules SET next_run=? WHERE id=?', (time.time() - 1, created['id']))
+        started = await self.pc.run_due_schedules()
+        self.assertEqual(self.pc.scheduled()[0]['remaining'], 2)
+        with self.pc.db() as db: db.execute("UPDATE sessions SET state='error' WHERE id=?", (started[0]['session'],))
+        await self.pc.run_due_schedules()
+        self.assertEqual(self.pc.scheduled()[0]['remaining'], 3)
+        # The same failure refunds only once, and never past max_runs.
+        await self.pc.run_due_schedules()
+        self.assertEqual(self.pc.scheduled()[0]['remaining'], 3)
+        with self.pc.db() as db: db.execute("UPDATE sessions SET state='error', refunded=0, schedule=? WHERE id=?", (created['id'], self.session))
+        await self.pc.run_due_schedules()
+        self.assertEqual(self.pc.scheduled()[0]['remaining'], 3)
 
     async def test_idempotent_start_does_not_repeat_work_and_conflicting_payload_fails(self):
         prompt = Prompt(prompt='Owned fixture', request_id='owned-1')

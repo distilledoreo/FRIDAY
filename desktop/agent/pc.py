@@ -182,7 +182,12 @@ class PcAgent:
             db.execute("UPDATE sessions SET state='interrupted' WHERE state='busy'")
             db.execute('CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY,digest TEXT NOT NULL,session TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS session_models(session TEXT PRIMARY KEY,chain TEXT NOT NULL)')
-            db.execute('CREATE TABLE IF NOT EXISTS pc_schedules(id TEXT PRIMARY KEY, prompt TEXT NOT NULL, title TEXT, source TEXT NOT NULL, next_run REAL NOT NULL, interval_seconds INTEGER NOT NULL, remaining INTEGER NOT NULL, created REAL NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS pc_schedules(id TEXT PRIMARY KEY, prompt TEXT NOT NULL, title TEXT, source TEXT NOT NULL, next_run REAL NOT NULL, interval_seconds INTEGER NOT NULL, remaining INTEGER NOT NULL, created REAL NOT NULL, max_runs INTEGER NOT NULL)')
+            # Failed schedule runs refund one repeat; these columns link error sessions back to their schedule.
+            with contextlib.suppress(sqlite3.OperationalError):
+                db.execute('ALTER TABLE sessions ADD COLUMN schedule TEXT')
+            with contextlib.suppress(sqlite3.OperationalError):
+                db.execute('ALTER TABLE sessions ADD COLUMN refunded INTEGER DEFAULT 0')
             # Preserve the old index-based model identity when upgrading an existing install.
             with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
                 config = json.loads(self.config_path.read_text())
@@ -472,7 +477,7 @@ class PcAgent:
             if sum(s['state'] == 'busy' for s in self.sessions(200)) >= 4: raise HTTPException(409, 'Four PC tasks are already active')
             session = await self.call('POST', '/session', json={'title': body.title or body.prompt[:60], 'agent': 'friday', 'permission': ruleset(settings)})
             with self.db() as db:
-                db.execute('INSERT INTO sessions VALUES(?,?,?,?,?,?)', (session['id'], body.source, session.get('title'), time.time(), 0, 'busy'))
+                db.execute('INSERT INTO sessions(id, source, title, created, model, state) VALUES(?,?,?,?,?,?)', (session['id'], body.source, session.get('title'), time.time(), 0, 'busy'))
                 if body.request_id: db.execute('INSERT INTO requests VALUES(?,?,?)', (body.request_id, digest, session['id']))
             try: await self.send(session['id'], body.prompt)
             except Exception:
@@ -641,7 +646,7 @@ class PcAgent:
         except (ZoneInfoNotFoundError, TypeError, ValueError): raise HTTPException(422, 'Invalid time zone')
         identifier = secrets.token_hex(16)
         with self.db() as db:
-            db.execute('INSERT INTO pc_schedules VALUES(?,?,?,?,?,?,?,?)', (identifier, body.prompt, body.title, 'schedule', when, interval, count, time.time()))
+            db.execute('INSERT INTO pc_schedules VALUES(?,?,?,?,?,?,?,?,?)', (identifier, body.prompt, body.title, 'schedule', when, interval, count, time.time(), count))
         return {'id': identifier, 'next_run': when, 'remaining': count}
 
     def scheduled(self, limit=30):
@@ -657,8 +662,14 @@ class PcAgent:
 
     async def run_due_schedules(self):
         """Start one session per due schedule. Idempotent per (schedule, due time); failures and a
-        full task queue retry on the next tick without consuming the run."""
+        full task queue retry on the next tick without consuming the run. A run that starts and
+        then fails refunds one repeat, capped at its max_runs."""
         if not self.settings()['enabled']: return []
+        with self.db() as db:
+            failed = [dict(row) for row in db.execute("SELECT id, schedule FROM sessions WHERE state='error' AND refunded=0 AND schedule IS NOT NULL")]
+            for row in failed:
+                db.execute('UPDATE pc_schedules SET remaining = CASE WHEN remaining < max_runs THEN remaining + 1 ELSE remaining END WHERE id=?', (row['schedule'],))
+                db.execute('UPDATE sessions SET refunded=1 WHERE id=?', (row['id'],))
         now = time.time()
         with self.db() as db:
             due = [dict(row) for row in db.execute('SELECT * FROM pc_schedules WHERE remaining>0 AND next_run<=? ORDER BY next_run LIMIT 5', (now,))]
@@ -670,6 +681,7 @@ class PcAgent:
             except HTTPException:
                 continue
             with self.db() as db:
+                db.execute('UPDATE sessions SET schedule=? WHERE id=?', (row['id'], result['id']))
                 if row['interval_seconds']:
                     skipped = max(0, int((time.time() - row['next_run']) // row['interval_seconds']))
                     db.execute('UPDATE pc_schedules SET next_run=?, remaining=? WHERE id=?',
