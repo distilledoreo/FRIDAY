@@ -68,6 +68,12 @@ internal fun AppearancePage() {
                 Switch(settings.reducedMotion,{save(settings.copy(reducedMotion=it))},Modifier.semantics { contentDescription="Reduce motion" })
             }
         }
+        AppearanceGroup("Answers") {
+            Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) { Text("Interactive answers",style=MaterialTheme.typography.bodyLarge);Text("FRIDAY can answer with live controls, charts, forms and small apps that work right in the chat. Off keeps answers as text.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }
+                Switch(settings.interactiveAnswers,{save(settings.copy(interactiveAnswers=it))},Modifier.semantics { contentDescription="Interactive answers" })
+            }
+        }
     }
 }
 

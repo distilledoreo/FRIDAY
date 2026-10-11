@@ -22,7 +22,8 @@ class GroundedWebSearchTool(private val client: WorkspaceGateway) : Tool {
                 contentRead = value["status"]?.jsonPrimitive?.content == "retrieved" && value["passages"]?.jsonArray?.isNotEmpty() == true)
         }
         val success = evidence.isNotEmpty()
-        return ToolExecutionResult(success, text, sources)
+        // Each result carries a ref id the interface language can bind and cite.
+        return ToolExecutionResult(success, com.localfirst.assistant.genui.UiBindings.withRefs(text), sources)
     }
 }
 
@@ -47,7 +48,7 @@ class PublicPageTool(private val client: WorkspaceGateway) : Tool {
         val result = JsonCodec.json.parseToJsonElement(text).jsonObject
         val finalUrl = result.getValue("url").jsonPrimitive.content
         require(safePublicUrl(finalUrl))
-        return ToolExecutionResult(true, text, listOf(SourceLink(result["title"]?.jsonPrimitive?.content.orEmpty().ifBlank { finalUrl }, finalUrl,
+        return ToolExecutionResult(true, com.localfirst.assistant.genui.UiBindings.withRefs(text), listOf(SourceLink(result["title"]?.jsonPrimitive?.content.orEmpty().ifBlank { finalUrl }, finalUrl,
             contentRead = result["passages"]?.jsonArray?.isNotEmpty() == true)))
     }
 }

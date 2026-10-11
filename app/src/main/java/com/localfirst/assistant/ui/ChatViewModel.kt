@@ -221,7 +221,27 @@ class ChatViewModel(
     /** Codex-style phone use: per-conversation sessions and the driver behind them. */
     private val phoneUse: com.localfirst.assistant.phone.PhoneUseController? = null,
     private val phoneUseDriver: com.localfirst.assistant.tools.phoneuse.PhoneUseDriver? = null,
+    /** Appearance preferences; interactive answers can be turned off there. */
+    private val appearance: () -> com.localfirst.assistant.settings.AppearanceSettings = { com.localfirst.assistant.settings.AppearanceSettings() },
 ) : ViewModel() {
+    /** Interface replies (Intelligent UI): runtimes, saved state and images. */
+    internal val genUiSessions = com.localfirst.assistant.ui.genui.GenUiSessions(app?.let { File(it.filesDir, "genui-state") })
+    private val genUiImages = app?.let { com.localfirst.assistant.ui.genui.GenUiImageService(it, settingsStore::load) }
+
+    /** Interface replies key their saved state by conversation; a new chat is a draft until saved. */
+    private val genUiConversation: String get() = _state.value.conversationId ?: if (_state.value.privacy.incognito) "incognito" else "draft"
+
+    internal fun genUiHost(bindings: Map<String, Any?>): com.localfirst.assistant.ui.genui.GenUiHost? =
+        if (!appearance().interactiveAnswers) null
+        else com.localfirst.assistant.ui.genui.GenUiHost(genUiSessions, genUiImages, genUiConversation, bindings, ::sendInterfaceMessage)
+
+    /** A button in an interface reply sends text as the user's next message (GenUI.issueNewTurn). */
+    private fun sendInterfaceMessage(text: String): Boolean {
+        if (_state.value.busy || _state.value.workspaceBusy) return false
+        sendSuggestion(text)
+        return true
+    }
+
     private var approval: CompletableDeferred<ApprovalAnswer>? = null
 
     /** Shows [card] and suspends the turn until the user answers it. Stop cancels it. */
@@ -590,7 +610,7 @@ class ChatViewModel(
     private fun carReply(state: ChatUiState): String {
         val lastUser = state.messages.indexOfLast { it is Message.User }
         val reply = SpeechText.fromMarkdown(
-            com.localfirst.assistant.presentation.UiBlocks.plainText(state.messages.drop(lastUser + 1).filterIsInstance<Message.Assistant>().joinToString("\n\n") { it.content }),
+            com.localfirst.assistant.presentation.ReplyText.plain(state.messages.drop(lastUser + 1).filterIsInstance<Message.Assistant>().joinToString("\n\n") { it.content }),
         ).trim()
         return when {
             reply.isEmpty() -> state.error?.let { "Sorry, that didn't work: $it" } ?: "Sorry, I didn't get an answer."
@@ -650,6 +670,10 @@ class ChatViewModel(
         catch (e: Exception) { _state.update { it.copy(error = "Couldn't read saved knowledge: ${e.message}") }; return }
         (provider as? com.localfirst.assistant.model.OpenAiCompatibleModelProvider)?.incognito = _state.value.privacy.incognito
         session.latestUserNote = AssistantPrompts.timeNote(now)
+        // What the user changed in the last interface reply, so the model knows ("seats = 9").
+        session.snapshot().indexOfLast { it is Message.Assistant }.takeIf { it >= 0 }
+            ?.let { genUiSessions.noteFor(genUiConversation, it) }
+            ?.let { session.latestUserNote = "${session.latestUserNote}\n[$it]" }
         _state.update { it.copy(busy = true, error = null, turnMessagesReady = false) }
         holdForeground()
         phoneUse?.current?.beginTurn()
@@ -806,6 +830,7 @@ class ChatViewModel(
                 val files = messages.filterIsInstance<Message.User>().flatMap { it.attachments }
                 conversationStore.delete(id)
                 attachments?.delete(files)
+                genUiSessions.forget(id)
                 // Phone-use screenshots kept for the transcript go with the chat.
                 messages.filterIsInstance<Message.ToolResult>().mapNotNull { it.image }.forEach { File(it).delete() }
             }
@@ -860,6 +885,8 @@ class ChatViewModel(
         clearDraftAttachments()
         session = newSession(emptyList())
         newPhoneUseSession()
+        genUiSessions.forget("draft")
+        genUiSessions.forget("incognito")
         _state.update {
             it.copy(
                 conversationId = null,
@@ -890,6 +917,7 @@ class ChatViewModel(
         }
         val summary = ConversationSummary(id = id, title = title, createdAt = createdAt, updatedAt = now, projectId = current.projectId)
         withContext(Dispatchers.IO) { conversationStore.save(StoredConversation(summary, messages)) }
+        if (current.conversationId == null) genUiSessions.rename("draft", id)
         _state.update { if (it.conversationId == null || it.conversationId == id) it.copy(conversationId = id, title = title) else it }
         refreshConversationList()
     }
@@ -919,7 +947,7 @@ class ChatViewModel(
 
     /** The system prompt a turn starts from (before recalled memories), shared with [primeOpening] so they always match. */
     private fun openingPrompt(now: ZonedDateTime): String =
-        AssistantPrompts.system(now) + (if (_state.value.privacy.freshSlate) "" else knowledgeStore?.context(_state.value.projectId, includeMemories = workspace == null).orEmpty())
+        AssistantPrompts.system(now, interactiveAnswers = appearance().interactiveAnswers) + (if (_state.value.privacy.freshSlate) "" else knowledgeStore?.context(_state.value.projectId, includeMemories = workspace == null).orEmpty())
 
     private var primeJob: Job? = null
 
@@ -1177,7 +1205,7 @@ class ChatViewModel(
 
     /** Opens an answer in the canvas editor. */
     fun openCanvas(text: String) {
-        val plain = com.localfirst.assistant.presentation.UiBlocks.plainText(text).trim().take(20000)
+        val plain = com.localfirst.assistant.presentation.ReplyText.plain(text).trim().take(20000)
         if (plain.isBlank() || _state.value.busy) return
         _state.update { it.copy(canvas = CanvasDoc(it.title.take(80), plain)) }
     }
@@ -1205,7 +1233,7 @@ class ChatViewModel(
     fun saveAnswerFeedback(question: String, answer: String, liked: Boolean) {
         if (_state.value.workspaceBusy || _state.value.privacy.incognito) return
         val text = ((if (liked) "User liked this answer; reuse the style. " else "User disliked this answer; avoid this style. ") +
-            "Q: ${question.trim().take(300)} A: ${com.localfirst.assistant.presentation.UiBlocks.plainText(answer).trim().take(500)}").take(900)
+            "Q: ${question.trim().take(300)} A: ${com.localfirst.assistant.presentation.ReplyText.plain(answer).trim().take(500)}").take(900)
         workspaceAction {
             val client = workspace ?: error("PC memory unavailable.")
             val query = Uri.encode(question.trim().take(100).ifBlank { text.take(100) })
@@ -1990,6 +2018,7 @@ class ChatViewModelFactory(
             app = app,
             phoneUse = phoneUse,
             phoneUseDriver = phoneUseDriver,
+            appearance = com.localfirst.assistant.settings.AppearanceSettingsStore(app).state::value,
         ).also { created = it } as T
     }
 }

@@ -5,6 +5,7 @@
     /fetch   -> Crawl4AI   (page as markdown)
     /transcribe, /speak, /voice -> Parakeet v3 speech-to-text and Paradee text-to-speech, on this machine
     /extract -> text from attached documents (PDF, Word, text/code); page images for scanned PDFs
+    /images, /image -> image search and a public-image proxy for interface replies (AsyncImage)
 
 Every route except /health needs `Authorization: Bearer $ASSISTANT_API_TOKEN`.
 /v1/chat/completions and /v1/models are aliases so OpenAI-style clients work as-is.
@@ -235,6 +236,66 @@ async def fetch(req: FetchRequest):
     doc = await crawl(req.url)
     md = doc.pop("markdown")
     return {**doc, "markdown": md[: req.max_chars], "truncated": len(md) > req.max_chars}
+
+
+# ---- images for interface replies --------------------------------------------
+# The model describes a picture (<AsyncImage query="…"/>); the phone asks here for matching images and
+# loads them through /image, so it never contacts third-party image hosts directly.
+
+IMAGE_MAX_BYTES = 8 * 1024 * 1024
+IMAGE_TYPES = ("image/jpeg", "image/png", "image/webp", "image/gif", "image/avif", "image/heic")
+
+
+@app.get("/images", dependencies=auth)
+async def images(q: str, n: int = 6):
+    query = q.strip()[:300]
+    if not query:
+        raise HTTPException(400, "query is empty")
+    data = await searxng({"q": query, "categories": "images", "safesearch": 1})
+    results = []
+    for x in data.get("results", []):
+        src = x.get("img_src") or ""
+        if not src.startswith("https://"):
+            continue
+        thumb = x.get("thumbnail_src") or ""
+        results.append({
+            "image": src,
+            "thumbnail": thumb if thumb.startswith("https://") else src,
+            "title": (x.get("title") or "")[:200],
+            "source": x.get("url") or "",
+            "size": x.get("resolution") or x.get("img_format") or "",
+        })
+        if len(results) >= max(1, min(n, 12)):
+            break
+    return {"query": query, "results": results}
+
+
+@app.get("/image", dependencies=auth)
+async def image(url: str):
+    """One public raster image, at most 8 MB. Each redirect hop is checked like the first URL."""
+    target = url
+    for _ in range(4):
+        check_public_url(target)
+        try:
+            async with http.stream("GET", target, follow_redirects=False, headers={"User-Agent": "FRIDAY image fetch"},
+                                   timeout=httpx.Timeout(10.0, read=20.0)) as r:
+                if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
+                    target = str(httpx.URL(target).join(r.headers["location"]))
+                    continue
+                if r.status_code != 200:
+                    raise HTTPException(502, f"image host answered {r.status_code}")
+                kind = r.headers.get("content-type", "").split(";")[0].strip().lower()
+                if kind not in IMAGE_TYPES:
+                    raise HTTPException(415, "not a raster image")
+                body = bytearray()
+                async for chunk in r.aiter_bytes():
+                    body += chunk
+                    if len(body) > IMAGE_MAX_BYTES:
+                        raise HTTPException(413, "image is larger than 8 MB")
+                return Response(bytes(body), media_type=kind, headers={"Cache-Control": "private, max-age=86400"})
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"image unavailable: {e.__class__.__name__}")
+    raise HTTPException(502, "too many redirects")
 
 
 # ---- voice ----------------------------------------------------------------

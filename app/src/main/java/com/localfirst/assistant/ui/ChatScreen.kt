@@ -154,6 +154,12 @@ fun ChatScreen(viewModel: ChatViewModel) {
     val lastQuestion = remember(state.messages) {
         (state.messages.lastOrNull { it is com.localfirst.assistant.conversation.Message.User } as? com.localfirst.assistant.conversation.Message.User)?.content
     }
+    // Tool results the interface replies may reference; recomputed only when a result is added.
+    val bindings = remember(state.conversationId, state.messages.count { it is com.localfirst.assistant.conversation.Message.ToolResult }) {
+        com.localfirst.assistant.genui.UiBindings.from(state.messages)
+    }
+    val appearance = com.localfirst.assistant.ui.theme.LocalAppearance.current
+    val genUi = remember(state.conversationId, state.privacy.incognito, bindings, appearance.interactiveAnswers) { viewModel.genUiHost(bindings) }
     val chatPcIds = remember(state.messages) { viewModel.chatPcIds() }
     LaunchedEffect(chatPcIds.joinToString(",")) {
         if (chatPcIds.isNotEmpty() && !state.privacy.incognito) viewModel.refreshChatPc(chatPcIds)
@@ -355,6 +361,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                                     onCanvas = viewModel::openCanvas,
                                     onShare = viewModel::shareText,
                                     onFeedback = { liked -> lastQuestion?.let { viewModel.saveAnswerFeedback(it, item.text, liked) } },
+                                    genUi = genUi,
                                 )
                                 is TranscriptItem.ToolActivity -> if (item.steps.all(com.localfirst.assistant.presentation.PhoneUseActivity::isPhoneUse)) PhoneUseActivityCard(item) else ToolActivityCard(item, viewModel::loadImage, viewModel::openArtifact, { FridayTaskCard(it, state, viewModel) }, { PcChatCard(it, state, viewModel) })
                                 TranscriptItem.Thinking -> ThinkingIndicator()
