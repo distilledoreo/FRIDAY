@@ -33,11 +33,20 @@ fun phoneTools(phone: PhoneActions, now: () -> LocalDateTime = LocalDateTime::no
 private fun accessibilityTools(accessibility: PhoneAccessibilityActions): List<Tool> = listOf(
     ReadPhoneScreenTool(accessibility),
     ControlPhoneScreenTool(accessibility),
+    CapturePhoneScreenTool,
 )
+
+private object CapturePhoneScreenTool : PhoneTool(
+    name = "capture_phone_screen",
+    description = "Capture and inspect the current phone screen visually using the user's active screen share. This sends one fresh image to the current conversation. Use it only when visual details are genuinely needed (layout, colors, images, unusual UI) or the screen may have changed since your last view; prefer read_phone_screen for visible text and never capture after routine actions. Requires screen sharing to be active.",
+    inputSchema = objectSchema { },
+) {
+    override suspend fun run(args: JsonObject) = "Requested a fresh screen image."
+}
 
 private class ReadPhoneScreenTool(private val accessibility: PhoneAccessibilityActions) : PhoneTool(
     name = "read_phone_screen",
-    description = "Read visible, non-password text and clickable element bounds on the phone's current screen. Requires the user to enable FRIDAY's accessibility service in Android Settings. Screen content is returned to the current chat model.",
+    description = "Read visible, non-password text and clickable bounds on the phone's current screen. The result states the active coordinate system and exact width/height; use those pixels for touch calls — tap the exact pixel center of an element's reported bounds. When screen sharing is active, bounds match the resized screenshot. Requires FRIDAY's accessibility service.",
     inputSchema = objectSchema { },
 ) {
     override suspend fun run(args: JsonObject) = accessibility.readScreen()
@@ -45,15 +54,17 @@ private class ReadPhoneScreenTool(private val accessibility: PhoneAccessibilityA
 
 private class ControlPhoneScreenTool(private val accessibility: PhoneAccessibilityActions) : PhoneTool(
     name = "control_phone_screen",
-    description = "Control the phone screen using a tap, swipe, replacement text in the focused field, or Android global action. Coordinates are normalized from 0 (left/top) to 1000 (right/bottom); use clickable bounds from read_phone_screen. The first action requires user approval; approval covers subsequent phone-control actions in this conversation. Requires FRIDAY accessibility to be enabled.",
+    description = "Control the phone screen using a tap, swipe, replacement text in the focused field, or Android global action. With active screen sharing, use exact pixel coordinates and screen_width/screen_height from the latest shared screenshot; FRIDAY maps image pixels to Android display pixels. Without screen sharing, use the pixel bounds/dimensions from read_phone_screen, not an uploaded image. Aim taps at the exact center of the element's reported bounds (left+right)/2,(top+bottom)/2, never an offset guess or a remembered position. Bounds describe the screen as it was when they were read: reuse them freely for follow-up actions that land in the same view, and check with read_phone_screen first only when the screen may have changed since (a navigation, dialog or animation you caused or expect). Make one phone UI action per response; inspect the screen with read_phone_screen when a result is unexpected or your screen knowledge may be stale. Do not re-read after every action when the view is clearly unchanged. The tool reports both coordinate spaces. Requires FRIDAY accessibility to be enabled.",
     inputSchema = objectSchema {
         string("action", "Action to perform.", required = true, enum = listOf("tap", "swipe", "enter_text", "back", "home", "recents", "notifications", "quick_settings", "power_dialog", "lock_screen"))
-        integer("x", "Tap x coordinate from 0 to 1000.", min = 0, max = 1000)
-        integer("y", "Tap y coordinate from 0 to 1000.", min = 0, max = 1000)
-        integer("from_x", "Swipe start x coordinate from 0 to 1000.", min = 0, max = 1000)
-        integer("from_y", "Swipe start y coordinate from 0 to 1000.", min = 0, max = 1000)
-        integer("to_x", "Swipe end x coordinate from 0 to 1000.", min = 0, max = 1000)
-        integer("to_y", "Swipe end y coordinate from 0 to 1000.", min = 0, max = 1000)
+        integer("x", "Tap x pixel coordinate within the current screenshot or display.", min = 0, max = 10000)
+        integer("y", "Tap y pixel coordinate within the current screenshot or display.", min = 0, max = 10000)
+        integer("from_x", "Swipe start x pixel coordinate.", min = 0, max = 10000)
+        integer("from_y", "Swipe start y pixel coordinate.", min = 0, max = 10000)
+        integer("to_x", "Swipe end x pixel coordinate.", min = 0, max = 10000)
+        integer("to_y", "Swipe end y pixel coordinate.", min = 0, max = 10000)
+        integer("screen_width", "Required for tap and swipe: width in pixels of the coordinate space returned by read_phone_screen or shown in the current screenshot.", min = 1, max = 10000)
+        integer("screen_height", "Required for tap and swipe: height in pixels of the coordinate space returned by read_phone_screen or shown in the current screenshot.", min = 1, max = 10000)
         integer("duration_ms", "Swipe duration in milliseconds, 100 to 2000. Defaults to 400.", min = 100, max = 2000)
         string("text", "Text to enter into the currently focused field; max 1000 characters.")
     },
@@ -63,10 +74,10 @@ private class ControlPhoneScreenTool(private val accessibility: PhoneAccessibili
     override suspend fun confirmationPrompt(arguments: JsonObject): String {
         val action = Args.string(arguments, "action", maxLength = 30)
         return when (action) {
-            "tap" -> "Tap the phone screen at (${Args.int(arguments, "x", 0..1000)}, ${Args.int(arguments, "y", 0..1000)})"
+            "tap" -> "Tap the phone screen at pixel (${Args.int(arguments, "x", 0..10000)}, ${Args.int(arguments, "y", 0..10000)})"
             "swipe" -> {
                 Args.optionalInt(arguments, "duration_ms", 100..2000)
-                "Swipe on the phone screen from (${Args.int(arguments, "from_x", 0..1000)}, ${Args.int(arguments, "from_y", 0..1000)}) to (${Args.int(arguments, "to_x", 0..1000)}, ${Args.int(arguments, "to_y", 0..1000)})"
+                "Swipe on the phone screen from pixel (${Args.int(arguments, "from_x", 0..10000)}, ${Args.int(arguments, "from_y", 0..10000)}) to (${Args.int(arguments, "to_x", 0..10000)}, ${Args.int(arguments, "to_y", 0..10000)})"
             }
             "enter_text" -> "Replace the focused phone field's text with: “${Args.string(arguments, "text", 1000)}”"
             else -> {
@@ -79,12 +90,26 @@ private class ControlPhoneScreenTool(private val accessibility: PhoneAccessibili
     }
 
     override suspend fun run(args: JsonObject): String = when (val action = Args.string(args, "action", maxLength = 30)) {
-        "tap" -> accessibility.tap(Args.int(args, "x", 0..1000), Args.int(args, "y", 0..1000))
-        "swipe" -> accessibility.swipe(
-            Args.int(args, "from_x", 0..1000), Args.int(args, "from_y", 0..1000),
-            Args.int(args, "to_x", 0..1000), Args.int(args, "to_y", 0..1000),
-            Args.optionalInt(args, "duration_ms", 100..2000) ?: 400,
-        )
+        "tap" -> {
+            val width = Args.int(args, "screen_width", 1..10000)
+            val height = Args.int(args, "screen_height", 1..10000)
+            val x = Args.int(args, "x", 0..10000)
+            val y = Args.int(args, "y", 0..10000)
+            if (x >= width || y >= height) throw IllegalArgumentException("Tap ($x,$y) is outside the supplied ${width}x$height coordinate space.")
+            accessibility.tap(x, y, width, height)
+        }
+        "swipe" -> {
+            val width = Args.int(args, "screen_width", 1..10000)
+            val height = Args.int(args, "screen_height", 1..10000)
+            val fromX = Args.int(args, "from_x", 0..10000)
+            val fromY = Args.int(args, "from_y", 0..10000)
+            val toX = Args.int(args, "to_x", 0..10000)
+            val toY = Args.int(args, "to_y", 0..10000)
+            if (listOf(fromX, toX).any { it >= width } || listOf(fromY, toY).any { it >= height }) {
+                throw IllegalArgumentException("Swipe coordinates are outside the supplied ${width}x$height coordinate space.")
+            }
+            accessibility.swipe(fromX, fromY, toX, toY, Args.optionalInt(args, "duration_ms", 100..2000) ?: 400, width, height)
+        }
         "enter_text" -> accessibility.enterText(Args.string(args, "text", maxLength = 1000))
         else -> accessibility.globalAction(GlobalPhoneAction.entries.firstOrNull { it.wireName == action }
             ?: throw IllegalArgumentException("Unsupported phone action '$action'."))

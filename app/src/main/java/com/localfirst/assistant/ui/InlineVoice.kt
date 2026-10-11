@@ -45,6 +45,7 @@ internal fun InlineVoice(
     sharingScreen: Boolean = false,
     onCamera: (() -> Unit)? = null,
     onShareScreen: (() -> Unit)? = null,
+    onMuteMic: (() -> Unit)? = null,
 ) {
     val palette = LocalFridayPalette.current
     val paused = voice.phase == VoicePhase.PAUSED
@@ -55,13 +56,16 @@ internal fun InlineVoice(
     ) {
         VoiceWave(voice.phase, voice.level)
         Text(
-            when (voice.phase) {
-                VoicePhase.STARTING -> "Starting microphone…"
-                VoicePhase.LISTENING -> "Listening"
-                VoicePhase.THINKING -> "Thinking"
-                VoicePhase.SPEAKING -> "Speaking"
-                VoicePhase.CONFIRMING -> "Your approval is needed"
-                VoicePhase.PAUSED -> "Voice paused"
+            when {
+                voice.micMuted && voice.phase != VoicePhase.PAUSED -> "Muted — FRIDAY still speaks, the mic is off"
+                else -> when (voice.phase) {
+                    VoicePhase.STARTING -> "Starting microphone…"
+                    VoicePhase.LISTENING -> "Listening"
+                    VoicePhase.THINKING -> "Thinking"
+                    VoicePhase.SPEAKING -> "Speaking"
+                    VoicePhase.CONFIRMING -> "Your approval is needed"
+                    VoicePhase.PAUSED -> "Voice paused"
+                }
             },
             Modifier.semantics { liveRegion = LiveRegionMode.Polite },
             style = MaterialTheme.typography.labelLarge,
@@ -87,6 +91,15 @@ internal fun InlineVoice(
             VoiceControl(if (paused) "Resume" else "Pause", if (paused) onResume else onPause) {
                 if (paused) Icon(Icons.Filled.PlayArrow, null, Modifier.size(24.dp))
                 else PauseGlyph(MaterialTheme.colorScheme.onSurface)
+            }
+            onMuteMic?.let { mute ->
+                val muted = voice.micMuted
+                VoiceControl(if (muted) "Unmute" else "Mute", mute,
+                    description = if (muted) "Turn the microphone back on" else "Turn the microphone off; FRIDAY keeps speaking but doesn't hear you",
+                    container = if (muted) (if (palette.dark) Color(0xFF3B3320) else Color(0xFFF7ECD4)) else null,
+                    content = if (muted) (if (palette.dark) Color(0xFFF0C95C) else Color(0xFF7A5D00)) else null) {
+                    Icon(if (muted) AppIcons.MicOff else LineIcons.Mic, null, Modifier.size(22.dp))
+                }
             }
             if (voice.phase == VoicePhase.SPEAKING || voice.phase == VoicePhase.THINKING) {
                 VoiceControl("Interrupt", onInterrupt) { Icon(AppIcons.Mic, null, Modifier.size(22.dp)) }

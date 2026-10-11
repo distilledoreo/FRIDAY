@@ -151,6 +151,7 @@ class DuplexAudio(
     private var captureJob: Job? = null
     private var track: AudioTrack? = null
     private val endpointer = Endpointer()
+    private var phoneMic = false
     private var previousMode = AudioManager.MODE_NORMAL
     private var usage = AudioAttributes.USAGE_VOICE_COMMUNICATION
     private var focusRequest: AudioFocusRequest? = null
@@ -171,6 +172,7 @@ class DuplexAudio(
 
     @Volatile private var ducked = false
     @Volatile private var duckedAt = 0L
+    @Volatile private var micMuted = false
 
     private class Spoken(val text: String, @Volatile var endedAt: Long = 0)
     private val spoken = ArrayDeque<Spoken>()
@@ -205,10 +207,35 @@ class DuplexAudio(
             routeOutput() in SPEAKERS_THE_MIC_HEARS
         }
         endpointer.playingExtraMargin = if (echoRisk) ECHO_RISK_MARGIN_DB else PLAYING_MARGIN_DB
+        this.phoneMic = phoneMic
+        if (!micMuted) startCapture()
+    }
+
+    private fun startCapture() {
+        if (captureJob?.isActive == true) return
         captureJob = scope.launch { capture(phoneMic) }
     }
 
+    /** Mic off (muted) while the assistant keeps speaking: stop, and drop what it had. */
+    override fun muteMic() {
+        micMuted = true
+        captureJob?.cancel()
+        captureJob = null
+        endpointer.reset()
+        while (probes.tryReceive().isSuccess) Unit
+        while (utterances.tryReceive().isSuccess) Unit
+        speechInProgress.value = false
+        level.value = 0f
+    }
+
+    override fun unmuteMic() {
+        if (!micMuted) return
+        micMuted = false
+        if (PermissionBroker.isGranted(context, Manifest.permission.RECORD_AUDIO)) startCapture()
+    }
+
     override fun release() {
+        micMuted = false
         captureJob?.cancel()
         captureJob = null
         stopPlayback()

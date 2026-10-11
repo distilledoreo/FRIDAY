@@ -54,21 +54,29 @@ class PhoneToolsTest {
 
         assertTrue(registry.definitions().any { it.name == "read_phone_screen" })
         assertTrue(registry.definitions().any { it.name == "control_phone_screen" })
+        assertTrue(registry.definitions().any { it.name == "capture_phone_screen" })
         assertEquals("Visible labels", registry.execute(ToolCall("r", "read_phone_screen", "{}")).content)
 
-        val call = ToolCall("c", "control_phone_screen", """{"action":"tap","x":240,"y":680}""")
+        val call = ToolCall("c", "control_phone_screen", """{"action":"tap","x":240,"y":680,"screen_width":1080,"screen_height":2400}""")
         assertTrue(registry.execute(call).content.contains("requires confirmation"))
         var prompt = ""
         val result = registry.execute(call, ToolConfirmer { request -> prompt = request.prompt; true })
         assertTrue(result.success)
-        assertEquals("Tap the phone screen at (240, 680)", prompt)
+        assertEquals("Tap the phone screen at pixel (240, 680)", prompt)
         assertEquals("tap 240,680", accessibility.calls.single())
 
         val invalid = registry.execute(
-            ToolCall("s", "control_phone_screen", """{"action":"swipe","from_x":0,"from_y":0,"to_x":1001,"to_y":0}"""),
+            ToolCall("s", "control_phone_screen", """{"action":"swipe","from_x":0,"from_y":0,"to_x":1001,"to_y":0,"screen_width":1000,"screen_height":1000}"""),
             ToolConfirmer { true },
         )
         assertFalse(invalid.success)
+
+        // Only touches need the coordinate space; global actions don't, and a tap without it is refused.
+        val control = registry.definitions().single { it.name == "control_phone_screen" }
+        assertFalse(control.inputSchema["required"].toString().contains("screen_width"))
+        assertTrue(registry.execute(ToolCall("b", "control_phone_screen", """{"action":"back"}"""), ToolConfirmer { true }).success)
+        assertEquals("back", accessibility.calls.last())
+        assertFalse(registry.execute(ToolCall("t", "control_phone_screen", """{"action":"tap","x":1,"y":1}"""), ToolConfirmer { true }).success)
     }
 
     @Test

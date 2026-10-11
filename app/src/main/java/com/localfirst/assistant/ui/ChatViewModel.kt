@@ -43,6 +43,7 @@ import com.localfirst.assistant.tools.GroundedWebSearchTool
 import com.localfirst.assistant.tools.phone.phoneTools
 import com.localfirst.assistant.voice.ScreenContextService
 import com.localfirst.assistant.voice.VoiceForegroundService
+import com.localfirst.assistant.voice.VoiceBubbleService
 import com.localfirst.assistant.car.CarMessaging
 import com.localfirst.assistant.voice.SpeechText
 import com.localfirst.assistant.voice.VoiceReplies
@@ -289,7 +290,7 @@ class ChatViewModel(
             viewModelScope.launch { client.imageStatus.collect { status -> _state.update { it.copy(imageStatus = status) } } }
         }
         if (app != null) viewModelScope.launch {
-            voiceState.collect { if (it == null) VoiceForegroundService.stop(app) }
+            voiceState.collect { it ?: run { VoiceForegroundService.stop(app); VoiceBubbleService.stop(app) } }
         }
         syncWakeWord()
     }
@@ -451,6 +452,7 @@ class ChatViewModel(
                         _state.update { it.copy(voiceError="Microphone permission is needed for voice. Allow it in Android app permissions, then try again.") };return@launch
                     }
                     VoiceForegroundService.start(app, ::closeVoice)
+                    app?.let(VoiceBubbleService::start)
                 }
                 voice?.start()
                 holdForeground()
@@ -461,8 +463,9 @@ class ChatViewModel(
         }
     }
 
-    fun closeVoice() { voice?.close(); app?.let(VoiceForegroundService::stop);_state.update { it.copy(voiceError=null) } }
+    fun closeVoice() { voice?.close(); app?.let(VoiceForegroundService::stop);app?.let(VoiceBubbleService::stop);_state.update { it.copy(voiceError=null) } }
     fun pauseVoiceFromChat() { voice?.pause("Voice paused. Resume when you're ready.") }
+    fun toggleMicMute() { voice?.muteMic(voice?.state?.value?.micMuted == false) }
     fun toggleVoice() { if(voice?.active == true) closeVoice() else startVoice() }
 
     private var dictationJob: Job? = null
@@ -492,9 +495,15 @@ class ChatViewModel(
         }
     }
 
-    /** Called when the app goes to the background, where Android blocks the mic. */
+    /** Called when the app goes to the background, where Android blocks the mic unless the foreground service holds it. */
     fun pauseVoice() {
-        if (!VoiceForegroundService.active.value && voice?.active == true) voice.pause("Paused while the app was in the background. Tap to talk.")
+        val context = app
+        if (VoiceForegroundService.active.value && context != null) {
+            // A foreground mic session keeps the mic: leave voice running and show the floating
+            // bubble — but not over a picker (camera, files) the user just opened from the app.
+            if (!attachmentPickerOpen && VoiceBubbleService.start(context)) return
+        }
+        if (voice?.active == true) voice.pause("Paused while the app was in the background. Tap to talk.")
     }
 
     fun interruptVoice() = voice?.interrupt()
@@ -578,7 +587,7 @@ class ChatViewModel(
     override fun onCleared() {
         clearDraftAttachments()
         voice?.shutdown()
-        app?.let { VoiceForegroundService.stop(it); ScreenContextService.stop(it) }
+        app?.let { VoiceForegroundService.stop(it); VoiceBubbleService.stop(it); ScreenContextService.stop(it) }
         super.onCleared()
     }
 
@@ -689,6 +698,9 @@ class ChatViewModel(
     private var attachmentPickerOpen = false
     fun setAttachmentPickerOpen(open: Boolean) { attachmentPickerOpen = open }
     fun onAppLeft() { if (_state.value.privacy.incognito && !attachmentPickerOpen) { closeVoice(); newChat() } }
+
+    /** The user returned to the app: the floating bubble hands control back to the inline voice panel. */
+    fun onAppResumed() { app?.let(VoiceBubbleService::stop) }
     fun startIncognito(freshSlate: Boolean = false) {
         if (_state.value.busy || _state.value.workspaceBusy) return
         viewModelScope.launch {
@@ -883,7 +895,11 @@ class ChatViewModel(
         initialMessages = messages,
         confirmer = confirmer,
         checkpoint = { persist() },
-    )
+    ).also { session ->
+        session.capturePhoneScreen = {
+            app?.let { ScreenContextService.captureFreshSnapshot(it, privacy.incognito) }
+        }
+    }
 
     fun searchHistory(query: String) { _state.update { it.copy(historyQuery = query) }; refreshConversationList() }
 

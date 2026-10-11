@@ -303,6 +303,25 @@ class VoiceControllerTest {
         assertTrue(spoken().contains("Timer set for ten minutes."))
     }
 
+    @Test fun mutingStopsTheMicAndKeepsVoiceModeOpenUntilUnmuted() = runBlocking {
+        heard += ListenResult.Heard("hello there")
+        controller.start()
+        withTimeout(5_000) { controller.state.first { it?.phase == VoicePhase.SPEAKING } }
+        val listensBeforeMute = synchronized(listens) { listens.size }
+        controller.muteMic(true)
+        withTimeout(5_000) { controller.state.first { it?.micMuted == true } }
+        // While muted no listening happens and voice mode neither pauses nor closes.
+        delay(200)
+        synchronized(listens) { assertEquals(listensBeforeMute, listens.size) }
+        assertTrue(controller.state.value?.micMuted == true)
+        controller.muteMic(false)
+        // Unmuting resumes the loop, which runs out its quiet silences and pauses as usual.
+        withTimeout(5_000) { controller.state.first { it?.phase == VoicePhase.PAUSED } }
+        assertTrue(controller.state.value?.micMuted == false)
+        synchronized(listens) { assertTrue(listens.size > listensBeforeMute) }
+        controller.close()
+    }
+
     @Test fun waitingForApprovalDoesNotAddFillerOnTopOfTheQuestion() = runBlocking {
         reply={text->
             chat.update { it.copy(pendingApproval=PendingApproval("owned","Approve this owned fixture?")) }

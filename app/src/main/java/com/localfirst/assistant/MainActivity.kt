@@ -48,6 +48,12 @@ class MainActivity : ComponentActivity() {
         if (!isChangingConfigurations) { viewModel.pauseVoice(); viewModel.onAppLeft() }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Back in the app: the floating bubble hands voice control to the inline panel.
+        viewModel.onAppResumed()
+    }
+
     override fun onDestroy() {
         PermissionBroker.detach()
         super.onDestroy()
