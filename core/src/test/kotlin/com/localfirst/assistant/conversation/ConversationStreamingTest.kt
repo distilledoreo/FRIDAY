@@ -17,6 +17,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -212,7 +213,181 @@ class ConversationStreamingTest {
         assertEquals(listOf(Message.User("First"), Message.Assistant("A"), Message.User("Second"), Message.Assistant("B")), session.snapshot())
     }
 
-    /** Replays scripted (deltas, final response) pairs. */
+    @Test
+    fun repeatedIdenticalPhoneActionsAreRefusedInsteadOfTappingForever() = runBlocking {
+        var executed = 0
+        val tapTool = object : Tool {
+            override val name = "control_phone_screen"
+            override val description = "Tap the screen."
+            override val inputSchema = buildJsonObject { }
+            override suspend fun execute(arguments: JsonObject): ToolExecutionResult {
+                executed += 1
+                return ToolExecutionResult(success = true, content = "tap $executed")
+            }
+        }
+        val tapJson = """{"action":"tap","x":540,"y":1200,"screen_width":1080,"screen_height":2400}"""
+        val provider = StreamingProvider(
+            listOf(
+                listOf("Tapping.") to ModelResponse.ToolCallResponse(listOf(ToolCall("t1", "control_phone_screen", tapJson))),
+                listOf("Tapping again.") to ModelResponse.ToolCallResponse(listOf(ToolCall("t2", "control_phone_screen", tapJson))),
+                listOf("Once more.") to ModelResponse.ToolCallResponse(listOf(ToolCall("t3", "control_phone_screen", tapJson))),
+                listOf("Giving up.") to ModelResponse.TextResponse("I can't tell what changed; I'm stopping here."),
+            ),
+        )
+        val session = ConversationSession(provider, ToolRegistry().apply { register(tapTool) }, systemPrompt = "")
+        val outcome = session.submitUserMessage("Open settings for me")
+
+        assertTrue(outcome is TurnOutcome.Completed)
+        assertEquals(2, executed) // first attempt plus one retry; the third is refused engine-side
+        val results = session.snapshot().filterIsInstance<Message.ToolResult>()
+        assertEquals(3, results.size)
+        assertTrue(results[0].success)
+        assertTrue(results[1].success)
+        assertFalse(results[2].success)
+        assertTrue(results[2].content.contains("without checking the screen between attempts"))
+    }
+
+    @Test
+    fun identicalCaptureCallsAreNeverRepeatGuarded() = runBlocking {
+        // capture_phone_screen takes no arguments, so every capture looks "identical" — but
+        // captures are observations, and refusing them strands the model with no way to verify.
+        var executed = 0
+        val captureTool = object : Tool {
+            override val name = "capture_phone_screen"
+            override val description = "Capture."
+            override val inputSchema = buildJsonObject { }
+            override suspend fun execute(arguments: JsonObject): ToolExecutionResult {
+                executed += 1
+                return ToolExecutionResult(success = true, content = "captured $executed")
+            }
+        }
+        val provider = StreamingProvider(
+            listOf(
+                listOf("One.") to ModelResponse.ToolCallResponse(listOf(ToolCall("c1", "capture_phone_screen", "{}"))),
+                listOf("Two.") to ModelResponse.ToolCallResponse(listOf(ToolCall("c2", "capture_phone_screen", "{}"))),
+                listOf("Three.") to ModelResponse.ToolCallResponse(listOf(ToolCall("c3", "capture_phone_screen", "{}"))),
+                listOf("Seen.") to ModelResponse.TextResponse("I can see it now."),
+            ),
+        )
+        val session = ConversationSession(provider, ToolRegistry().apply { register(captureTool) }, systemPrompt = "")
+        val outcome = session.submitUserMessage("What is on my screen?")
+
+        assertTrue(outcome is TurnOutcome.Completed)
+        assertEquals(3, executed)
+    }
+
+    @Test
+    fun freshScreenCheckResetsTheRepeatGuard() = runBlocking {
+        var taps = 0
+        val tapTool = object : Tool {
+            override val name = "control_phone_screen"
+            override val description = "Tap the screen."
+            override val inputSchema = buildJsonObject { }
+            override suspend fun execute(arguments: JsonObject): ToolExecutionResult {
+                taps += 1
+                return ToolExecutionResult(success = true, content = "tap $taps")
+            }
+        }
+        val readTool = object : Tool {
+            override val name = "read_phone_screen"
+            override val description = "Read."
+            override val inputSchema = buildJsonObject { }
+            override suspend fun execute(arguments: JsonObject) = ToolExecutionResult(success = true, content = "labels")
+        }
+        val tapJson = """{"action":"tap","x":540,"y":1200,"screen_width":1080,"screen_height":2400}"""
+        fun tap(id: String) = ModelResponse.ToolCallResponse(listOf(ToolCall(id, "control_phone_screen", tapJson)))
+        val provider = StreamingProvider(
+            listOf(
+                listOf("Tap.") to tap("t1"),
+                listOf("Read.") to ModelResponse.ToolCallResponse(listOf(ToolCall("r", "read_phone_screen", "{}"))),
+                listOf("Tap verified.") to tap("t2"), // allowed: a fresh check came between attempts
+                listOf("Tap blind.") to tap("t3"), // refused: no fresh check since the last tap
+                listOf("Done.") to ModelResponse.TextResponse("Finished."),
+            ),
+        )
+        val session = ConversationSession(provider, ToolRegistry().apply { register(tapTool); register(readTool) }, systemPrompt = "")
+        val outcome = session.submitUserMessage("Open settings for me")
+
+        assertTrue(outcome is TurnOutcome.Completed)
+        assertEquals(2, taps)
+        val tapResults = session.snapshot().filterIsInstance<Message.ToolResult>().filter { it.name == "control_phone_screen" }
+        assertEquals(3, tapResults.size)
+        assertTrue(tapResults[0].success)
+        assertTrue(tapResults[1].success)
+        assertFalse(tapResults[2].success)
+    }
+
+    @Test
+    fun identicalActionsHitAHardCapEvenWithFreshChecks() = runBlocking {
+        var taps = 0
+        val tapTool = object : Tool {
+            override val name = "control_phone_screen"
+            override val description = "Tap the screen."
+            override val inputSchema = buildJsonObject { }
+            override suspend fun execute(arguments: JsonObject): ToolExecutionResult {
+                taps += 1
+                return ToolExecutionResult(success = true, content = "tap $taps")
+            }
+        }
+        val readTool = object : Tool {
+            override val name = "read_phone_screen"
+            override val description = "Read."
+            override val inputSchema = buildJsonObject { }
+            override suspend fun execute(arguments: JsonObject) = ToolExecutionResult(success = true, content = "labels")
+        }
+        val tapJson = """{"action":"tap","x":1,"y":2,"screen_width":100,"screen_height":100}"""
+        // Alternate tap/read so every tap follows a fresh check; the cap must still stop the loop.
+        val script = mutableListOf<Pair<List<String>, ModelResponse>>()
+        repeat(ConversationEngine.MAX_IDENTICAL_PHONE_ACTIONS + 1) { i ->
+            script += listOf("Tap.") to ModelResponse.ToolCallResponse(listOf(ToolCall("t$i", "control_phone_screen", tapJson)))
+            script += listOf("Read.") to ModelResponse.ToolCallResponse(listOf(ToolCall("r$i", "read_phone_screen", "{}")))
+        }
+        script += listOf("Done.") to ModelResponse.TextResponse("Finished.")
+        val provider = StreamingProvider(script)
+        val session = ConversationSession(provider, ToolRegistry().apply { register(tapTool); register(readTool) }, systemPrompt = "")
+        val outcome = session.submitUserMessage("Keep tapping")
+
+        assertTrue(outcome is TurnOutcome.Completed)
+        assertEquals(ConversationEngine.MAX_IDENTICAL_PHONE_ACTIONS, taps)
+        val refused = session.snapshot().filterIsInstance<Message.ToolResult>()
+            .filter { it.name == "control_phone_screen" && !it.success }
+            .single()
+        assertTrue(refused.content.contains("tried this exact action"))
+    }
+
+    @Test
+    fun duplicatePhoneActionsInsideOneResponseAreRefused() = runBlocking {
+        var executed = 0
+        val tapTool = object : Tool {
+            override val name = "control_phone_screen"
+            override val description = "Tap the screen."
+            override val inputSchema = buildJsonObject { }
+            override suspend fun execute(arguments: JsonObject): ToolExecutionResult {
+                executed += 1
+                return ToolExecutionResult(success = true, content = "tap $executed")
+            }
+        }
+        val tapJson = """{"action":"tap","x":10,"y":20,"screen_width":100,"screen_height":100}"""
+        val provider = StreamingProvider(
+            listOf(
+                listOf("First.") to ModelResponse.ToolCallResponse(listOf(
+                    ToolCall("a", "control_phone_screen", tapJson),
+                    ToolCall("b", "control_phone_screen", tapJson),
+                )),
+                listOf("Done.") to ModelResponse.TextResponse("Interesting."),
+            ),
+        )
+        val session = ConversationSession(provider, ToolRegistry().apply { register(tapTool) }, systemPrompt = "")
+        val outcome = session.submitUserMessage("Open settings for me")
+
+        assertTrue(outcome is TurnOutcome.Completed)
+        assertEquals(1, executed) // only the first of the two identical calls tapped
+        val results = session.snapshot().filterIsInstance<Message.ToolResult>()
+        assertEquals(2, results.size)
+        assertTrue(results[0].success)
+        assertFalse(results[1].success)
+    }
+
     private class StreamingProvider(
         script: List<Pair<List<String>, ModelResponse>>,
     ) : ModelProvider {

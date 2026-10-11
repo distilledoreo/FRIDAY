@@ -38,6 +38,8 @@ class ConversationSession(
     var confirmedTools: Set<String> = emptySet()
     /** Phone-control consent lasts only for this in-memory conversation session. */
     var phoneControlApprovedForConversation: Boolean = false
+    /** Returns a fresh, transient screen frame when the model explicitly requests one. */
+    var capturePhoneScreen: suspend () -> Attachment? = { null }
 
     private val messages = initialMessages.toMutableList()
     private val mutex = Mutex()
@@ -127,6 +129,7 @@ class ConversationSession(
             checkpoint = checkpoint,
             blockedTools = blockedTools,
             confirmedTools = confirmedTools,
+            capturePhoneScreen = capturePhoneScreen,
         )
 
     private fun truncateAfter(index: Int) {

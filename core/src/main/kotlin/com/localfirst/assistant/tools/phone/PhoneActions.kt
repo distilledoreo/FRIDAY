@@ -37,7 +37,10 @@ interface PhoneActions {
 interface PhoneAccessibilityActions {
     suspend fun readScreen(): String
     suspend fun tap(x: Int, y: Int): String
+    suspend fun tap(x: Int, y: Int, screenWidth: Int, screenHeight: Int): String = tap(x, y)
     suspend fun swipe(fromX: Int, fromY: Int, toX: Int, toY: Int, durationMillis: Int): String
+    suspend fun swipe(fromX: Int, fromY: Int, toX: Int, toY: Int, durationMillis: Int, screenWidth: Int, screenHeight: Int): String =
+        swipe(fromX, fromY, toX, toY, durationMillis)
     suspend fun enterText(text: String): String
     suspend fun globalAction(action: GlobalPhoneAction): String
 }

@@ -883,7 +883,11 @@ class ChatViewModel(
         initialMessages = messages,
         confirmer = confirmer,
         checkpoint = { persist() },
-    )
+    ).also { session ->
+        session.capturePhoneScreen = {
+            app?.let { ScreenContextService.captureFreshSnapshot(it, privacy.incognito) }
+        }
+    }
 
     fun searchHistory(query: String) { _state.update { it.copy(historyQuery = query) }; refreshConversationList() }
 
