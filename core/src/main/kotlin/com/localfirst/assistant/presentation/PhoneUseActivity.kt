@@ -61,6 +61,15 @@ internal object PhoneUseLabels {
         fun str(key: String) = (args[key] as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
         val app = str("app") ?: "the app"
         val outcome = result?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim()?.take(140)
+        if (name == PhoneUseToolNames.SCRIPT) {
+            // Scripts carry a title for the user, like Codex's computer-use calls.
+            val title = str("title") ?: "Running a phone script"
+            return when (state) {
+                ToolStepState.RUNNING -> "$title…"
+                ToolStepState.DONE -> title
+                ToolStepState.FAILED -> "Failed: $title — " + (result?.lineSequence()?.firstOrNull { it.isNotBlank() }?.removePrefix("The script stopped: ")?.take(100) ?: "")
+            }
+        }
         return when (state) {
             ToolStepState.RUNNING -> when (name) {
                 PhoneUseToolNames.LIST_APPS -> "Listing apps…"
