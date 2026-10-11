@@ -415,8 +415,8 @@ class PcAgent:
                                       'api': 'http://127.0.0.1:8700/workspace/pc/vision/v1'}} for name in vision}},
                 LOCAL[0]: {'npm': '@ai-sdk/openai-compatible', 'name': 'Local Qwen (FRIDAY fallback)',
                            'options': {'baseURL': 'http://127.0.0.1:8700/workspace/pc/internal/v1', 'apiKey': self.password},
-                           # Slot 1 is the background slot, so chat keeps its cached prompt in slot 0.
-                           'models': {LOCAL[1]: {'name': 'Qwen3.8 27B', 'tool_call': True, 'attachment': False, 'modalities': {'input': ['text'], 'output': ['text']}, 'limit': {'context': 65536, 'output': 8192},
+                           # Slot 1 is llama.cpp's background slot; the proxy adapts the request for Strata.
+                           'models': {LOCAL[1]: {'name': 'Qwen3.8 Flash Next' if os.environ.get('FRIDAY_LLM_BACKEND') == 'strata' else 'Qwen3.8 27B', 'tool_call': True, 'attachment': False, 'modalities': {'input': ['text'], 'output': ['text']}, 'limit': {'context': int(os.environ.get('FRIDAY_LLM_CONTEXT', '65536')), 'output': 8192},
                                                  'options': {'id_slot': 1, 'chat_template_kwargs': {'enable_thinking': False}}}}},
             },
             'permission': {'*': 'ask', 'bash': 'ask', 'edit': 'ask', 'read': 'allow', 'webfetch': 'allow'},

@@ -399,6 +399,13 @@ class PcTests(unittest.IsolatedAsyncioTestCase):
         model = self.pc.config(await self.pc.models())['provider'][LOCAL[0]]['models'][LOCAL[1]]
         self.assertFalse(model['attachment'])
 
+    async def test_strata_fallback_metadata_matches_selected_backend(self):
+        with patch.dict('os.environ', {'FRIDAY_LLM_BACKEND': 'strata', 'FRIDAY_LLM_CONTEXT': '32768'}):
+            model = self.pc.config(await self.pc.models())['provider'][LOCAL[0]]['models'][LOCAL[1]]
+        self.assertEqual(model['name'], 'Qwen3.8 Flash Next')
+        self.assertEqual(model['limit']['context'], 32768)
+        self.assertTrue(model['tool_call'])
+
     async def test_question_ownership_is_required(self):
         self.pc.questions = [dict(id='q', sessionID='ses_foreign')]
         with self.assertRaises(HTTPException): await self.pc.question('q')

@@ -3,7 +3,7 @@
     /chat    -> llama.cpp  (OpenAI chat-completions body; streaming supported)
     /search  -> SearXNG    (GET: trimmed JSON results; POST: the Android app's web_search contract)
     /fetch   -> Crawl4AI   (page as markdown)
-    /transcribe, /speak, /voice -> Parakeet v3 speech-to-text and Kokoro text-to-speech, on this machine
+    /transcribe, /speak, /voice -> Parakeet v3 speech-to-text and Paradee text-to-speech, on this machine
     /extract -> text from attached documents (PDF, Word, text/code); page images for scanned PDFs
 
 Every route except /health needs `Authorization: Bearer $ASSISTANT_API_TOKEN`.
@@ -239,8 +239,16 @@ async def fetch(req: FetchRequest):
 
 # ---- voice ----------------------------------------------------------------
 
+PARAKEET_DIRS = ("parakeet-tdt-0.6b-v3-int4", "parakeet-tdt-0.6b-v3-int8")  # first one present wins
+TTS_VOICE = "af_heart"  # Paradee speaks only Kokoro's Heart voice
+
+
 class VoiceModels:
-    """Parakeet TDT 0.6B v3 (int8) and Kokoro v1.0, loaded once in the background and run on the CPU."""
+    """Parakeet TDT 0.6B v3 (int4 encoder, else int8) and Paradee 8M, loaded once in the background and run on the CPU.
+
+    ONNX Runtime's memory arena is off for Parakeet: with it on, the process kept ~1 GB more after a long clip (RAM the
+    Strata model and its conversation cache need). Short utterances run at the same speed; a 2-minute clip ~2x slower.
+    """
 
     def __init__(self):
         self.asr = None
@@ -253,11 +261,17 @@ class VoiceModels:
     def load(self):
         try:
             import onnx_asr
-            from kokoro_onnx import Kokoro
+            import onnxruntime
+            from paradee import Paradee
 
+            asr_dir = next((d for d in PARAKEET_DIRS if os.path.isdir(f"{VOICE_MODELS}/{d}")), PARAKEET_DIRS[-1])
+            options = onnxruntime.SessionOptions()
+            options.enable_cpu_mem_arena = False
+            # "int*" matches the int4 encoder beside the int8 decoder, or both int8 files
             self.asr = onnx_asr.load_model(
-                "nemo-parakeet-tdt-0.6b-v3", f"{VOICE_MODELS}/parakeet-tdt-0.6b-v3-int8", quantization="int8")
-            self.tts = Kokoro(f"{VOICE_MODELS}/kokoro-v1.0/kokoro-v1.0.onnx", f"{VOICE_MODELS}/kokoro-v1.0/voices-v1.0.bin")
+                "nemo-parakeet-tdt-0.6b-v3", f"{VOICE_MODELS}/{asr_dir}", quantization="int*", sess_options=options)
+            self.tts = Paradee(model_path=f"{VOICE_MODELS}/paradee-8m-v1.0/paradee_int8.onnx",
+                               config_path=f"{VOICE_MODELS}/paradee-8m-v1.0/config.json")
             self.error = None
         except Exception as e:  # models missing, Storage drive not mounted, ...
             self.error = f"{e.__class__.__name__}: {e}"
@@ -299,7 +313,7 @@ def decode_audio(body: bytes, content_type: str):
 @app.get("/voice", dependencies=auth)
 async def voice_status():
     voice.require()
-    return {"stt": "parakeet-tdt-0.6b-v3", "tts": "kokoro-v1.0", "voices": sorted(voice.tts.get_voices())}
+    return {"stt": "parakeet-tdt-0.6b-v3", "tts": "paradee-8m-v1.0", "voices": [TTS_VOICE]}
 
 
 @app.post("/transcribe", dependencies=auth)
@@ -328,28 +342,26 @@ async def transcribe(request: Request):
 
 class SpeakRequest(BaseModel):
     text: str = Field(min_length=1, max_length=1_000)
-    voice: str = "af_heart"
+    voice: str = TTS_VOICE  # accepted for older apps' Kokoro voice setting; Paradee always speaks Heart
     speed: float = Field(1.0, ge=0.5, le=2.0)
-    lang: str = "en-us"
+    lang: str = "en-us"  # likewise accepted; Paradee speaks US English
 
 
 @app.post("/speak", dependencies=auth)
 async def speak(req: SpeakRequest):
     voice.require()
-    if req.voice not in voice.tts.get_voices():
-        raise HTTPException(400, f"unknown voice '{req.voice}'")
 
     def run():
         import numpy as np
         import soundfile as sf
+        from paradee import SAMPLE_RATE
 
         with voice.tts_lock:
-            try:
-                samples, rate = voice.tts.create(req.text, voice=req.voice, speed=req.speed, lang=req.lang)
-            except ValueError as e:  # e.g. text with nothing pronounceable, like "-"
-                raise HTTPException(422, str(e))
+            samples = voice.tts(req.text, speed=req.speed)
+        if not len(samples):  # text that gives no phonemes
+            raise HTTPException(422, "nothing to say")
         out = io.BytesIO()
-        sf.write(out, np.clip(samples, -1.0, 1.0), rate, format="WAV", subtype="PCM_16")
+        sf.write(out, np.clip(samples, -1.0, 1.0), SAMPLE_RATE, format="WAV", subtype="PCM_16")
         return out.getvalue()
 
     return Response(await run_in_threadpool(run), media_type="audio/wav")
@@ -446,9 +458,16 @@ from pathlib import Path as WorkspacePath
 from workspace.integration import enable as enable_workspace
 # ---- local image GPU handoff ----
 from imagegen.integration import prepare as prepare_images, enable as enable_images
+if os.environ.get("FRIDAY_LLM_BACKEND", "llama") == "strata":
+    from model_server.strata import StrataClient
+    llm = StrataClient(llm)
 raw_llm = llm
 llm, gpu_gate = prepare_images(raw_llm)
-openings = prompt_cache.OpeningSnapshots(raw_llm, gpu_gate)
+if os.environ.get("FRIDAY_LLM_BACKEND", "llama") == "strata":
+    from model_server.strata import StrataOpeningSnapshots
+    openings = StrataOpeningSnapshots(raw_llm, gpu_gate, prompt_cache)
+else:
+    openings = prompt_cache.OpeningSnapshots(raw_llm, gpu_gate)
 app.on_event("startup")(openings.start)
 app.on_event("shutdown")(openings.stop)
 workspace_store = enable_workspace(app, auth, llm, search, fetch, FetchRequest,

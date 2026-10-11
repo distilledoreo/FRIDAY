@@ -184,10 +184,10 @@ There are two engines (**Settings → Voice & assistant**):
 
 | Engine | Speech recognition | Voice | Echo handling |
 | --- | --- | --- | --- |
-| **Your computer** (default) | [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), int8 ONNX, on the desktop API's `/transcribe` | [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) via `/speak` (default voice "Heart"; seven voices to choose from) | Full duplex in communication mode (below) |
+| **Your computer** (default) | [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), int4 ONNX ([efederici/parakeet-tdt-0.6b-v3-onnx-int4](https://huggingface.co/efederici/parakeet-tdt-0.6b-v3-onnx-int4) in `$VOICE_MODELS/parakeet-tdt-0.6b-v3-int4`; the int8 one is used if that folder is missing), on the desktop API's `/transcribe` | [Paradee 8M](https://huggingface.co/sahilmahendrakar/Paradee-8M-v1.0) (Kokoro's "Heart" voice, distilled; `$VOICE_MODELS/paradee-8m-v1.0`) via `/speak`; the voice setting is ignored | Full duplex in communication mode (below) |
 | **This phone** | Android `SpeechRecognizer`, on-device when available | Android text-to-speech | Separate barge-in mic; weaker |
 
-The computer engine uses the **search service address and key**; the desktop assistant API serves `/voice`, `/transcribe`, and `/speak` next to `/search`. If that address isn't set or the service can't be reached, voice falls back to the phone engine and says so. On the author's Ryzen 7 3700X, recognition takes about 0.3 s for a 4 s utterance, and each sentence of speech is ready in about 1 s.
+The computer engine uses the **search service address and key**; the desktop assistant API serves `/voice`, `/transcribe`, and `/speak` next to `/search`. If that address isn't set or the service can't be reached, voice falls back to the phone engine and says so. On the author's Ryzen 7 3700X, recognition takes about 0.2 s for a 4 s utterance, and a sentence of speech is ready in about 0.3 s.
 
 **Full duplex (computer engine).** While voice mode is open, the phone is in communication mode, like a speakerphone call: audio goes to the loudspeaker, or to a headset or Bluetooth device if one is connected, and the platform echo canceller removes the assistant's own voice from the mic.
 

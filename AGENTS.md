@@ -9,8 +9,8 @@ edit here, commit, push. Nothing else on the PC is source code.
 | --- | --- |
 | `app/` | Android app (Kotlin, Jetpack Compose): UI, voice, phone tools, Android Auto |
 | `core/` | Plain-JVM logic the app uses: conversation engine, model client, tools, UI blocks (unit-tested) |
-| `desktop/` | PC server feature modules: `agent` (FRIDAY tasks, PC access via OpenCode, accounts, daily brief), `memory`, `workspace`, `imagegen`, plus `search_service` |
-| `server/` | PC server core (`api/app.py`, `api/prompt_cache.py`), Docker compose, llama launcher, systemd units, `scripts/setup.sh` |
+| `desktop/` | PC server feature modules: `agent` (FRIDAY tasks, PC access via OpenCode, accounts, daily brief), `memory`, `workspace`, `imagegen`, `model_server` (the Strata backend adapter), plus `search_service` |
+| `server/` | PC server core (`api/app.py`, `api/prompt_cache.py`), Docker compose, llama launcher, systemd units (`systemd/strata/` for the Strata backend), `scripts/setup.sh` |
 
 ## The running server is a separate copy
 
@@ -19,9 +19,12 @@ the user's data, `.env` tokens, Python venv and llama runtime. Rules:
 
 - Never edit files under `~/assistant-server` directly, and never copy its data, `.env`, `llama.env` or
   `imagegen/config.json` into this repo.
-- To deploy code changes: run `server/scripts/setup.sh` (copies `server/` and `desktop/` modules into the
-  install; it never replaces existing secrets, configs or systemd units), then
-  `systemctl --user restart assistant-api`. Restarting `llama-qwen38-mtp` reloads the model (~2 min of no chat).
+- The model server is selected by `FRIDAY_LLM_BACKEND`: `llama` (llama.cpp, `llama-qwen38-mtp.service`, the default)
+  or `strata` (`assistant-strata.service`, Strata installed in `~/AI/Strata`). The author's PC runs `strata`; see
+  [desktop/model_server/README.md](desktop/model_server/README.md).
+- To deploy code changes: run `FRIDAY_LLM_BACKEND=strata server/scripts/setup.sh` on that PC (copies `server/` and
+  `desktop/` modules into the install; it never replaces existing secrets, configs or systemd units), then
+  `systemctl --user restart assistant-api`. Restarting the model service reloads the model (~2-3 min of no chat).
 - The app talks to the server's API; a change on one side often needs the matching change on the other.
   Keep both in the same commit.
 
