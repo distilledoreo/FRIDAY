@@ -458,9 +458,16 @@ from pathlib import Path as WorkspacePath
 from workspace.integration import enable as enable_workspace
 # ---- local image GPU handoff ----
 from imagegen.integration import prepare as prepare_images, enable as enable_images
+if os.environ.get("FRIDAY_LLM_BACKEND", "llama") == "strata":
+    from model_server.strata import StrataClient
+    llm = StrataClient(llm)
 raw_llm = llm
 llm, gpu_gate = prepare_images(raw_llm)
-openings = prompt_cache.OpeningSnapshots(raw_llm, gpu_gate)
+if os.environ.get("FRIDAY_LLM_BACKEND", "llama") == "strata":
+    from model_server.strata import StrataOpeningSnapshots
+    openings = StrataOpeningSnapshots(raw_llm, gpu_gate, prompt_cache)
+else:
+    openings = prompt_cache.OpeningSnapshots(raw_llm, gpu_gate)
 app.on_event("startup")(openings.start)
 app.on_event("shutdown")(openings.stop)
 workspace_store = enable_workspace(app, auth, llm, search, fetch, FetchRequest,

@@ -2,6 +2,7 @@ import asyncio
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import httpx
@@ -12,6 +13,15 @@ from desktop.imagegen.manager import GpuGate
 
 
 class LocalProxyTests(unittest.IsolatedAsyncioTestCase):
+    def test_strata_alias_and_private_cache_are_adapted(self):
+        with patch.dict('os.environ', {'FRIDAY_LLM_BACKEND':'strata'}):
+            body=local_payload({'messages':[{'role':'user','content':'Synthetic'}],
+                                'cache_prompt':False,'strata_prefix':{'messages':1}})
+        self.assertEqual(body['model'],'qwen3.8-flash-next')
+        self.assertNotIn('id_slot',body)
+        self.assertNotIn('strata_prefix',body)
+        self.assertFalse(body['strata_checkpoint'])
+
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.agent = PcAgent(Path(self.tmp.name))

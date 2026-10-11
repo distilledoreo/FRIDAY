@@ -1,6 +1,7 @@
 """Private, fixed-target local fallback. Shares FRIDAY's existing GPU gate."""
 import asyncio
 import json
+import os
 import secrets
 import time
 
@@ -24,6 +25,12 @@ def local_payload(value):
     value.update(messages=messages, id_slot=1, chat_template_kwargs={'enable_thinking': False})
     # A caller cannot select a paid/remote model or a different destination here.
     value['model'] = 'qwen3.8-27b'
+    if os.environ.get('FRIDAY_LLM_BACKEND') == 'strata':
+        value['model'] = 'qwen3.8-flash-next'
+        value.pop('id_slot', None)
+        if value.pop('cache_prompt', None) is False:
+            value['strata_checkpoint'] = False
+            value.pop('strata_prefix', None)
     return value
 
 

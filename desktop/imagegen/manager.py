@@ -248,16 +248,28 @@ class SystemRuntime:
             await self.command('systemctl', '--user', 'stop', self.IMAGE_UNIT)
 
     async def restore_chat(self):
+        seconds = float(self.config.get('llm_reload_timeout_seconds', 240))
+        if not 30 <= seconds <= 1800:
+            raise ValueError('Model reload timeout must be between 30 and 1800 seconds')
         await self.command('systemctl', '--user', 'start', self.config['llm_unit'])
-        end = time.monotonic() + 240
+        end = time.monotonic() + seconds
         while time.monotonic() < end:
             try:
-                if (await self.raw_llm.get('/health', timeout=3)).status_code == 200:
-                    return
+                response = await self.raw_llm.get('/health', timeout=3)
+                if response.status_code == 200:
+                    try:
+                        state = response.json()
+                    except ValueError:
+                        state = None
+                    if isinstance(state, dict) and state.get('loaded', True):
+                        after_reload = getattr(self.raw_llm, 'after_reload', None)
+                        if after_reload is not None:
+                            await after_reload()
+                        return
             except httpx.HTTPError:
                 pass
             await asyncio.sleep(1)
-        raise RuntimeError('Chat service did not reload within four minutes')
+        raise RuntimeError(f'Chat service did not reload within {seconds:g} seconds')
 
 
 class ImageManager:
