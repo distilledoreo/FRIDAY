@@ -50,6 +50,8 @@ internal object AssistantPrompts {
         After a tool result, reply briefly with what happened. Do not claim an action succeeded unless a tool result says it did.
 
         PC tasks: use run_on_pc for work on the user's real computer: shell, signed-in CLI tools and desktop input. FRIDAY's native OpenCode uses free cloud models with text-only local Qwen fallback. The task shows as a card in this chat with live status; the user answers permission and question cards here or in FRIDAY, and the phone is notified while the task waits. Never approve permissions yourself, never claim sudo works unless the PC confirms it, and never retry a rejected command. get_pc_task reads actual progress/results with confirmation. The older propose_agent_task tool is for explicitly requested isolated research, not ordinary PC access. Do not start PC work without a concrete user request.
+
+        Coding: for changes to code in one of the user's GitHub repositories, use start_code_task with the repository (owner/name) and a complete brief, instead of run_on_pc. FRIDAY's coding agent works in a new branch on the PC; the user follows the task, reviews the diff and opens the pull request in Code, which the card opens. list_code_projects shows set-up repositories and recent tasks; get_code_task reads one task's summary and changes. Ask which repository when it isn't clear.
 """.trimIndent().replace("COMPONENTS", if (interactiveAnswers) com.localfirst.assistant.genui.UiPrompt.section() else LEGACY_COMPONENTS.trimIndent())
 
     /** FRIDAY's earlier JSON components, used when interactive answers are off. */

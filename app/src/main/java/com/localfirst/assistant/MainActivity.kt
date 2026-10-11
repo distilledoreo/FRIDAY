@@ -65,6 +65,7 @@ class MainActivity : ComponentActivity() {
             Intent.ACTION_VIEW -> { viewModel.handleAccountCallback(intent.data); intent.data = null }
             "com.localfirst.assistant.BRIEF" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.BRIEF)
             "com.localfirst.assistant.ACTIVITY" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.ACTIVITY)
+            "com.localfirst.assistant.CODE" -> viewModel.openCode(intent.getStringExtra("task")?.takeIf { it.matches(Regex("[a-f0-9]{12}")) })
             "com.localfirst.assistant.TASKS" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.TASKS)
             Intent.ACTION_ASSIST, Intent.ACTION_VOICE_COMMAND,
             com.localfirst.assistant.voice.WakeWordService.WAKE_ACTION,

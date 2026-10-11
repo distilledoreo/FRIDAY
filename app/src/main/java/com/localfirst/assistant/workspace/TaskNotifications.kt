@@ -133,6 +133,11 @@ class TaskPollService : JobService() {
                         val pcStatus = JSONObject(client.request("/workspace/pc/status"))
                         if (pcStatus.optBoolean("enabled")) {
                             val approvals = runCatching { JSONObject(client.request("/workspace/pc/approvals")) }.getOrNull()
+                            val sessions = runCatching { JSONArray(client.request("/workspace/pc/sessions")) }.getOrNull() ?: JSONArray()
+                            // Coding tasks are answered in Code, so their notices open it.
+                            val coding = (0 until sessions.length()).mapNotNull { sessions.optJSONObject(it) }
+                                .filter { it.optString("agent") == "friday-code" }.map { it.optString("id") }.toSet()
+                            fun opener(session: String) = if (session in coding) "com.localfirst.assistant.CODE" else "com.localfirst.assistant.ACTIVITY"
                             // Unanswered approvals re-alert until answered or cleared; answered ones are forgotten.
                             val pendingKeys = mutableSetOf<String>()
                             approvals?.optJSONArray("permissions")?.let { permissions ->
@@ -143,11 +148,11 @@ class TaskPollService : JobService() {
                                     val firstSeen = prefs.getLong(key, 0L)
                                     if ((firstSeen == 0L || System.currentTimeMillis() - firstSeen >= PC_REMIND_MS) && sent < 5) {
                                         val open = PendingIntent.getActivity(this@TaskPollService, key.hashCode(),
-                                            Intent(this@TaskPollService, MainActivity::class.java).setAction("com.localfirst.assistant.ACTIVITY"),
+                                            Intent(this@TaskPollService, MainActivity::class.java).setAction(opener(request.optString("owner").ifBlank { request.optString("session") })),
                                             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
                                         val notification = NotificationCompat.Builder(this@TaskPollService, TaskNotifications.CHANNEL)
                                             .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("FRIDAY needs your permission")
-                                            .setContentText(request.optString("detail").ifBlank { "A PC task is waiting for approval." }.take(180))
+                                            .setContentText(request.optString("detail").ifBlank { if (request.optString("owner").ifBlank { request.optString("session") } in coding) "A coding task is waiting for approval." else "A PC task is waiting for approval." }.take(180))
                                             .setContentIntent(open).setAutoCancel(true).build()
                                         manager.notify(key.hashCode(), notification)
                                         prefs.edit().putLong(key, System.currentTimeMillis()).apply(); sent++
@@ -162,7 +167,7 @@ class TaskPollService : JobService() {
                                     val firstSeen = prefs.getLong(key, 0L)
                                     if ((firstSeen == 0L || System.currentTimeMillis() - firstSeen >= PC_REMIND_MS) && sent < 5) {
                                         val open = PendingIntent.getActivity(this@TaskPollService, key.hashCode(),
-                                            Intent(this@TaskPollService, MainActivity::class.java).setAction("com.localfirst.assistant.ACTIVITY"),
+                                            Intent(this@TaskPollService, MainActivity::class.java).setAction(opener(request.optString("owner").ifBlank { request.optString("sessionID") })),
                                             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
                                         val notification = NotificationCompat.Builder(this@TaskPollService, TaskNotifications.CHANNEL)
                                             .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("FRIDAY has a question")
@@ -176,7 +181,6 @@ class TaskPollService : JobService() {
                             prefs.all.keys.filter { (it.startsWith("pcperm-") || it.startsWith("pcq-")) && it !in pendingKeys }.forEach {
                                 prefs.edit().remove(it).apply()
                             }
-                            val sessions = runCatching { JSONArray(client.request("/workspace/pc/sessions")) }.getOrNull() ?: JSONArray()
                             for (i in 0 until sessions.length()) {
                                 val session = sessions.optJSONObject(i) ?: continue
                                 val id = session.optString("id")
@@ -187,12 +191,13 @@ class TaskPollService : JobService() {
                                 if (previous == null && state != "busy") { prefs.edit().putString(key, state).apply(); continue }
                                 if (previous == "busy" && state != "busy" && prefs.getString("$key-notified", null) == null && sent < 5) {
                                     val open = PendingIntent.getActivity(this@TaskPollService, key.hashCode(),
-                                        Intent(this@TaskPollService, MainActivity::class.java).setAction("com.localfirst.assistant.ACTIVITY"),
+                                        Intent(this@TaskPollService, MainActivity::class.java).setAction(opener(id)),
                                         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                                    val kind = if (id in coding) "coding task" else "PC task"
                                     val text = when (state) {
-                                        "idle" -> "Your PC task finished. Open FRIDAY to see the result."
-                                        "waiting" -> "Your PC task needs your reply. Open FRIDAY to review it."
-                                        else -> "Your PC task stopped ($state). Open FRIDAY for details."
+                                        "idle" -> if (id in coding) "Your coding task finished. Open Code to review the changes." else "Your PC task finished. Open FRIDAY to see the result."
+                                        "waiting" -> "Your $kind needs your reply. Open FRIDAY to review it."
+                                        else -> "Your $kind stopped ($state). Open FRIDAY for details."
                                     }
                                     val notification = NotificationCompat.Builder(this@TaskPollService, TaskNotifications.CHANNEL)
                                         .setSmallIcon(android.R.drawable.ic_dialog_info)

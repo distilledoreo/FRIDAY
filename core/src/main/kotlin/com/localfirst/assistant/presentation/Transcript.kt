@@ -62,6 +62,8 @@ data class ToolStep(
     val agentTask: String? = null,
     /** A native PC session (JSON from run_on_pc / get_pc_task), shown as a card with live status and approvals. */
     val pcTask: String? = null,
+    /** A coding task (JSON from start_code_task / get_code_task), shown as a card that opens Code. */
+    val codeTask: String? = null,
     /** Screenshot taken with a phone-use result. */
     val image: String? = null,
     /** The app a phone-use step worked in. */
@@ -155,6 +157,7 @@ object Transcript {
         val label = if (phoneUse) PhoneUseLabels.label(call.name, args ?: JsonObject(emptyMap()), state, result?.content)
         else ToolLabels.label(call.name, args ?: JsonObject(emptyMap()), state)
         val pcTask = result?.takeIf { it.success && call.name in PC_TASK_TOOLS }?.content
+        val codeTask = result?.takeIf { it.success && call.name in com.localfirst.assistant.tools.CodeToolNames.CARDS }?.content
         return ToolStep(
             callId = call.id,
             name = call.name,
@@ -162,12 +165,13 @@ object Transcript {
             label = label,
             detail = result?.takeIf { !it.success && !phoneUse }?.content,
             sources = result?.sources.orEmpty(),
-            resultContent = result?.takeIf { it.success && call.name !in PC_TASK_TOOLS }?.content,
+            resultContent = result?.takeIf { it.success && call.name !in PC_TASK_TOOLS && call.name !in com.localfirst.assistant.tools.CodeToolNames.CARDS }?.content,
             image = result?.image,
             app = if (phoneUse) PhoneUseLabels.app(args ?: JsonObject(emptyMap())) else null,
             imageResult = result?.takeIf { it.success && call.name == "generate_image" }?.content,
             agentTask = result?.takeIf { it.success && call.name == "propose_agent_task" }?.content,
             pcTask = pcTask,
+            codeTask = codeTask,
         )
     }
 }
@@ -291,6 +295,9 @@ internal object ToolLabels {
             "get_pc_task" -> pick("Reading PC task", "Read PC task", "Couldn't read the PC task")
             "schedule_pc_task" -> pick("Scheduling PC task", "Scheduled PC task", "Couldn't schedule the PC task")
             "list_pc_schedules" -> pick("Listing PC schedules", "Listed PC schedules", "Couldn't list PC schedules")
+            "start_code_task" -> pick("Starting coding task", "Started coding task", "Couldn't start the coding task")
+            "get_code_task" -> pick("Reading coding task", "Read coding task", "Couldn't read the coding task")
+            "list_code_projects" -> pick("Listing code projects", "Listed code projects", "Couldn't list code projects")
             else -> pick("Running $name", "Used $name", "$name failed")
         }
     }
