@@ -123,11 +123,11 @@ class CodeWorkspace(
     }
 
     /** Starts a task in the selected project and opens it. */
-    fun startTask(prompt: String, onStarted: () -> Unit = {}) {
+    fun startTask(prompt: String, modelChoice: String = "auto", onStarted: () -> Unit = {}) {
         val project = _state.value.project ?: return
         val text = prompt.trim().take(20000).ifEmpty { return }
         act("Creating a branch and starting FRIDAY…") {
-            val body = JSONObject().put("project", project.id).put("prompt", text)
+            val body = JSONObject().put("project", project.id).put("prompt", text).put("model_choice", modelChoice)
             _state.value.base?.let { body.put("base", it) }
             val task = CodeTask.from(JSONObject(request("/workspace/code/tasks", "POST", body)))
             _state.update { s -> s.copy(tasks = listOf(task) + s.tasks.filter { it.id != task.id }) }

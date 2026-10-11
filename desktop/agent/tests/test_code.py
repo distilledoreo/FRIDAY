@@ -156,6 +156,17 @@ class CodeProjectsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.pc.scope(task_id), {'params': {'directory': directory}})
         self.assertEqual([t['id'] for t in self.code.tasks(project['id'])], [task['id']])
 
+    async def test_local_selection_reaches_code_session_and_summary(self):
+        project = await self.code.add('octo/demo')
+        task = await self.code.start(StartTask(project=project['id'], prompt='Local task', model_choice='local'))
+        self.assertEqual(task['model_choice'], 'local')
+        identifier = self.code.task(task['id'])['session']
+        self.assertEqual(await self.pc.session_chain(identifier), [('friday-local', 'qwen3.8-27b')])
+        self.assertEqual(self.started[-1][0].model_choice, 'local')
+        from pydantic import ValidationError
+        with self.assertRaises(ValidationError):
+            StartTask(project=project['id'], prompt='Task', model_choice='paid-cloud')
+
     async def test_trusted_projects_run_commands_freely(self):
         project, task = await self.task()
         directory = self.code.task(task['id'])['worktree']

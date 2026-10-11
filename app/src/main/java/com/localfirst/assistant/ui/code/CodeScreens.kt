@@ -60,6 +60,7 @@ internal fun CodeScreen(code: CodeWorkspace) {
 @Composable
 internal fun CodeHome(state: CodeState, code: CodeWorkspace) {
     var prompt by rememberSaveable { mutableStateOf("") }
+    var modelChoice by rememberSaveable { mutableStateOf("auto") }
     var picking by remember { mutableStateOf(false) }
     var branching by remember { mutableStateOf(false) }
     val active = state.tasks.any { it.state == "busy" || it.state == "waiting" }
@@ -77,7 +78,8 @@ internal fun CodeHome(state: CodeState, code: CodeWorkspace) {
                 if (project == null && state.loaded) ConnectRepository { picking = true }
                 else TaskComposer(prompt, { prompt = it }, project, state.base ?: project?.defaultBranch, state.busy,
                     onRepo = { picking = true }, onBranch = { branching = true },
-                    onSend = { code.startTask(prompt) { prompt = "" } })
+                    modelChoice = modelChoice, onModel = { modelChoice = it },
+                    onSend = { code.startTask(prompt, modelChoice) { prompt = "" } })
             }
             if (state.tasks.isNotEmpty()) item { Label("Tasks") }
             else if (state.loaded && state.projects.isNotEmpty()) item {
@@ -143,13 +145,23 @@ private fun ConnectRepository(onAdd: () -> Unit) {
 
 @Composable
 private fun TaskComposer(prompt: String, onPrompt: (String) -> Unit, project: CodeProject?, branch: String?, busy: Boolean,
-                         onRepo: () -> Unit, onBranch: () -> Unit, onSend: () -> Unit) {
+                         onRepo: () -> Unit, onBranch: () -> Unit, modelChoice: String, onModel: (String) -> Unit, onSend: () -> Unit) {
     Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(start = 6.dp, end = 10.dp, top = 4.dp, bottom = 10.dp)) {
             TextField(prompt, onPrompt, placeholder = { Text("Describe a coding task") }, minLines = 3, maxLines = 10,
                 modifier = Modifier.fillMaxWidth(), textStyle = MaterialTheme.typography.bodyLarge,
                 colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
                     focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent))
+            Row(Modifier.padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(selected = modelChoice == "auto", onClick = { onModel("auto") }, enabled = !busy,
+                    label = { Text("Automatic") })
+                FilterChip(selected = modelChoice == "local", onClick = { onModel("local") }, enabled = !busy,
+                    label = { Text("Local model") })
+            }
+            Text(if (modelChoice == "local") "Uses your PC's local model for this task and follow-ups."
+                else "Uses ranked free cloud models, with local fallback.",
+                Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(start = 8.dp)) {
                 Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     ComposerChip(project?.name ?: "Repository", LineIcons.Code, onRepo, Modifier.weight(1f, fill = false))
@@ -353,6 +365,20 @@ private fun TaskConversation(view: CodeTaskView, busy: Boolean, code: CodeWorksp
     val blocks = remember(view.items) { conversationBlocks(view.items) }
     LaunchedEffect(blocks.size, view.waiting) { if (blocks.isNotEmpty()) list.animateScrollToItem(list.layoutInfo.totalItemsCount.coerceAtLeast(1) - 1) }
     LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        item(key = "model-timing") {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(if (view.task.modelChoice == "local") "Local model" else "Automatic model selection",
+                    style = MaterialTheme.typography.labelLarge)
+                view.elapsedSeconds?.let { seconds ->
+                    val total = seconds.toLong().coerceAtLeast(0)
+                    Text("Elapsed: ${total / 60}m ${total % 60}s · includes tools and waits",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (view.models.isNotEmpty()) Text(view.models.joinToString(" → "),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+
         items(blocks, key = { it.key }) { block ->
             when (block) {
                 is Block.User -> UserBubble(block.text)

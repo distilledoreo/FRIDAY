@@ -55,11 +55,38 @@ class CodeWorkspaceTest {
                 path == "/workspace/code/tasks" && method == "POST" ->
                     if (failStart) throw java.io.IOException("""Computer returned HTTP 409: {"detail":"Four PC tasks are already active"}""") else TASK
                 path.endsWith("/branches") -> """{"default":"main","branches":["main","develop"]}"""
-                path == "/workspace/code/tasks/0123456789ab" -> VIEW
+                path == "/workspace/code/tasks/0123456789ab" -> JSONObject(VIEW).apply {
+                    getJSONObject("session").put("timing", JSONObject("""{"elapsed_seconds":90.25,"models":["opencode/free-model","friday-local/qwen3.8-27b"]}"""))
+                }.toString()
                 path == "/workspace/code/tasks/0123456789ab/diff" -> DIFF
                 else -> "{}"
             }
         }
+    }
+
+    @Test fun parsesLocalSelectionAndRecordedTiming() {
+        val json = JSONObject(VIEW).put("model_choice", "local")
+        json.getJSONObject("session").put("timing", JSONObject("""{"elapsed_seconds":965.533,"models":["opencode/first","friday-local/local"]}"""))
+        val view = CodeTaskView.from(json)
+        assertEquals("local", view.task.modelChoice)
+        assertEquals(965.533, view.elapsedSeconds!!, 0.001)
+        assertEquals(listOf("opencode/first", "friday-local/local"), view.models)
+        assertNull(CodeTaskView.from(JSONObject(VIEW)).elapsedSeconds)
+    }
+
+    @Test fun localModelPickerSendsExplicitChoice() {
+        val pc = FakePc()
+        val code = CodeWorkspace(scope, pc::request)
+        code.open()
+        compose.waitForIdle()
+        compose.setContent { MaterialTheme { CodeHome(code.state.collectAsState().value, code) } }
+        compose.onNodeWithText("Local model").performClick()
+        capture("code-home-local")
+        compose.onNodeWithText("Describe a coding task").performTextInput("Try local coding")
+        compose.onNodeWithContentDescription("Start task").performClick()
+        compose.waitForIdle()
+        val sent = pc.calls.first { it.first == "/workspace/code/tasks" && it.second == "POST" }.third!!
+        assertEquals("local", sent.getString("model_choice"))
     }
 
     @Test fun parsesTasksViewsAndDiffs() {

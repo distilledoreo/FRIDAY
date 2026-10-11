@@ -32,11 +32,12 @@ data class CodeTask(
     val id: String, val project: String, val repo: String, val title: String, val branch: String, val base: String,
     /** busy, waiting, idle, error, cancelled, interrupted or discarded. */
     val state: String, val prUrl: String?, val created: Double, val stats: CodeStats,
+    val modelChoice: String = "auto",
 ) {
     companion object {
         fun from(j: JSONObject) = CodeTask(j.getString("id"), j.optString("project"), j.optString("repo"), j.optString("title"),
             j.optString("branch"), j.optString("base"), j.optString("state", "idle"), j.optString("pr_url").takeIf { it.isNotBlank() && it != "null" },
-            j.optDouble("created", 0.0), CodeStats.from(j.optJSONObject("stats")))
+            j.optDouble("created", 0.0), CodeStats.from(j.optJSONObject("stats")), j.optString("model_choice", "auto"))
     }
 }
 
@@ -86,15 +87,20 @@ data class CodeTaskView(
     /** Pending approvals and questions, in the PC agent's JSON so the shared cards can show them. */
     val permissions: List<JSONObject>, val questions: List<JSONObject>,
     val changes: CodeChanges, val pr: CodePr?,
+    val elapsedSeconds: Double? = null, val models: List<String> = emptyList(),
 ) {
     val waiting: Boolean get() = permissions.isNotEmpty() || questions.isNotEmpty()
     companion object {
         fun from(j: JSONObject): CodeTaskView {
             val session = j.optJSONObject("session")
+            val timing = session?.optJSONObject("timing")
+            val modelHistory = timing?.optJSONArray("models")
             val task = CodeTask.from(j).let { t -> session?.optString("state")?.takeIf { it.isNotBlank() }?.let { t.copy(state = it) } ?: t }
             return CodeTaskView(task, session?.optBoolean("busy") == true, session?.optString("model").orEmpty(),
                 rows(session?.optJSONArray("items")).map(CodeItem::from), rows(session?.optJSONArray("permissions")), rows(session?.optJSONArray("questions")),
-                j.optJSONObject("changes")?.let(CodeChanges::from) ?: CodeChanges(emptyList(), CodeStats()), CodePr.from(j.optJSONObject("pr")))
+                j.optJSONObject("changes")?.let(CodeChanges::from) ?: CodeChanges(emptyList(), CodeStats()), CodePr.from(j.optJSONObject("pr")),
+                timing?.optDouble("elapsed_seconds")?.takeIf { it.isFinite() },
+                modelHistory?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty())
         }
     }
 }

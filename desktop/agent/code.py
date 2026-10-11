@@ -89,6 +89,7 @@ class AddProject(BaseModel):
 class StartTask(BaseModel):
     model_config = ConfigDict(extra='forbid')
     project: str = Field(min_length=1, max_length=40)
+    model_choice: str = Field(default='auto', pattern='^(auto|local)$')
     prompt: str = Field(min_length=1, max_length=20000)
     base: str | None = Field(default=None, max_length=200)
     title: str | None = Field(default=None, max_length=200)
@@ -259,7 +260,7 @@ class CodeProjects:
         first = (f'Repository: {project["repo"]} on GitHub. Base branch: {base}. Your branch: {branch} (already checked out in '
                  f'this worktree).\n\nTask:\n{body.prompt.strip()}')
         try:
-            session = await self.pc.start(Prompt(prompt=first, title=title, source='code'), directory=str(worktree), agent=CODE_AGENT)
+            session = await self.pc.start(Prompt(prompt=first, title=title, source='code', model_choice=body.model_choice), directory=str(worktree), agent=CODE_AGENT)
         except Exception:
             # No session, no task: leave nothing behind.
             await self.run(self.git, 'worktree', 'remove', '--force', str(worktree), cwd=clone, check=False)
@@ -276,7 +277,7 @@ class CodeProjects:
         with contextlib.suppress(HTTPException): record = self.pc.record(task['session']) if task['session'] else None
         state = 'discarded' if task['closed'] else (record or {}).get('state', 'idle')
         return {'id': task['id'], 'project': task['project'], 'repo': task['repo'], 'title': task['title'], 'branch': task['branch'],
-                'base': task['base'], 'state': state, 'pr_url': task['pr_url'], 'created': task['created'],
+                'base': task['base'], 'model_choice': (record or {}).get('model_choice', 'auto'), 'state': state, 'pr_url': task['pr_url'], 'created': task['created'],
                 'stats': json.loads(task['stats'] or '{}')}
 
     def tasks(self, project=None, limit=50):
