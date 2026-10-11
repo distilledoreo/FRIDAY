@@ -342,8 +342,9 @@ internal fun toolIcon(name: String): ImageVector = when (name) {
 }
 
 /** Asks the user to approve a tool call, such as a phone call or a text. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun ApprovalCard(approval: PendingApproval, onAnswer: (Boolean) -> Unit) {
+internal fun ApprovalCard(approval: PendingApproval, onAnswer: (Boolean) -> Unit, onAlways: () -> Unit = {}) {
     Surface(
         shape = RoundedCornerShape(8.dp),
         color = MaterialTheme.colorScheme.secondaryContainer,
@@ -359,7 +360,7 @@ internal fun ApprovalCard(approval: PendingApproval, onAnswer: (Boolean) -> Unit
                 )
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    text = "Allow this?",
+                    text = approval.title,
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                 )
@@ -369,11 +370,15 @@ internal fun ApprovalCard(approval: PendingApproval, onAnswer: (Boolean) -> Unit
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSecondaryContainer,
             )
-            Row(
+            FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 OutlinedButton(shape = MaterialTheme.shapes.small, onClick = { onAnswer(false) }) { Text("Deny") }
+                approval.alwaysLabel?.let { always ->
+                    OutlinedButton(shape = MaterialTheme.shapes.small, onClick = onAlways) { Text(always) }
+                }
                 Button(shape = MaterialTheme.shapes.small, onClick = { onAnswer(true) }) { Text(approval.approveLabel) }
             }
         }

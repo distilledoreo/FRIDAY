@@ -24,6 +24,18 @@ internal object AppIcons {
         }
     }
 
+    /** Material "Smartphone", for phone-use activity. */
+    val PhoneUse: ImageVector by lazy {
+        materialIcon(name = "Filled.Smartphone") {
+            materialPath {
+                moveTo(17f, 1.01f); lineTo(7f, 1f); curveTo(5.9f, 1f, 5f, 1.9f, 5f, 3f)
+                verticalLineTo(21f); curveTo(5f, 22.1f, 5.9f, 23f, 7f, 23f); horizontalLineTo(17f)
+                curveTo(18.1f, 23f, 19f, 22.1f, 19f, 21f); verticalLineTo(3f); curveTo(19f, 1.9f, 18.1f, 1.01f, 17f, 1.01f); close()
+                moveTo(17f, 19f); horizontalLineTo(7f); verticalLineTo(5f); horizontalLineTo(17f); close()
+            }
+        }
+    }
+
     val Computer: ImageVector by lazy {
         materialIcon(name = "Filled.Computer") {
             materialPath {

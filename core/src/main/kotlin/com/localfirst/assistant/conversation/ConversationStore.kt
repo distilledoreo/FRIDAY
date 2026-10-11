@@ -207,6 +207,7 @@ private data class MessageDto(
     val success: Boolean? = null,
     val sources: List<SourceDto> = emptyList(),
     val attachments: List<AttachmentDto> = emptyList(),
+    val image: String? = null,
 ) {
     fun toModel(): Message? = when (role) {
         "user" -> Message.User(content, attachments.map { it.toModel() })
@@ -218,6 +219,7 @@ private data class MessageDto(
             content = content,
             success = success ?: false,
             sources = sources.map { SourceLink(it.title, it.url, it.contentRead) },
+            image = image,
         )
         else -> null
     }
@@ -244,6 +246,7 @@ private data class MessageDto(
                 name = message.name,
                 success = message.success,
                 sources = message.sources.map { SourceDto(it.title, it.url, it.contentRead) },
+                image = message.image,
             )
         }
     }

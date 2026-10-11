@@ -322,7 +322,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     ) {
                         state.pendingApproval?.let { approval ->
                             item(key = "approval") {
-                                ApprovalCard(approval = approval, onAnswer = viewModel::answerApproval)
+                                ApprovalCard(approval = approval, onAnswer = viewModel::answerApproval, onAlways = viewModel::answerApprovalAlways)
                             }
                         }
                         state.voiceError?.let { error -> item(key="voice-error") {
@@ -356,7 +356,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                                     onShare = viewModel::shareText,
                                     onFeedback = { liked -> lastQuestion?.let { viewModel.saveAnswerFeedback(it, item.text, liked) } },
                                 )
-                                is TranscriptItem.ToolActivity -> ToolActivityCard(item, viewModel::loadImage, viewModel::openArtifact, { FridayTaskCard(it, state, viewModel) }, { PcChatCard(it, state, viewModel) })
+                                is TranscriptItem.ToolActivity -> if (item.steps.all(com.localfirst.assistant.presentation.PhoneUseActivity::isPhoneUse)) PhoneUseActivityCard(item) else ToolActivityCard(item, viewModel::loadImage, viewModel::openArtifact, { FridayTaskCard(it, state, viewModel) }, { PcChatCard(it, state, viewModel) })
                                 TranscriptItem.Thinking -> ThinkingIndicator()
                             }
                         }

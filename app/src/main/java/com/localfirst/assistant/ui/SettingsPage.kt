@@ -32,6 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -234,8 +235,20 @@ private fun PhoneAccessSection() {
     ) {
         Text(if (enabled) "Notification access: allowed" else "Allow notification access")
     }
+    PhoneUseSection(accessibilityEnabled)
+}
+
+/** Settings > Phone use: Codex-style app access, screenshots and action review. Changes save at once. */
+@Composable
+private fun PhoneUseSection(accessibilityEnabled: Boolean) {
+    val context = LocalContext.current
+    val settings = remember { com.localfirst.assistant.phone.PhoneUseSettings.get(context) }
+    val prefs by settings.state.collectAsState()
+    Text("Phone use", style = MaterialTheme.typography.titleMedium)
     Text(
-        text = "Phone control uses Android's Accessibility service to read visible non-password text and perform gestures, replace text in a focused field, and use system navigation. Read screen content is sent to the current chat model. The first control action asks for approval; approving allows later phone actions in that conversation. A different conversation requires its own approval. Enable it only if you want FRIDAY to operate other apps; you can turn it off here in Android Settings at any time.",
+        text = "FRIDAY can use apps on this phone for you: it looks at the app on screen (its text and a screenshot) and taps, types and scrolls in it, " +
+            "showing a banner with a Stop button while it works. What it sees goes to the current chat model. " +
+            "Android needs FRIDAY's accessibility service for this; screenshots need Android 11 or newer.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -243,7 +256,47 @@ private fun PhoneAccessSection() {
         shape = MaterialTheme.shapes.small,
         onClick = { runCatching { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) } },
     ) {
-        Text(if (accessibilityEnabled) "Phone control: enabled" else "Enable phone control")
+        Text(if (accessibilityEnabled) "Phone use: on" else "Turn on phone use")
+    }
+    SettingSwitch("Ask before using an app", "Off lets FRIDAY use any app without asking first. FRIDAY never uses itself, app installers or permission screens.", prefs.askByDefault) { on ->
+        settings.update { it.copy(askByDefault = on) }
+    }
+    SettingSwitch("Ask before sending, buying or deleting", "FRIDAY asks before taps like Send, Buy, Pay, Delete or Confirm.", prefs.reviewActions) { on ->
+        settings.update { it.copy(reviewActions = on) }
+    }
+    SettingSwitch("Include screenshots", "Each look at an app sends a screenshot. Off sends only the screen's text and layout, which is faster but sees less.", prefs.screenshots) { on ->
+        settings.update { it.copy(screenshots = on) }
+    }
+    if (prefs.rules.isNotEmpty()) {
+        Text("Apps", style = MaterialTheme.typography.titleSmall)
+        prefs.rules.toSortedMap().forEach { (pkg, access) ->
+            val name = remember(pkg) {
+                runCatching { context.packageManager.getApplicationLabel(context.packageManager.getApplicationInfo(pkg, 0)).toString() }.getOrDefault(pkg)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.weight(1f)) {
+                    Text(name, style = MaterialTheme.typography.bodyLarge)
+                    Text(if (access == com.localfirst.assistant.tools.phoneuse.AppAccess.DENY) "Never allowed" else "Always allowed",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                TextButton(shape = MaterialTheme.shapes.small, onClick = {
+                    val flipped = if (access == com.localfirst.assistant.tools.phoneuse.AppAccess.DENY) com.localfirst.assistant.tools.phoneuse.AppAccess.ALLOW else com.localfirst.assistant.tools.phoneuse.AppAccess.DENY
+                    settings.setRule(pkg, flipped)
+                }) { Text(if (access == com.localfirst.assistant.tools.phoneuse.AppAccess.DENY) "Allow" else "Block") }
+                TextButton(shape = MaterialTheme.shapes.small, onClick = { settings.setRule(pkg, null) }) { Text("Forget") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingSwitch(title: String, detail: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }
 

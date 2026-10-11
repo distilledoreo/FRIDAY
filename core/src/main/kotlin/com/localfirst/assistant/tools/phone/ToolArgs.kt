@@ -46,6 +46,14 @@ internal class SchemaBuilder {
             max?.let { put("maximum", it) }
         }
 
+    fun number(name: String, description: String, min: Double? = null, max: Double? = null, required: Boolean = false) =
+        add(name, required) {
+            put("type", "number")
+            put("description", description)
+            min?.let { put("minimum", it) }
+            max?.let { put("maximum", it) }
+        }
+
     fun boolean(name: String, description: String, required: Boolean = false) =
         add(name, required) {
             put("type", "boolean")
@@ -97,6 +105,26 @@ internal object Args {
             throw IllegalArgumentException("'$name' must be an integer from ${range.first} to ${range.last}.")
         }
         return number.toInt()
+    }
+
+    fun optionalDouble(args: JsonObject, name: String, min: Double, max: Double): Double? {
+        val element = args[name] ?: return null
+        if (element is JsonNull) return null
+        val number = (element as? JsonPrimitive)?.let { it.doubleOrNull ?: it.content.trim().toDoubleOrNull() }
+        if (number == null || !number.isFinite() || number < min || number > max) {
+            throw IllegalArgumentException("'$name' must be a number from $min to $max.")
+        }
+        return number
+    }
+
+    /** A string kept exactly as sent (spaces and newlines matter when typing). */
+    fun rawString(args: JsonObject, name: String, maxLength: Int): String {
+        val element = args[name] ?: throw IllegalArgumentException("Missing required argument '$name'.")
+        val text = (element as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+            ?: throw IllegalArgumentException("'$name' must be a string.")
+        if (text.isEmpty()) throw IllegalArgumentException("'$name' must not be empty.")
+        if (text.length > maxLength) throw IllegalArgumentException("'$name' must be at most $maxLength characters.")
+        return text
     }
 
     fun boolean(args: JsonObject, name: String): Boolean =
