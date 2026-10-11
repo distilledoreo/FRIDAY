@@ -365,7 +365,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     Column(Modifier.align(Alignment.BottomCenter).padding(bottom=homeOffset).onSizeChanged { composerHeight=it.height }) {
                         if(sharingScreen)Text("Screen context shared",Modifier.padding(horizontal=16.dp),style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.primary)
                         state.imageStatus?.let { Text(it,Modifier.padding(horizontal=16.dp),style=MaterialTheme.typography.labelSmall) }
-                        voice?.let { InlineVoice(it,viewModel::pauseVoiceFromChat,viewModel::startVoice,viewModel::interruptVoice,viewModel::closeVoice,sharingScreen,::takePhoto,::toggleScreenShare) }
+                        voice?.let { InlineVoice(it,viewModel::pauseVoiceFromChat,viewModel::startVoice,viewModel::interruptVoice,viewModel::closeVoice,sharingScreen,::takePhoto,::toggleScreenShare,onMuteMic=viewModel::toggleMicMute) }
                         state.groundingStatus?.let { status ->
                             Text(status, Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelSmall)
                             if (state.groundingResearchAvailable) TextButton(shape = MaterialTheme.shapes.small, onClick = viewModel::proposeGroundedResearch, enabled = !state.busy && !state.workspaceBusy) { Text("Have FRIDAY research this deeper") }

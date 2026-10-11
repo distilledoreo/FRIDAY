@@ -32,6 +32,8 @@ data class VoiceUiState(
     val speaking: String = "",
     /** Why voice paused, or a hint. */
     val note: String? = null,
+    /** The mic is off (muted): FRIDAY keeps speaking but doesn't hear you. */
+    val micMuted: Boolean = false,
 )
 
 /** The audio setup for one voice session, and a note to show (for example, why it fell back). */
@@ -82,6 +84,13 @@ class VoiceController(
         loop = scope.launch { runLoop() }
     }
 
+    /** Mic off without ending the conversation: the assistant keeps talking, it just doesn't hear you. */
+    fun muteMic(muted: Boolean) {
+        _state.update { it?.copy(micMuted = muted, level = 0f) }
+        if (loop?.isActive != true) return // paused or closed: the mic is already off
+        current?.focus?.let { if (muted) it.muteMic() else it.unmuteMic() }
+    }
+
     /** Stops listening and speaking but keeps voice mode open ("tap to talk"). */
     fun pause(note: String? = null) {
         loop?.cancel()
@@ -125,6 +134,13 @@ class VoiceController(
                 // A cancelled reply may still be wrapping up.
                 withTimeoutOrNull(5_000) { chat.first { !it.busy } }
                 set(VoicePhase.LISTENING, heard = "")
+                if (_state.value?.micMuted == true) {
+                    // Muted: leave the mic closed and wait, instead of the two used-up
+                    // silences that would pause voice mode here.
+                    io.focus.muteMic()
+                    _state.first { it?.micMuted != true }
+                    continue
+                }
                 val text = when (val result = io.input.listen(::onPartial, ::onLevel, VOICE_SILENCE_MS)) {
                     is ListenResult.Heard -> result.text
                     ListenResult.Silence -> {
@@ -163,7 +179,7 @@ class VoiceController(
         interrupt = interrupted
         var bargeIn: Job? = null
         fun listenForBargeIn() {
-            if (!bargeInEnabled()) return
+            if (!bargeInEnabled() || _state.value?.micMuted == true) return
             bargeIn = launch {
                 io.bargeIn.awaitSpeech()
                 interrupted.complete(Unit)

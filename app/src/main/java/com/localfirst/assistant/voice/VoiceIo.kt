@@ -33,6 +33,14 @@ interface BargeInListener {
 interface VoiceAudioFocus {
     fun acquire()
     fun release()
+
+    /**
+     * Mic off for a muted voice session while the assistant keeps speaking;
+     * [unmuteMic] turns it back on. Empty by default: engines that open the mic
+     * per listening turn don't need to do anything (no [listen] is made).
+     */
+    fun muteMic() {}
+    fun unmuteMic() {}
 }
 
 /** The Android pieces voice mode needs, bundled so the view model can be built without them in tests. */
