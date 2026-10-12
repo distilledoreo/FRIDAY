@@ -296,6 +296,8 @@ internal object ToolLabels {
             "schedule_pc_task" -> pick("Scheduling PC task", "Scheduled PC task", "Couldn't schedule the PC task")
             "list_pc_schedules" -> pick("Listing PC schedules", "Listed PC schedules", "Couldn't list PC schedules")
             "start_code_task" -> pick("Starting coding task", "Started coding task", "Couldn't start the coding task")
+            "send_code_task_message" -> pick("Sending coding brief", "Sent coding brief", "Couldn't send the coding brief")
+            "stop_code_task" -> pick("Stopping coding task", "Stopped coding task", "Couldn't stop the coding task")
             "get_code_task" -> pick("Reading coding task", "Read coding task", "Couldn't read the coding task")
             "list_code_projects" -> pick("Listing code projects", "Listed code projects", "Couldn't list code projects")
             else -> pick("Running $name", "Used $name", "$name failed")

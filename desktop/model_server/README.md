@@ -32,7 +32,7 @@ right limit. Rolling back is the reverse: remove the drop-in, re-enable the llam
 ## What the adapter does
 
 `strata.py` adapts OpenAI chat requests to Strata. It keeps the gateway's stable prompt assembly, tool history,
-image parts, streaming and cancellation. Strata has one sequence and no llama.cpp slots: `id_slot` is dropped and
+image parts, streaming and cancellation. Strata uses native sequences and no llama.cpp slots: `id_slot` is dropped and
 llama.cpp snapshot files are never loaded into it. Incognito requests (`cache_prompt: false`) turn off checkpoints
 and the prefix pin. Background one-shot requests (the gateway's non-streaming transport) do not park their
 conversation; ordinary chat keeps Strata's conversation parking, so switching chats reuses longer histories.
@@ -72,3 +72,22 @@ there; until it is upstream it has to be re-applied after each Strata update.
 ```sh
 python -m unittest desktop.model_server.tests.test_strata desktop.model_server.tests.test_wait_ready -v
 ```
+
+## Concurrent Chat and Code
+
+For a shared Strata engine, set `"parallel": 2` in its external model config and add `"--batch-mtp"` to
+`args` alongside the existing `--mtp` and `--spec` options. Keep normal prompt checkpoints enabled: moving a
+running coding conversation into a slot can otherwise reread its history. Verify `/v1/status` reports
+`concurrency.serving: 2`; the engine can fall back to fewer slots if allocation fails. Additional slot state
+consumes RAM and VRAM and can reduce expert residency. Start with a modest context and verify memory headroom
+before raising it. See [Strata batching](https://github.com/Niko1221/Strata/blob/main/docs/BATCHING.md).
+
+The coding proxy probes the loaded backend's actual slot count. With two Strata slots it can share chat's GPU
+read leases while retaining one-at-a-time coding inference. Single-slot backends keep foreground priority.
+Image generation, maintenance and recovery still block coding inference and wait for all outstanding streams.
+
+Chat coding tools default new delegated tasks to explicit local selection, expose automatic cloud selection
+when requested, and can read results, send follow-up briefs or stop tasks without discarding their changes.
+All coding permissions and model pinning stay with the task; chat cannot approve coding-agent requests.
+Delegation and follow-ups require the user's request and the existing tool confirmation flow. Incognito
+chat excludes these tools. Starting a task does not install an unattended orchestrator or approve publication.

@@ -35,6 +35,18 @@ def local_payload(value):
     return value
 
 
+async def supports_parallel(client):
+    """Only bypass foreground waiting when the loaded backend confirms two slots."""
+    if os.environ.get('FRIDAY_LLM_BACKEND') != 'strata': return False
+    try:
+        response = await client.get('http://127.0.0.1:8080/v1/status', timeout=3)
+        if response.status_code != 200: return False
+        status = response.json()
+        return status.get('loaded') is True and int(status.get('concurrency', {}).get('serving', 1)) >= 2
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+        return False
+
+
 def install(app, agent, gate, client_factory=None):
     router = APIRouter(prefix='/workspace/pc/internal/v1')
     inference = asyncio.Lock()
@@ -55,8 +67,10 @@ def install(app, agent, gate, client_factory=None):
         client = response = None
         error_content = None
         try:
+            client = (client_factory or (lambda: httpx.AsyncClient(timeout=httpx.Timeout(600, connect=5), follow_redirects=False)))()
+            concurrent = await supports_parallel(client)
             deadline = time.monotonic() + 600
-            while not gate.background_allowed():
+            while not gate.background_allowed(concurrent=concurrent):
                 if not agent.settings()['enabled'] or await request.is_disconnected():
                     raise HTTPException(409, 'Local task cancelled')
                 if time.monotonic() >= deadline or gate.phase == 'recovery_failed':
@@ -65,7 +79,6 @@ def install(app, agent, gate, client_factory=None):
             if not agent.settings()['enabled'] or await request.is_disconnected(): raise HTTPException(409, 'Local task cancelled')
             await gate.acquire_chat()
             acquired = True
-            client = (client_factory or (lambda: httpx.AsyncClient(timeout=httpx.Timeout(600, connect=5), follow_redirects=False)))()
             response = await client.send(client.build_request('POST', 'http://127.0.0.1:8080/v1/chat/completions', json=body), stream=True)
             if response.status_code == 400:
                 raw_error = await response.aread()

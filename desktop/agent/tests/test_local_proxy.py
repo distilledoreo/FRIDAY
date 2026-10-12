@@ -106,6 +106,53 @@ class LocalProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await asyncio.wait_for(task, 2)).status_code, 200)
         self.assertEqual(self.gate.readers, 0)
 
+    async def test_confirmed_parallel_strata_overlaps_foreground_but_respects_gpu_handoff(self):
+        from desktop.agent.local_proxy import supports_parallel
+        async def status(request):
+            return httpx.Response(200, json={'loaded': True, 'concurrency': {'serving': 2}})
+        with patch.dict('os.environ', {'FRIDAY_LLM_BACKEND': 'strata'}):
+            async with httpx.AsyncClient(transport=httpx.MockTransport(status)) as client:
+                self.assertTrue(await supports_parallel(client))
+        self.gate.readers = 1
+        self.gate.foreground['chat'] = __import__('time').monotonic() + 30
+        self.assertFalse(self.gate.background_allowed())
+        self.assertTrue(self.gate.background_allowed(concurrent=True))
+        with patch('desktop.agent.local_proxy.supports_parallel', return_value=True):
+            response = await self.client.post(self.path, headers=self.headers, json=self.body)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.gate.readers, 1)
+        self.gate.exclusive = True
+        self.assertFalse(self.gate.background_allowed(concurrent=True))
+        self.gate.exclusive = False
+        self.gate.maintenance_paused = lambda: True
+        self.assertFalse(self.gate.background_allowed(concurrent=True))
+
+    async def test_image_handoff_waits_for_both_concurrent_streams(self):
+        await self.gate.acquire_chat()
+        await self.gate.acquire_chat()
+        entered = asyncio.Event()
+        async def image():
+            async with self.gate.image_lease(): entered.set()
+        task = asyncio.create_task(image())
+        await asyncio.sleep(.01)
+        self.assertFalse(entered.is_set())
+        self.assertFalse(self.gate.background_allowed(concurrent=True))
+        await self.gate.release_chat()
+        await asyncio.sleep(.01)
+        self.assertFalse(entered.is_set())
+        await self.gate.release_chat()
+        await asyncio.wait_for(task, 1)
+        self.assertTrue(entered.is_set())
+        self.assertEqual(self.gate.readers, 0)
+        self.assertFalse(self.gate.exclusive)
+
+    async def test_parallel_capability_fails_closed_when_backend_is_single_slot_or_unloaded(self):
+        from desktop.agent.local_proxy import supports_parallel
+        for payload in [{'loaded': True, 'concurrency': {'serving': 1}}, {'loaded': False, 'concurrency': {'serving': 2}}, {'loaded': True, 'concurrency': {'serving': 'invalid'}}]:
+            with patch.dict('os.environ', {'FRIDAY_LLM_BACKEND': 'strata'}):
+                async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload))) as client:
+                    self.assertFalse(await supports_parallel(client))
+
     async def test_disabled_and_invalid_requests_do_not_infer(self):
         self.assertEqual((await self.client.post(self.path, headers=self.headers, json={})).status_code, 422)
         self.agent.save_settings(Settings(enabled=False).model_dump())

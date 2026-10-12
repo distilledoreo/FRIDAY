@@ -32,9 +32,35 @@ class CodeToolsTest {
         val result = registry.execute(call, ToolConfirmer { request -> assertTrue(request.prompt.contains("octo/demo")); true })
         assertTrue(result.success)
         assertEquals(listOf("/workspace/code/projects" to "POST", "/workspace/code/tasks" to "POST"), gateway.calls.map { it.first to it.second })
+        assertEquals("local", Json.parseToJsonElement(gateway.calls[1].third!!).jsonObject["model_choice"]!!.jsonPrimitive.content)
         assertEquals("octo/demo", Json.parseToJsonElement(gateway.calls[0].third!!).jsonObject["repo"]!!.jsonPrimitive.content)
         val body = Json.parseToJsonElement(gateway.calls[1].third!!).jsonObject
         assertEquals(listOf("p1", "Fix the login bug", "develop"), listOf("project", "prompt", "base").map { body[it]!!.jsonPrimitive.content })
+    }
+
+    @Test fun orchestrationFollowUpsKeepTheTaskAndRequireConfirmation() = runBlocking {
+        val gateway = Gateway()
+        val registry = ToolRegistry().apply { codeTools(gateway).forEach(::register) }
+        val call = ToolCall("follow", CodeToolNames.FOLLOW_UP, """{"id":"0123456789ab","prompt":"Add regression tests"}""")
+        registry.execute(call, ToolConfirmer { false })
+        assertTrue(gateway.calls.isEmpty())
+        assertTrue(registry.execute(call, ToolConfirmer { true }).success)
+        assertEquals("/workspace/code/tasks/0123456789ab/messages", gateway.calls.single().first)
+        val body = Json.parseToJsonElement(gateway.calls.single().third!!).jsonObject
+        assertEquals("Add regression tests", body["prompt"]!!.jsonPrimitive.content)
+        assertFalse(body.containsKey("model_choice"))
+        gateway.calls.clear()
+        assertTrue(registry.execute(ToolCall("stop", CodeToolNames.STOP, """{"id":"0123456789ab"}"""), ToolConfirmer { true }).success)
+        assertEquals("/workspace/code/tasks/0123456789ab/abort", gateway.calls.single().first)
+    }
+
+    @Test fun explicitAutomaticChoiceIsPassedAndInvalidChoicesDoNotStartWork() = runBlocking {
+        val gateway = Gateway()
+        val tool = codeTools(gateway).first { it.name == CodeToolNames.START }
+        assertTrue(runCatching { tool.execute(buildJsonObject { put("repo", "octo/demo"); put("prompt", "Fix"); put("model_choice", "remote-paid") }) }.isFailure)
+        assertTrue(gateway.calls.isEmpty())
+        tool.execute(buildJsonObject { put("repo", "octo/demo"); put("prompt", "Fix"); put("model_choice", "auto") })
+        assertEquals("auto", Json.parseToJsonElement(gateway.calls.last().third!!).jsonObject["model_choice"]!!.jsonPrimitive.content)
     }
 
     @Test fun badRepositoriesAndIdsNeverReachThePc() = runBlocking {
@@ -44,7 +70,9 @@ class CodeToolsTest {
             assertTrue(runCatching { tools.getValue(CodeToolNames.START).execute(buildJsonObject { put("repo", repo); put("prompt", "x") }) }.isFailure)
         }
         for (id in listOf("../projects", "0123456789ab?x=1", "")) {
-            assertTrue(runCatching { tools.getValue(CodeToolNames.GET).execute(buildJsonObject { put("id", id) }) }.isFailure)
+            for (name in listOf(CodeToolNames.GET, CodeToolNames.FOLLOW_UP, CodeToolNames.STOP)) {
+                assertTrue(runCatching { tools.getValue(name).execute(buildJsonObject { put("id", id); put("prompt", "Fix") }) }.isFailure)
+            }
         }
         assertTrue(gateway.calls.isEmpty())
         assertTrue(codeTools(gateway).none { ChatPrivacy(incognito = true).allowsTool(it.name) })
