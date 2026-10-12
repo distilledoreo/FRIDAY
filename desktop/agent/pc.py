@@ -454,7 +454,7 @@ class PcAgent:
                            'options': {'baseURL': 'http://127.0.0.1:8700/workspace/pc/internal/v1', 'apiKey': self.password},
                            # Slot 1 is llama.cpp's background slot; the proxy adapts the request for Strata.
                            'models': {LOCAL[1]: {'name': 'Qwen3.8 Flash Next' if os.environ.get('FRIDAY_LLM_BACKEND') == 'strata' else 'Qwen3.8 27B', 'tool_call': True, 'attachment': False, 'modalities': {'input': ['text'], 'output': ['text']}, 'limit': {'context': int(os.environ.get('FRIDAY_LLM_CONTEXT', '65536')), 'output': 8192},
-                                                 'options': {'id_slot': 1, 'chat_template_kwargs': {'enable_thinking': False}}}}},
+                                                 'options': {'id_slot': 1, 'reasoning_effort': 'low', 'chat_template_kwargs': {'enable_thinking': True, 'reasoning_effort': 'low'}}}}},
             },
             'permission': {'*': 'ask', 'bash': 'ask', 'edit': 'ask', 'read': 'allow', 'webfetch': 'allow'},
             'mcp': {COMPUTER: {'type': 'local', 'command': [self.python, '-m', 'agent.computer'], 'enabled': settings['computer_use'],

@@ -23,11 +23,17 @@ def local_payload(value):
                                   {'type': 'text', 'text': '[Image unavailable: the local fallback is text-only.]'}
                                   for part in message['content']]
         messages.append(message)
-    value.update(messages=messages, id_slot=1, chat_template_kwargs={'enable_thinking': False})
+    # This private OpenCode route is separate from foreground chat. Keep coding
+    # reasoning low even when a saved OpenCode session still sends thinking off.
+    value.update(messages=messages, id_slot=1, reasoning_effort='low',
+                 chat_template_kwargs={'enable_thinking': True, 'reasoning_effort': 'low'})
+    value.pop('reasoning', None)
     # A caller cannot select a paid/remote model or a different destination here.
     value['model'] = 'qwen3.8-27b'
     if os.environ.get('FRIDAY_LLM_BACKEND') == 'strata':
         value['model'] = 'qwen3.8-flash-next'
+        # Strata enforces this independently of the total answer/tool-call budget.
+        value['reasoning_budget_tokens'] = 2048
         value.pop('id_slot', None)
         if value.pop('cache_prompt', None) is False:
             value['strata_checkpoint'] = False
