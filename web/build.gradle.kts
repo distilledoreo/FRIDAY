@@ -3,6 +3,8 @@ plugins {
     // so apply them here without re-declaring the version.
     id("org.jetbrains.kotlin.multiplatform")
     id("org.jetbrains.kotlin.plugin.serialization")
+    id("org.jetbrains.kotlin.plugin.compose")
+    id("org.jetbrains.compose")
 }
 
 kotlin {
@@ -27,6 +29,11 @@ kotlin {
             // Browser-backed implementations of the JVM-only infra (HTTP, storage) live here.
             dependencies {
                 implementation(project(":core"))
+                implementation(compose.runtime)
+                implementation(compose.foundation)
+                implementation(compose.material3)
+                implementation(compose.ui)
+                implementation(compose.components.resources)
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.kotlinx.serialization.json)
             }
