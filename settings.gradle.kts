@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "local-android-assistant"
-include(":app", ":core")
+include(":app", ":core", ":web")
