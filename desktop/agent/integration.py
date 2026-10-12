@@ -5,6 +5,7 @@ from pathlib import Path
 from .api import install
 from .cloud import FreeCloud
 from .engine import OpenCodeEngine
+from .code import CodeProjects, routes as code_routes
 from .pc import PcAgent, routes as pc_routes
 
 
@@ -38,6 +39,8 @@ def enable(app, auth, root, search, gate=None):
     # FRIDAY on the PC itself: OpenCode with the phone's permission settings.
     pc = PcAgent(root)
     pc_routes(app, auth, pc)
+    # GitHub repositories as coding projects, each task in its own worktree.
+    code_routes(app, auth, CodeProjects(root, pc))
     from .local_proxy import install as install_local_proxy
     install_local_proxy(app, pc, gate)
     return install(app, auth, root, engine, unavailable_detail=detail,outgoing_enabled=outgoing_enabled,grounding_search=grounded_search)

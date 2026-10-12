@@ -76,6 +76,7 @@ internal fun ChatDrawer(
     onActivity: () -> Unit,
     onFiles: () -> Unit,
     onImages: () -> Unit,
+    onCode: () -> Unit = {},
 ) {
     var renaming by remember { mutableStateOf<ConversationSummary?>(null) }
     var deleting by remember { mutableStateOf<ConversationSummary?>(null) }
@@ -101,6 +102,7 @@ internal fun ChatDrawer(
                     item { DrawerRow("FRIDAY", LineIcons.Friday, onActivity) }
                     item { DrawerRow("Library", LineIcons.Library, onFiles) }
                     item { DrawerRow("Images", LineIcons.Images, onImages) }
+                    item { DrawerRow("Code", LineIcons.Code, onCode) }
                     item {
                         Text("Projects", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 6.dp))

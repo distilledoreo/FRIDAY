@@ -24,8 +24,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 /**
  * User-enabled bridge for phone use: reads windows, dispatches gestures, takes screenshots (Android 11+)
  * and, on Android 13+, types through the accessibility input method. Events are only timestamped
- * (to know when the screen has settled) and used to remember recently used apps; no other work runs
- * from them.
+ * (to know when the screen has settled), used to remember recently used apps, and kept briefly when an
+ * app announces something (a toast, an alert, a web page's live region) so phone use can report it
+ * after it has disappeared. Notifications are never read.
  */
 class PhoneControlAccessibilityService : AccessibilityService() {
     @Volatile var lastEventAt = 0L
@@ -40,13 +41,35 @@ class PhoneControlAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         event ?: return
         lastEventAt = SystemClock.uptimeMillis()
-        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            val pkg = event.packageName?.toString() ?: return
-            if (pkg != packageName && !com.localfirst.assistant.tools.phoneuse.ProtectedApps.isTransient(pkg)) {
-                synchronized(recent) { recent.remove(pkg); recent.add(0, pkg); while (recent.size > MAX_RECENT) recent.removeAt(recent.lastIndex) }
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                val pkg = event.packageName?.toString() ?: return
+                if (pkg != packageName && !com.localfirst.assistant.tools.phoneuse.ProtectedApps.isTransient(pkg)) {
+                    synchronized(recent) { recent.remove(pkg); recent.add(0, pkg); while (recent.size > MAX_RECENT) recent.removeAt(recent.lastIndex) }
+                }
             }
+            AccessibilityEvent.TYPE_ANNOUNCEMENT -> announce(event)
+            // Only toasts: other apps' notifications are not FRIDAY's to read.
+            AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED -> if (event.className?.contains("Toast") == true) announce(event)
         }
     }
+
+    private fun announce(event: AccessibilityEvent) {
+        val pkg = event.packageName?.toString() ?: return
+        val text = event.text.joinToString(" ") { it.toString() }.trim().take(300).ifEmpty { return }
+        synchronized(announced) {
+            announced.addLast(Announcement(SystemClock.uptimeMillis(), pkg, text))
+            while (announced.size > MAX_ANNOUNCED) announced.removeFirst()
+        }
+    }
+
+    /** What [pkg] announced after [since] (uptime millis), oldest first. */
+    fun announcedSince(since: Long, pkg: String): List<String> = synchronized(announced) {
+        announced.filter { it.at > since && it.pkg == pkg }.map { it.text }.distinct()
+    }
+
+    private class Announcement(val at: Long, val pkg: String, val text: String)
+    private val announced = ArrayDeque<Announcement>()
 
     override fun onInterrupt() = Unit
 
@@ -135,6 +158,7 @@ class PhoneControlAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val MAX_RECENT = 12
+        private const val MAX_ANNOUNCED = 20
         private const val SCREENSHOT_INTERVAL_MS = 350L
         private val recent = mutableListOf<String>()
         @Volatile private var connected: PhoneControlAccessibilityService? = null

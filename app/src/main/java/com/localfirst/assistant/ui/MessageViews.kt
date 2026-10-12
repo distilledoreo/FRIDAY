@@ -207,6 +207,7 @@ internal fun ToolActivityCard(
     openImage: (String) -> Unit,
     fridayCard: @Composable (String) -> Unit = {},
     pcCard: @Composable (String) -> Unit = {},
+    codeCard: @Composable (String) -> Unit = {},
 ) {
     Surface(
         shape = RoundedCornerShape(8.dp),
@@ -218,9 +219,9 @@ internal fun ToolActivityCard(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             item.steps.forEach { step ->
-                step.agentTask?.let { fridayCard(it) } ?: step.pcTask?.let { pcCard(it) } ?: ToolStepRow(step)
+                step.agentTask?.let { fridayCard(it) } ?: step.pcTask?.let { pcCard(it) } ?: step.codeTask?.let { codeCard(it) } ?: ToolStepRow(step)
                 step.imageResult?.let { GeneratedImage(it, imageLoader, openImage) }
-                if(step.agentTask==null&&step.pcTask==null&&step.imageResult==null)step.resultContent?.let { ToolResultSurface(step.name,it,step.callId) }
+                if(step.agentTask==null&&step.pcTask==null&&step.codeTask==null&&step.imageResult==null)step.resultContent?.let { ToolResultSurface(step.name,it,step.callId) }
             }
         }
     }

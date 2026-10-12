@@ -120,5 +120,12 @@ internal object LineIcons {
 
     val Close by lazy { icon("Close", "M6.5,6.5L17.5,17.5", "M17.5,6.5L6.5,17.5") }
 
+    val Code by lazy { icon("Code", "M8.5,7.5L4,12L8.5,16.5", "M15.5,7.5L20,12L15.5,16.5", "M13.4,5L10.6,19") }
+
+    val Branch by lazy {
+        icon("Branch", "M7,4a2,2 0 1,0 0,4a2,2 0 1,0 0,-4z", "M7,16a2,2 0 1,0 0,4a2,2 0 1,0 0,-4z", "M17,6a2,2 0 1,0 0,4a2,2 0 1,0 0,-4z",
+            "M7,8V16", "M17,10C17,13.5 7,12.5 7,16")
+    }
+
     val Chat by lazy { icon("Chat", "M5,6.5A2,2 0 0,1 7,4.5H17A2,2 0 0,1 19,6.5V14A2,2 0 0,1 17,16H10L6,19.5V16H7A2,2 0 0,1 5,14Z") }
 }

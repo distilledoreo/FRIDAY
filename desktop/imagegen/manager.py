@@ -39,8 +39,9 @@ class GpuGate:
     def maintenance_paused(self):
         return bool(self.maintenance_file and self.maintenance_file.exists())
 
-    def background_allowed(self):
-        return not self.exclusive and self.readers == 0 and not self.maintenance_paused() and not any(deadline > time.monotonic() for deadline in self.foreground.values())
+    def background_allowed(self, concurrent=False):
+        return (not self.exclusive and not self.maintenance_paused() and
+                (concurrent or (self.readers == 0 and not any(deadline > time.monotonic() for deadline in self.foreground.values()))))
 
     async def acquire_chat(self):
         async with self.condition:

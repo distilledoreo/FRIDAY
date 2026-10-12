@@ -54,7 +54,7 @@ class PhoneUseEngineTest {
 
         val second = provider.requests[1]
         val image = second.last() as Message.User
-        assertTrue(image.content.startsWith("Screenshot for the latest phone-use result above"))
+        assertTrue(image.content.startsWith("Screenshot for the phone-use result above"))
         assertEquals(shot.path, image.attachments.single().path)
         // Kept on disk and on the stored result for the transcript; never stored as a user message.
         assertTrue(shot.exists())
@@ -122,4 +122,28 @@ class PhoneUseEngineTest {
         assertFalse(refused.success)
         assertTrue(refused.content.contains("only one phone UI action per response"))
     }
+    @Test
+    fun screenshotsKeepTheirPositionUntilBatchCompaction() = runBlocking {
+        val shots = mutableListOf<File>()
+        try {
+            val tool = StateTool("click") {
+                File.createTempFile("state", ".png").apply { writeText("png"); shots += this }
+            }
+            val provider = Scripted { i ->
+                if (i < 5) ModelResponse.ToolCallResponse(listOf(ToolCall("c$i", "click", """{"app":"Gmail","element_index":$i}""")))
+                else ModelResponse.TextResponse("Done.")
+            }
+            val session = ConversationSession(provider, ToolRegistry().apply { register(tool) }, systemPrompt = "")
+            session.submitUserMessage("Do five things")
+            val second = provider.requests[1]
+            assertEquals(second, provider.requests[2].take(second.size))
+            assertEquals(second, provider.requests[4].take(second.size))
+            val images = provider.requests[5].filterIsInstance<Message.User>().flatMap { it.attachments }
+            assertEquals(listOf(shots.last().path), images.map { it.path })
+            assertTrue(shots.all { it.exists() })
+        } finally {
+            shots.forEach { it.delete() }
+        }
+    }
+
 }

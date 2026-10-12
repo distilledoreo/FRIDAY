@@ -244,6 +244,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     onActivity = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.ACTIVITY) } },
                     onFiles = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.FILES) } },
                     onImages = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.IMAGES) } },
+                    onCode = { closeDrawerThen { viewModel.openCode() } },
                     currentId = state.conversationId,
                     onNewChat = { closeDrawerThen(viewModel::newChat) },
                     onIncognito = { closeDrawerThen { viewModel.startIncognito() } },
@@ -363,7 +364,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                                     onFeedback = { liked -> lastQuestion?.let { viewModel.saveAnswerFeedback(it, item.text, liked) } },
                                     genUi = genUi,
                                 )
-                                is TranscriptItem.ToolActivity -> if (item.steps.all(com.localfirst.assistant.presentation.PhoneUseActivity::isPhoneUse)) PhoneUseActivityCard(item) else ToolActivityCard(item, viewModel::loadImage, viewModel::openArtifact, { FridayTaskCard(it, state, viewModel) }, { PcChatCard(it, state, viewModel) })
+                                is TranscriptItem.ToolActivity -> if (item.steps.all(com.localfirst.assistant.presentation.PhoneUseActivity::isPhoneUse)) PhoneUseActivityCard(item) else ToolActivityCard(item, viewModel::loadImage, viewModel::openArtifact, { FridayTaskCard(it, state, viewModel) }, { PcChatCard(it, state, viewModel) }, { com.localfirst.assistant.ui.code.CodeChatCard(it, viewModel.code, viewModel::openCode) })
                                 TranscriptItem.Thinking -> ThinkingIndicator()
                             }
                         }
@@ -460,6 +461,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
     }
 
     if (state.showWorkspace) WorkspacePage(state, viewModel)
+    com.localfirst.assistant.ui.code.CodeScreen(viewModel.code)
     }
     if (dashboardOpen && !state.showWorkspace && !state.showSettings) {
         FridaySheet(onDismiss={dashboardOpen=false}) { expanded,toggle,close ->

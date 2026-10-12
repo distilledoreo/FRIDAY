@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi import Depends, FastAPI, Header, HTTPException
 import httpx
 
-from desktop.agent.pc import PcAgent, Prompt, Reply, Settings, LOCAL, COMPUTER, ruleset, routes, PcSchedule
+from desktop.agent.pc import PcAgent, Prompt, Reply, Settings, LOCAL, COMPUTER, ruleset, routes, PcSchedule, session_timing
 
 
 def decision(settings, permission, value):
@@ -270,6 +270,47 @@ class PcTests(unittest.IsolatedAsyncioTestCase):
             self.pc.save_settings(Settings(computer_use=False).model_dump())
             chain = await PcAgent.models(self.pc)
             self.assertEqual(chain, [('opencode','owned-free'),('opencode','noimage-free'),LOCAL])
+
+    async def test_explicit_local_stays_local_after_followup_and_restart(self):
+        self.pc.models = AsyncMock(side_effect=AssertionError('Local selection must not rank cloud models'))
+        task = await self.pc.start(Prompt(prompt='Local coding task', source='code', model_choice='local'))
+        identifier = task['id']
+        self.assertEqual(await self.pc.session_chain(identifier), [LOCAL])
+        self.assertEqual(self.pc.calls[-1][2]['json']['model'], {'providerID': LOCAL[0], 'modelID': LOCAL[1]})
+        self.assertFalse(await self.pc.fallback(identifier, abort=True))
+        with self.pc.db() as db: db.execute("UPDATE sessions SET state='idle' WHERE id=?", (identifier,))
+        await self.pc.send(identifier, 'Continue locally')
+        self.pc.models.assert_not_called()
+        restored = FakePc(Path(self.tmp.name))
+        restored.models = self.pc.models
+        await restored.send(identifier, 'Continue after restart')
+        self.assertEqual(restored.record(identifier)['model_choice'], 'local')
+        self.assertEqual(await restored.session_chain(identifier), [LOCAL])
+        self.assertFalse(await restored.fallback(identifier))
+        for watcher in restored.watchers.values(): watcher.cancel()
+        await __import__('asyncio').gather(*restored.watchers.values(), return_exceptions=True)
+
+    def test_timing_uses_recorded_models_and_does_not_claim_idle_is_completion(self):
+        messages = [
+            {'info': {'role': 'user', 'time': {'created': 100000}}},
+            {'info': {'role': 'assistant', 'providerID': 'opencode', 'modelID': 'first',
+                      'time': {'created': 101000, 'completed': 110000}, 'finish': 'tool-calls'}},
+            {'info': {'role': 'assistant', 'providerID': LOCAL[0], 'modelID': LOCAL[1],
+                      'time': {'created': 111000, 'completed': 130500}, 'finish': 'stop'}},
+        ]
+        timing = session_timing(messages, False)
+        self.assertEqual((timing['started'], timing['completed'], timing['elapsed_seconds']), (100, 130.5, 30.5))
+        self.assertEqual(timing['models'], ['opencode/first', '/'.join(LOCAL)])
+        messages.append({'info': {'role': 'user', 'time': {'created': 140000}}})
+        timing = session_timing(messages, False)
+        self.assertIsNone(timing['completed'])
+        self.assertEqual(timing['elapsed_seconds'], 40)
+        self.assertIsNone(session_timing([], False)['elapsed_seconds'])
+        messages.pop()
+        messages[-1]['info']['error'] = {'name': 'SyntheticError'}
+        self.assertIsNone(session_timing(messages, False)['completed'])
+        with patch('desktop.agent.pc.time.time', return_value=150):
+            self.assertEqual(session_timing(messages, True)['elapsed_seconds'], 50)
 
     async def test_live_model_identity_and_fallback_order_are_pinned_until_human_followup(self):
         a, b, c = [('opencode', 'v/'+name+':free') for name in ('a','b','c')]

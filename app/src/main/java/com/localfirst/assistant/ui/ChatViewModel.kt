@@ -228,6 +228,24 @@ class ChatViewModel(
     internal val genUiSessions = com.localfirst.assistant.ui.genui.GenUiSessions(app?.let { File(it.filesDir, "genui-state") })
     private val genUiImages = app?.let { com.localfirst.assistant.ui.genui.GenUiImageService(it, settingsStore::load) }
 
+    /** The Code workspace: GitHub repositories on the PC, kept apart from chat state. */
+    val code = com.localfirst.assistant.ui.code.CodeWorkspace(viewModelScope,
+        request = { path, method, body -> (workspace ?: error("Computer unavailable")).request(path, method, body) },
+        remembered = app?.let { context ->
+            object : com.localfirst.assistant.ui.code.CodeWorkspace.Remembered {
+                private val prefs = context.getSharedPreferences("code", Context.MODE_PRIVATE)
+                override var project: String?
+                    get() = prefs.getString("project", null)
+                    set(value) { prefs.edit().putString("project", value).apply() }
+            }
+        } ?: com.localfirst.assistant.ui.code.CodeWorkspace.Remembered.None)
+
+    /** Opens Code, at [taskId] when given. It saves work on the PC, so incognito chats can't use it. */
+    fun openCode(taskId: String? = null) {
+        if (_state.value.privacy.incognito) { _state.update { it.copy(error = "Code isn't available in incognito. Leave incognito to work on your repositories.") }; return }
+        code.open(taskId)
+    }
+
     /** Interface replies key their saved state by conversation; a new chat is a draft until saved. */
     private val genUiConversation: String get() = _state.value.conversationId ?: if (_state.value.privacy.incognito) "incognito" else "draft"
 
@@ -1385,7 +1403,8 @@ class ChatViewModel(
                     val client = workspace ?: error("Computer unavailable")
                     PcSnapshot(
                         status = JSONObject(client.request("/workspace/pc/status")),
-                        sessions = jsonRows(JSONArray(client.request("/workspace/pc/sessions"))),
+                        // Coding tasks live in Code, not in the PC task list.
+                        sessions = jsonRows(JSONArray(client.request("/workspace/pc/sessions"))).filter { it.optString("agent") != "friday-code" },
                         schedules = runCatching { jsonRows(JSONArray(client.request("/workspace/pc/schedules"))) }.getOrDefault(emptyList()),
                         view = sessionId?.let { JSONObject(client.request("/workspace/pc/sessions/$it")) },
                     )

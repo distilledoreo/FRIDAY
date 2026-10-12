@@ -51,6 +51,8 @@ class AndroidPhoneUseDriver(
     private var map: PhoneScreenCoordinateMap? = null
     private var labels: Map<Int, String> = emptyMap()
     private var apps: Pair<Long, List<PhoneApp>>? = null
+    /** When the previous snapshot was taken, so each one reports what was announced since. */
+    private var lookedAt = 0L
 
     private fun service() = PhoneControlAccessibilityService.service()
 
@@ -101,6 +103,10 @@ class AndroidPhoneUseDriver(
     override suspend fun snapshot(screenshot: Boolean): AppSnapshot {
         val service = service()
         service.awaitSettled()
+        // A first look reports only the last few seconds, not every toast since the service started.
+        val now = android.os.SystemClock.uptimeMillis()
+        val since = maxOf(lookedAt, now - 10_000)
+        lookedAt = now
         val image = if (screenshot) capture(service) else null to "turned off in Settings > Phone use"
         return withContext(Dispatchers.Main.immediate) {
             val root = service.rootInActiveWindow
@@ -134,6 +140,7 @@ class AndroidPhoneUseDriver(
                 keyboard = keyboard?.let { windowTitle(it) ?: "on-screen keyboard" },
                 otherWindows = others,
                 truncated = built.truncated,
+                announcements = service.announcedSince(since, pkg),
             )
         }
     }
@@ -193,7 +200,7 @@ class AndroidPhoneUseDriver(
 
     private fun node(index: Int): AccessibilityNodeInfo {
         val node = nodes[index] ?: throw PhoneActionException("Element $index isn't in the latest state. Call get_app_state again.")
-        if (!node.refresh()) throw PhoneActionException("Element $index is gone; the screen changed. Call get_app_state again.")
+        if (!node.refresh()) throw com.localfirst.assistant.tools.phoneuse.ScreenChangedException("Element $index is no longer on screen; the screen changed.")
         return node
     }
 

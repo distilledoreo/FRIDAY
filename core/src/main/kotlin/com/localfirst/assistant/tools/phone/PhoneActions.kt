@@ -33,7 +33,7 @@ interface PhoneActions {
     suspend fun upcomingEvents(from: LocalDateTime, to: LocalDateTime): List<CalendarEntry>
 }
 
-class PhoneActionException(message: String) : Exception(message)
+open class PhoneActionException(message: String) : Exception(message)
 
 enum class MediaAction(val wireName: String) {
     PLAY("play"),

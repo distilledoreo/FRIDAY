@@ -122,6 +122,7 @@ class Prompt(BaseModel):
     title: str | None = Field(default=None, max_length=200)
     source: str = Field(default='chat', max_length=80)
     request_id: str | None = Field(default=None, max_length=100, pattern='^[A-Za-z0-9_-]+$')
+    model_choice: str = Field(default='auto', pattern='^(auto|local)$')
 
 
 class Reply(BaseModel):
@@ -158,6 +159,31 @@ def prompt_text(user, home):
             'short, phone-friendly answer: what you did, the result, and anything that still needs them.')
 
 
+def session_timing(messages, busy):
+    """Wall time across recorded turns, including tool/approval waits; never infer completion from idle."""
+    starts, stamps, models = [], [], []
+    last_assistant = None
+    for message in messages:
+        info = message['info']
+        stamp = info.get('time') or {}
+        if isinstance(stamp.get('created'), (int, float)): starts.append(stamp['created'] / 1000)
+        for key in ('created', 'completed'):
+            if isinstance(stamp.get(key), (int, float)): stamps.append(stamp[key] / 1000)
+        if info.get('role') == 'assistant':
+            last_assistant = info
+            provider, model = info.get('providerID'), info.get('modelID')
+            if provider and model and f'{provider}/{model}' not in models: models.append(f'{provider}/{model}')
+    started = min(starts) if starts else None
+    # Only a final response to the most recent user turn establishes a recorded finish.
+    final = messages[-1]['info'] if messages else {}
+    finished = (not busy and last_assistant is final and final.get('finish') == 'stop'
+                and not final.get('error') and isinstance((final.get('time') or {}).get('completed'), (int, float)))
+    completed = final['time']['completed'] / 1000 if finished else None
+    end = time.time() if busy else completed if completed is not None else max(stamps, default=0)
+    elapsed = max(0, end - started) if started is not None else None
+    return {'started': started, 'completed': completed, 'elapsed_seconds': elapsed, 'models': models}
+
+
 class PcAgent:
     def __init__(self, root, port=PORT, opencode=None, python=None):
         self.root = Path(root) / 'pc'
@@ -181,6 +207,9 @@ class PcAgent:
         self.session_roots = {}
         self.lock = asyncio.Lock()
         self.start_lock = asyncio.Lock()
+        # Other agents (the coding agent) add their OpenCode agent definition and permission rules here.
+        self.extra_agents = {}
+        self.rule_builders = {'friday': lambda session_id, directory: ruleset(self.settings())}
         with self.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, source TEXT, title TEXT, created REAL, model INTEGER, state TEXT)')
             db.execute("UPDATE sessions SET state='interrupted' WHERE state='busy'")
@@ -195,6 +224,13 @@ class PcAgent:
                 db.execute('ALTER TABLE sessions ADD COLUMN schedule_due REAL')
             with contextlib.suppress(sqlite3.OperationalError):
                 db.execute('ALTER TABLE sessions ADD COLUMN schedule_settled INTEGER NOT NULL DEFAULT 0')
+            # OpenCode serves each project directory as its own instance; code sessions live in a worktree.
+            with contextlib.suppress(sqlite3.OperationalError):
+                db.execute('ALTER TABLE sessions ADD COLUMN directory TEXT')
+            with contextlib.suppress(sqlite3.OperationalError):
+                db.execute("ALTER TABLE sessions ADD COLUMN agent TEXT NOT NULL DEFAULT 'friday'")
+            with contextlib.suppress(sqlite3.OperationalError):
+                db.execute("ALTER TABLE sessions ADD COLUMN model_choice TEXT NOT NULL DEFAULT 'auto'")
             # Preserve the old index-based model identity when upgrading an existing install.
             with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
                 config = json.loads(self.config_path.read_text())
@@ -399,6 +435,7 @@ class PcAgent:
                           'Do not claim success without checking the actual screen. Shell/file work belongs to the parent assistant.'}
         else:
             agents['friday']['prompt'] += ' Desktop vision is currently unavailable. Use the CLI where appropriate; explain when a task requires the screen.'
+        agents.update(self.extra_agents)
         return {
             '$schema': 'https://opencode.ai/config.json',
             'plugin': [(self.root / 'shell-environment.js').as_uri()],
@@ -496,7 +533,9 @@ class PcAgent:
             # separately by the gateway, and ordinary shell profiles still work normally.
             for key in ('OPENROUTER_API_KEY', 'OPENCODE_API_KEY'): env.pop(key, None)
             env.update(OPENCODE_CONFIG=str(self.config_path), OPENCODE_SERVER_PASSWORD=self.password,
-                       OPENCODE_DISABLE_AUTOUPDATE='true', GIT_TERMINAL_PROMPT='0', GH_PROMPT_DISABLED='1', PAGER='cat')
+                       OPENCODE_DISABLE_AUTOUPDATE='true', GIT_TERMINAL_PROMPT='0', GH_PROMPT_DISABLED='1', PAGER='cat',
+                       # Code tasks run in cloned repositories: their opencode.json and .opencode plugins never load.
+                       OPENCODE_DISABLE_PROJECT_CONFIG='true')
             log = open(self.root / 'opencode.log', 'ab')
             self.process = await asyncio.create_subprocess_exec(self.opencode, 'serve', '--hostname', '127.0.0.1', '--port', str(self.port),
                 cwd=str(Path.home()), env=env, stdin=asyncio.subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
@@ -533,7 +572,7 @@ class PcAgent:
         return response.json() if response.content else None
 
     # ---- sessions ----
-    async def start(self, body):
+    async def start(self, body, directory=None, agent='friday'):
         async with self.start_lock:
             settings = self.settings()
             if not settings['enabled']: raise HTTPException(403, 'PC access is turned off in FRIDAY’s settings')
@@ -544,9 +583,12 @@ class PcAgent:
                     if previous['digest'] != digest: raise HTTPException(409, 'This request id belongs to a different task')
                     return {'id': previous['session'], 'title': self.record(previous['session'])['title']}
             if sum(s['state'] == 'busy' for s in self.sessions(200)) >= 4: raise HTTPException(409, 'Four PC tasks are already active')
-            session = await self.call('POST', '/session', json={'title': body.title or body.prompt[:60], 'agent': 'friday', 'permission': ruleset(settings)})
+            where = {'params': {'directory': directory}} if directory else {}
+            session = await self.call('POST', '/session', json={'title': body.title or body.prompt[:60], 'agent': agent,
+                                                                'permission': self.rule_builders[agent](None, directory)}, **where)
             with self.db() as db:
-                db.execute('INSERT INTO sessions(id, source, title, created, model, state) VALUES(?,?,?,?,?,?)', (session['id'], body.source, session.get('title'), time.time(), 0, 'busy'))
+                db.execute('INSERT INTO sessions(id, source, title, created, model, state, directory, agent, model_choice) VALUES(?,?,?,?,?,?,?,?,?)',
+                           (session['id'], body.source, session.get('title'), time.time(), 0, 'busy', directory, agent, body.model_choice))
                 if body.request_id: db.execute('INSERT INTO requests VALUES(?,?,?)', (body.request_id, digest, session['id']))
             try: await self.send(session['id'], body.prompt)
             except Exception:
@@ -560,23 +602,44 @@ class PcAgent:
         if not row: raise HTTPException(404, 'Not one of FRIDAY’s PC sessions')
         return dict(row)
 
+    def scope(self, session_id):
+        """Request arguments that reach the OpenCode instance this session lives in."""
+        with self.db() as db:
+            row = db.execute('SELECT directory FROM sessions WHERE id=?', (session_id,)).fetchone()
+        return {'params': {'directory': row['directory']}} if row and row['directory'] else {}
+
+    def agent_of(self, session_id):
+        with self.db() as db:
+            row = db.execute('SELECT agent FROM sessions WHERE id=?', (session_id,)).fetchone()
+        return (row['agent'] if row and row['agent'] in self.rule_builders else 'friday')
+
+    def directories(self):
+        """The OpenCode instances that can hold requests: home, plus the project directories of working sessions.
+        Only working sessions ask for anything, and querying a directory starts an instance for it."""
+        with self.db() as db:
+            rows = db.execute("SELECT directory FROM sessions WHERE directory IS NOT NULL AND state='busy' GROUP BY directory ORDER BY MAX(created) DESC LIMIT 20").fetchall()
+        return [None] + [row['directory'] for row in rows if Path(row['directory']).is_dir()]
+
     async def send(self, session_id, text):
         if not self.settings()['enabled']: raise HTTPException(403, 'PC access is turned off')
-        self.record(session_id)
+        record = self.record(session_id)
         pending = await self.pending(session_id)
         if pending['permissions'] or pending['questions']: raise HTTPException(409, 'Answer the pending PC request first')
-        if (await self.call('GET', '/session/status') or {}).get(session_id): raise HTTPException(409, 'This PC task is already working')
+        where = self.scope(session_id)
+        agent = self.agent_of(session_id)
+        if (await self.call('GET', '/session/status', **where) or {}).get(session_id): raise HTTPException(409, 'This PC task is already working')
         # Live sessions retain their rules. Refresh them before every human follow-up.
-        await self.call('PATCH', f'/session/{session_id}', json={'permission': ruleset(self.settings())})
+        directory = where.get('params', {}).get('directory')
+        await self.call('PATCH', f'/session/{session_id}', json={'permission': self.rule_builders[agent](session_id, directory)}, **where)
         # A human follow-up begins with today's best model. Automatic fallbacks keep the
         # snapshot for this turn, so a daily refresh cannot relabel or reorder live work.
-        chain = await self.models()
+        chain = [LOCAL] if record['model_choice'] == 'local' else await self.models()
         with self.db() as db:
             db.execute('INSERT OR REPLACE INTO session_models VALUES(?,?)', (session_id, json.dumps(chain)))
             db.execute('UPDATE sessions SET model=0 WHERE id=?', (session_id,))
         provider, model = chain[0]
         await self.call('POST', f'/session/{session_id}/prompt_async',
-                        json={'agent': 'friday', 'model': {'providerID': provider, 'modelID': model}, 'parts': [{'type': 'text', 'text': text}]})
+                        json={'agent': agent, 'model': {'providerID': provider, 'modelID': model}, 'parts': [{'type': 'text', 'text': text}]}, **where)
         with self.db() as db: db.execute("UPDATE sessions SET state='busy' WHERE id=?", (session_id,))
         if session_id not in self.watchers or self.watchers[session_id].done():
             self.watchers[session_id] = asyncio.create_task(self.watch(session_id))
@@ -584,27 +647,28 @@ class PcAgent:
     async def watch(self, session_id):
         """Falls back to the next model when a free one is rate-limited or failing, then marks the session idle."""
         retrying_since = None
+        where = self.scope(session_id)
         while True:
             await asyncio.sleep(2)
             try:
-                status = (await self.call('GET', '/session/status') or {}).get(session_id)
+                status = (await self.call('GET', '/session/status', **where) or {}).get(session_id)
                 if status and status.get('type') == 'retry':
                     retrying_since = retrying_since or time.monotonic()
                     if time.monotonic() - retrying_since > 20:
                         if await self.fallback(session_id, abort=True): retrying_since = None
                         elif self.record(session_id)['model'] >= len(await self.session_chain(session_id)) - 1:
                             pending = await self.pending(session_id)
-                            messages = await self.call('GET', f'/session/{session_id}/message')
+                            messages = await self.call('GET', f'/session/{session_id}/message', **where)
                             running = any(p.get('type') == 'tool' and p.get('state', {}).get('status') in ('pending', 'running') for m in messages for p in m.get('parts', []))
                             if not pending['permissions'] and not pending['questions'] and not running:
-                                await self.call('POST', f'/session/{session_id}/abort')
+                                await self.call('POST', f'/session/{session_id}/abort', **where)
                                 with self.db() as db: db.execute("UPDATE sessions SET state='error' WHERE id=?", (session_id,))
                                 self._release_schedule_failure(session_id)
                                 return
                     continue
                 retrying_since = None
                 if status: continue
-                messages = await self.call('GET', f'/session/{session_id}/message')
+                messages = await self.call('GET', f'/session/{session_id}/message', **where)
                 last = next((m for m in reversed(messages) if m['info']['role'] == 'assistant'), None)
                 error = (last or {}).get('info', {}).get('error')
                 if error and error.get('name') != 'MessageAbortedError' and retryable(error) and await self.fallback(session_id): continue
@@ -619,10 +683,11 @@ class PcAgent:
 
     async def fallback(self, session_id, abort=False):
         record = self.record(session_id)
-        if not self.settings()['enabled'] or record['state'] == 'cancelled': return False
+        if record['model_choice'] == 'local' or not self.settings()['enabled'] or record['state'] == 'cancelled': return False
         pending = await self.pending(session_id)
         if pending['permissions'] or pending['questions']: return False
-        messages = await self.call('GET', f'/session/{session_id}/message')
+        where = self.scope(session_id)
+        messages = await self.call('GET', f'/session/{session_id}/message', **where)
         if any(p.get('type') == 'tool' and p.get('state', {}).get('status') in ('pending', 'running') for m in messages for p in m.get('parts', [])): return False
         chain = await self.session_chain(session_id)
         if record['model'] >= len(chain) - 1: return False
@@ -631,16 +696,17 @@ class PcAgent:
         # A removed/non-free entry cannot re-enter through a previously saved fallback.
         while index < len(chain) - 1 and chain[index] not in available: index += 1
         with self.db() as db: db.execute('UPDATE sessions SET model=? WHERE id=?', (index, session_id))
-        if abort: await self.call('POST', f'/session/{session_id}/abort')
+        if abort: await self.call('POST', f'/session/{session_id}/abort', **where)
         provider, model = chain[index]
-        await self.call('POST', f'/session/{session_id}/prompt_async', json={'agent': 'friday', 'model': {'providerID': provider, 'modelID': model},
+        await self.call('POST', f'/session/{session_id}/prompt_async', **where, json={'agent': self.agent_of(session_id), 'model': {'providerID': provider, 'modelID': model},
                         'parts': [{'type': 'text', 'text': 'The previous model was unavailable. Continue from the recorded results; never repeat completed actions. If a side effect is uncertain, report it instead of retrying. ' + ('This local model is text-only: use the CLI and do not claim to see screenshots.' if provider == LOCAL[0] else ''), 'synthetic': True}]})
         return True
 
     async def view(self, session_id, since=None):
         record = self.record(session_id)
-        messages = await self.call('GET', f'/session/{session_id}/message')
-        status = (await self.call('GET', '/session/status') or {}).get(session_id)
+        where = self.scope(session_id)
+        messages = await self.call('GET', f'/session/{session_id}/message', **where)
+        status = (await self.call('GET', '/session/status', **where) or {}).get(session_id)
         chain = await self.session_chain(session_id)
         items = []
         for message in messages:
@@ -662,10 +728,11 @@ class PcAgent:
         pending = await self.pending(session_id)
         busy = bool(status) or record['state'] == 'busy' and session_id in self.watchers and not self.watchers[session_id].done()
         provider, model = chain[min(record['model'], len(chain) - 1)]
-        return {'id': session_id, 'title': record['title'], 'busy': busy, 'state': 'waiting' if pending['permissions'] or pending['questions'] else 'busy' if busy else record['state'],
+        timing = session_timing(messages, busy)
+        return {'id': session_id, 'title': record['title'], 'busy': busy, 'model_choice': record['model_choice'], 'timing': timing, 'state': 'waiting' if pending['permissions'] or pending['questions'] else 'busy' if busy else record['state'],
                 'model': 'Local Qwen' if provider == LOCAL[0] else model, 'items': items, **pending}
 
-    async def owner(self, session_id):
+    async def owner(self, session_id, directory=None):
         if session_id in self.session_roots: return self.session_roots[session_id]
         mine = {row['id'] for row in self.sessions(200)}
         current = session_id
@@ -674,7 +741,7 @@ class PcAgent:
                 self.session_roots[session_id] = current
                 return current
             with contextlib.suppress(Exception):
-                info = await self.call('GET', f'/session/{current}')
+                info = await self.call('GET', f'/session/{current}', **({'params': {'directory': directory}} if directory else {}))
                 parent = info.get('parentID')
                 if parent and parent != current:
                     current = parent
@@ -684,13 +751,24 @@ class PcAgent:
 
     async def pending(self, session_id=None):
         permissions, questions = [], []
-        for p in await self.call('GET', '/permission'):
-            owner = await self.owner(p['sessionID'])
-            if owner and session_id in (None, owner): permissions.append(summarize_permission(p))
-        for q in await self.call('GET', '/question'):
-            owner = await self.owner(q['sessionID'])
-            if owner and session_id in (None, owner): questions.append(q)
+        directories = [self.scope(session_id).get('params', {}).get('directory')] if session_id else self.directories()
+        for directory in directories:
+            where = {'params': {'directory': directory}} if directory else {}
+            for p in await self.call('GET', '/permission', **where):
+                owner = await self.owner(p['sessionID'], directory)
+                if owner and session_id in (None, owner): permissions.append({**summarize_permission(p), 'owner': owner})
+            for q in await self.call('GET', '/question', **where):
+                owner = await self.owner(q['sessionID'], directory)
+                if owner and session_id in (None, owner): questions.append({**q, 'owner': owner})
         return {'permissions': permissions, 'questions': questions}
+
+    async def locate(self, kind, request_id):
+        """The pending permission or question with [request_id], and the instance it lives in."""
+        for directory in self.directories():
+            where = {'params': {'directory': directory}} if directory else {}
+            for request in await self.call('GET', kind, **where):
+                if request.get('id') == request_id: return request, where
+        return None, {}
 
     def sessions(self, limit=30):
         with self.db() as db:
@@ -703,7 +781,7 @@ class PcAgent:
         if watcher:
             watcher.cancel()
             with contextlib.suppress(asyncio.CancelledError): await watcher
-        return await self.call('POST', f'/session/{session_id}/abort')
+        return await self.call('POST', f'/session/{session_id}/abort', **self.scope(session_id))
 
     # ---- scheduled PC tasks ----
     def schedule(self, body):
@@ -777,20 +855,19 @@ class PcAgent:
         self.schedule_task = asyncio.create_task(scheduler_loop())
 
     async def question(self, question_id):
-        questions = {q['id']: q for q in await self.call('GET', '/question')}
-        request = questions.get(question_id)
+        """The pending question and the request arguments for its instance."""
+        request, where = await self.locate('/question', question_id)
         if not request: raise HTTPException(404, 'That question was already answered')
-        if not await self.owner(request['sessionID']): raise HTTPException(404, 'Not a FRIDAY question')
-        return request
+        if not await self.owner(request['sessionID'], where.get('params', {}).get('directory')): raise HTTPException(404, 'Not a FRIDAY question')
+        return request, where
 
     async def reply(self, permission_id, body):
-        pending = {p['id']: p for p in await self.call('GET', '/permission')}
-        request = pending.get(permission_id)
-        if request and not await self.owner(request['sessionID']): raise HTTPException(404, 'Not a FRIDAY permission request')
+        request, where = await self.locate('/permission', permission_id)
+        if request and not await self.owner(request['sessionID'], where.get('params', {}).get('directory')): raise HTTPException(404, 'Not a FRIDAY permission request')
         if not request: raise HTTPException(404, 'That request was already answered')
         payload = {'reply': body.reply}
         if body.message: payload['message'] = body.message
-        result = await self.call('POST', f'/permission/{permission_id}/reply', json=payload)
+        result = await self.call('POST', f'/permission/{permission_id}/reply', json=payload, **where)
         if body.reply == 'always' and body.remember:
             settings = self.settings()
             if request['permission'] == 'bash': settings['allow'] = list(settings['allow']) + list(request.get('always') or [])
@@ -929,13 +1006,13 @@ def routes(app, auth, agent):
 
     @router.post('/questions/{question_id}')
     async def answer(question_id: str, body: Answers):
-        await agent.question(question_id)
-        return await agent.call('POST', f'/question/{question_id}/reply', json={'answers': body.answers})
+        _, where = await agent.question(question_id)
+        return await agent.call('POST', f'/question/{question_id}/reply', json={'answers': body.answers}, **where)
 
     @router.post('/questions/{question_id}/reject')
     async def reject(question_id: str):
-        await agent.question(question_id)
-        return await agent.call('POST', f'/question/{question_id}/reject')
+        _, where = await agent.question(question_id)
+        return await agent.call('POST', f'/question/{question_id}/reject', **where)
 
     @app.on_event('shutdown')
     async def shutdown(): await agent.stop()
