@@ -73,10 +73,10 @@ class PhoneUseToolsTest {
     @Test
     fun theToolSetMatchesCodexComputerUse() {
         assertEquals(
-            listOf("list_apps", "get_app_state", "click", "perform_secondary_action", "scroll", "drag", "type_text", "press_key", "set_value"),
+            listOf("list_apps", "get_app_state", "click", "perform_secondary_action", "scroll", "drag", "type_text", "press_key", "set_value", "phone_script"),
             registry.definitions().map { it.name },
         )
-        assertTrue(registry.definitions().filter { it.name != "list_apps" }.all { it.inputSchema["required"].toString().contains("\"app\"") })
+        assertTrue(registry.definitions().filter { it.name !in setOf("list_apps", "phone_script") }.all { it.inputSchema["required"].toString().contains("\"app\"") })
     }
 
     @Test
@@ -279,5 +279,61 @@ class PhoneUseToolsTest {
         assertNull(ConsequentialActions.check(AppElement(1, "button", "Sender settings")))
         assertNull(ConsequentialActions.check(AppElement(1, "text field", "Send a message")))
         assertNull(ConsequentialActions.check(AppElement(1, "button", "Compose")))
+    }
+
+    private fun script(code: String) = run("phone_script", kotlinx.serialization.json.buildJsonObject {
+        put("title", kotlinx.serialization.json.JsonPrimitive("Test script"))
+        put("code", kotlinx.serialization.json.JsonPrimitive(code))
+    }.toString())
+
+    @Test
+    fun codeModeDrivesThePhoneThroughTheSameTools() {
+        val result = script("""
+            const s = await cua.getState('Gmail')
+            console.log(s.app, s.window, s.elements.length)
+            const compose = s.find('Compose')
+            await phone.click('Gmail', compose.index)
+            await phone.click('Gmail', 'Search in mail')
+            await phone.type('Gmail', 'invoices')
+            await phone.key('Gmail', 'Return')
+            for (const i of [1, 2]) await phone.scroll('Gmail', 'down', {pages: 0.5})
+            'done ' + s.elements.filter(e => e.role === 'button').map(e => e.label).join('|')
+        """.trimIndent())
+        assertTrue(result.content, result.success)
+        assertTrue(result.content, result.content.contains("Console:\nGmail Inbox 6"))
+        assertTrue(result.content, result.content.contains("Result: done Compose|Send"))
+        assertTrue(result.content.contains("App: Gmail"))
+        assertEquals(
+            listOf("Clicked Element(index=2) x1 left.", "Clicked Element(index=1) x1 left.", "type [invoices]", "key ENTER", "Scrolled null down 0.5.", "Scrolled null down 0.5."),
+            driver.calls.filter { !it.startsWith("snapshot") && !it.startsWith("open") },
+        )
+    }
+
+    @Test
+    fun codeModeKeepsAccessRulesAndReportsFailures() {
+        answer = AccessDecision.DENY
+        val denied = script("await phone.getState('Bank')")
+        assertFalse(denied.success)
+        assertTrue(denied.content, denied.content.contains("declined"))
+
+        answer = AccessDecision.ALLOW_FOR_CONVERSATION
+        val caught = script("""
+            await phone.getState('Gmail')
+            try { await phone.click('Gmail', 'Nonexistent') } catch (e) { console.log('caught: ' + e.message) }
+            reviewed()
+        """.trimIndent())
+        assertFalse(caught.success)
+        assertTrue(caught.content, caught.content.contains("caught: No element labeled"))
+        assertTrue(caught.content, caught.content.contains("reviewed is not defined"))
+
+        // Consequential taps still get reviewed inside scripts.
+        reviewAnswer = false
+        val send = script("await phone.getState('Gmail'); await phone.click('Gmail', 'Send')")
+        assertFalse(send.success)
+        assertTrue(reviewed.isNotEmpty())
+
+        val syntax = script("await phone.getState('Gmail'")
+        assertFalse(syntax.success)
+        assertTrue(syntax.content.contains("ends early"))
     }
 }

@@ -1,7 +1,7 @@
 package com.localfirst.assistant.voice
 
 import com.localfirst.assistant.conversation.Message
-import com.localfirst.assistant.presentation.UiBlocks
+import com.localfirst.assistant.presentation.ReplyText
 
 /** Each assistant bubble has its own speech cursor. Tool boundaries close a bubble. */
 class ReplySpeech {
@@ -11,10 +11,10 @@ class ReplySpeech {
         val turn = messages.drop(messages.indexOfLast { it is Message.User } + 1)
         return turn.flatMapIndexed { index, message ->
             if (message !is Message.Assistant) emptyList()
-            else chunks.getOrPut(index) { SpeechChunker() }.update(
-                UiBlocks.plainText(message.content),
-                final = !busy || index < turn.lastIndex,
-            )
+            else {
+                val final = !busy || index < turn.lastIndex
+                chunks.getOrPut(index) { SpeechChunker() }.update(ReplyText.plain(message.content, complete = final), final = final)
+            }
         }
     }
 }

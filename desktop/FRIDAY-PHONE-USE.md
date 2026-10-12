@@ -22,8 +22,27 @@ The tool surface matches Codex Computer Use. `app` is an app name from `list_app
 | `type_text(app, text)` | On Android 13+, the accessibility input method commits the text like a keyboard. Otherwise the text is inserted at the cursor of the focused field. Password fields are refused: the user types them. |
 | `press_key(app, key)` | xdotool names (`Return`, `BackSpace`, `Tab`, `Escape`, `ctrl+a/c/x/v`, arrows, `Page_Down`…) plus phone keys (`Back`, `Home`, `Recents`, `Notifications`, `Quick_Settings`). |
 | `set_value(app, element_index, value)` | Replace a field's text, set a slider's progress, or switch a checkbox/switch on or off. |
+| `phone_script(title, code)` | Code mode: JavaScript that calls the tools above (see below). |
 
 Every action returns a one-line outcome ("Clicked button “Compose”.") followed by the app's new state.
+
+### Code mode
+
+Codex's newer computer use runs model-written JavaScript in a REPL (`cua_repl` → `js {title, code}`).
+FRIDAY has the same mode as `phone_script {title, code}`, running in the sandboxed interpreter built for
+Intelligent UI (see FRIDAY-INTELLIGENT-UI.md): no network, files or timers. The script drives the phone
+through `phone` (alias `cua`):
+
+```js
+const s = await phone.getState('Gmail')          // {app, window, text, elements, find(label)}
+await phone.click('Gmail', s.find('Compose'))      // index, {x, y}, or a label
+await phone.type('Gmail', 'invoices'); await phone.key('Gmail', 'Return')
+for (const i of [1, 2]) await phone.scroll('Gmail', 'down', {pages: 0.5})
+```
+
+Each call goes through the same tool, so per-app access, the once-per-turn rule and the review of
+consequential taps all apply. A failed action throws an Error the script can catch. The result carries
+console output, the last value and the final screen with its screenshot. The title is what the chat shows.
 
 ## App state
 

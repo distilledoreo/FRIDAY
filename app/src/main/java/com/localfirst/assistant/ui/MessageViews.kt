@@ -155,11 +155,14 @@ internal fun AssistantMessage(
     onCanvas: ((String) -> Unit)? = null,
     onShare: ((String) -> Unit)? = null,
     onFeedback: ((Boolean) -> Unit)? = null,
+    genUi: com.localfirst.assistant.ui.genui.GenUiHost? = null,
 ) {
-    val plain = remember(item.text) { if (UiBlocks.contains(item.text)) UiBlocks.plainText(item.text) else item.text }
+    val plain = remember(item.text) { com.localfirst.assistant.presentation.ReplyText.plain(item.text) }
+    val interactive = remember(item.text) { genUi != null && com.localfirst.assistant.genui.UiCompiler.isInterface(item.text) }
     Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        // Text renders as before; FRIDAY's components sit between text at full width.
-        UiBlocks.segments(item.text).forEachIndexed { index, segment ->
+        // Interface replies render natively; others as text with FRIDAY's JSON components between.
+        if (interactive && genUi != null) com.localfirst.assistant.ui.genui.GenUiMessage(item.index, item.text, item.streaming, genUi)
+        else UiBlocks.segments(item.text).forEachIndexed { index, segment ->
             when (segment) {
                 is UiSegment.Text -> {
                     val pattern=ResponseLayout.choose(segment.markdown)

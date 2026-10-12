@@ -38,7 +38,7 @@ internal fun ResponseRenderer(content:String,pattern:ResponsePattern,onCopy:()->
 
 /** Native rows avoid the third-party table renderer's invisible intrinsic-measurement semantics. */
 @Composable
-private fun NativeResponseContent(content:String) {
+internal fun NativeResponseContent(content:String) {
     if(ResponseLayout.requiresTextFallback(content)) {
         androidx.compose.foundation.text.selection.SelectionContainer { Text(content,style=MaterialTheme.typography.bodyLarge) };return
     }
