@@ -46,6 +46,12 @@ data class ToolExecutionResult(
     val content: String,
     /** Links the UI can show with the result, such as search sources. Not sent to the model. */
     val sources: List<SourceLink> = emptyList(),
+    /**
+     * Images the model should see with this result, such as a phone screenshot. Chat Completions tool
+     * messages are text-only, so the engine sends the latest one as a short user message right after
+     * the round's results; the file path is kept on the result for the UI.
+     */
+    val images: List<com.localfirst.assistant.conversation.Attachment> = emptyList(),
 )
 
 data class SourceLink(

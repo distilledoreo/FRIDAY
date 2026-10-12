@@ -62,6 +62,10 @@ data class ToolStep(
     val agentTask: String? = null,
     /** A native PC session (JSON from run_on_pc / get_pc_task), shown as a card with live status and approvals. */
     val pcTask: String? = null,
+    /** Screenshot taken with a phone-use result. */
+    val image: String? = null,
+    /** The app a phone-use step worked in. */
+    val app: String? = null,
 )
 
 enum class ToolStepState { RUNNING, DONE, FAILED }
@@ -100,8 +104,11 @@ object Transcript {
                     )
                 }
                 is Message.ToolCall -> {
+                    val step = step(message, resultFor(messages, index))
+                    // Phone-use runs get their own card, like Codex's computer-activity cell.
+                    if (pendingSteps.isNotEmpty() && PhoneUseActivity.isPhoneUse(pendingSteps.last()) != PhoneUseActivity.isPhoneUse(step)) flushSteps()
                     if (pendingSteps.isEmpty()) pendingStart = index
-                    pendingSteps += step(message, resultFor(messages, index))
+                    pendingSteps += step
                 }
                 is Message.ToolResult -> Unit
             }
@@ -144,16 +151,20 @@ object Transcript {
             result.success -> ToolStepState.DONE
             else -> ToolStepState.FAILED
         }
-        val label = ToolLabels.label(call.name, args ?: JsonObject(emptyMap()), state)
+        val phoneUse = call.name in com.localfirst.assistant.tools.phoneuse.PhoneUseToolNames.ALL
+        val label = if (phoneUse) PhoneUseLabels.label(call.name, args ?: JsonObject(emptyMap()), state, result?.content)
+        else ToolLabels.label(call.name, args ?: JsonObject(emptyMap()), state)
         val pcTask = result?.takeIf { it.success && call.name in PC_TASK_TOOLS }?.content
         return ToolStep(
             callId = call.id,
             name = call.name,
             state = state,
             label = label,
-            detail = result?.takeIf { !it.success }?.content,
+            detail = result?.takeIf { !it.success && !phoneUse }?.content,
             sources = result?.sources.orEmpty(),
             resultContent = result?.takeIf { it.success && call.name !in PC_TASK_TOOLS }?.content,
+            image = result?.image,
+            app = if (phoneUse) PhoneUseLabels.app(args ?: JsonObject(emptyMap())) else null,
             imageResult = result?.takeIf { it.success && call.name == "generate_image" }?.content,
             agentTask = result?.takeIf { it.success && call.name == "propose_agent_task" }?.content,
             pcTask = pcTask,

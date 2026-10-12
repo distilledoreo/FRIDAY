@@ -189,7 +189,17 @@ data class FridayLive(val taskId: String, val activity: String, val screenshotId
 /** One refresh of the native PC agent: status, sessions, schedules, and the open session's view. */
 private data class PcSnapshot(val status: org.json.JSONObject, val sessions: List<org.json.JSONObject>, val schedules: List<org.json.JSONObject>, val view: org.json.JSONObject?)
 
-data class PendingApproval(val toolName: String, val prompt: String, val approveLabel: String = "Approve")
+data class PendingApproval(
+    val toolName: String,
+    val prompt: String,
+    val approveLabel: String = "Approve",
+    /** A third, remembered choice ("Always allow"), when the question offers one. */
+    val alwaysLabel: String? = null,
+    val title: String = "Allow this?",
+)
+
+/** How the user answered an approval card. */
+enum class ApprovalAnswer { DENY, ALLOW, ALWAYS }
 
 /** A document drafted from an answer: edited on the phone, saved to files. */
 data class CanvasDoc(val title: String, val body: String)
@@ -208,38 +218,60 @@ class ChatViewModel(
     private val chatSync: ChatSync? = null,
     private val backups: BackupService? = null,
     private val app: Application? = null,
+    /** Codex-style phone use: per-conversation sessions and the driver behind them. */
+    private val phoneUse: com.localfirst.assistant.phone.PhoneUseController? = null,
+    private val phoneUseDriver: com.localfirst.assistant.tools.phoneuse.PhoneUseDriver? = null,
 ) : ViewModel() {
-    private var approval: CompletableDeferred<Boolean>? = null
+    private var approval: CompletableDeferred<ApprovalAnswer>? = null
 
-    /** Suspends the turn until the user answers the approval card. Stop cancels it. */
-    private val confirmer = ToolConfirmer { request ->
-        if (request.toolName == PHONE_CONTROL_TOOL && session.phoneControlApprovedForConversation) {
-            true
-        } else {
-            val answer = CompletableDeferred<Boolean>()
-            approval = answer
-            val phoneControl = request.toolName == PHONE_CONTROL_TOOL
-            _state.update {
-                it.copy(pendingApproval = PendingApproval(
-                    request.toolName,
-                    request.prompt,
-                    approveLabel = if (phoneControl) "Allow for this conversation" else "Approve",
-                ))
-            }
-            if (carTurn) app?.let {
-                val scope = if (phoneControl) " This also allows later phone actions in this conversation." else ""
-                CarMessaging.showReply(it, SpeechText.fromMarkdown(request.prompt) + scope + " Should I go ahead? Reply yes or no.")
-            }
-            try {
-                val approved = answer.await()
-                if (approved && phoneControl) session.phoneControlApprovedForConversation = true
-                approved
-            } finally {
-                approval = null
-                _state.update { it.copy(pendingApproval = null) }
-            }
+    /** Shows [card] and suspends the turn until the user answers it. Stop cancels it. */
+    private suspend fun ask(card: PendingApproval, carQuestion: String): ApprovalAnswer {
+        val answer = CompletableDeferred<ApprovalAnswer>()
+        approval = answer
+        _state.update { it.copy(pendingApproval = card) }
+        if (carTurn) app?.let { CarMessaging.showReply(it, carQuestion) }
+        return try {
+            answer.await()
+        } finally {
+            approval = null
+            _state.update { it.copy(pendingApproval = null) }
         }
     }
+
+    private val confirmer = ToolConfirmer { request ->
+        ask(
+            PendingApproval(request.toolName, request.prompt),
+            SpeechText.fromMarkdown(request.prompt) + " Should I go ahead? Reply yes or no.",
+        ) != ApprovalAnswer.DENY
+    }
+
+    /** Asks whether FRIDAY may use an app, as Codex asks before using an app on the computer. */
+    private suspend fun askPhoneApp(target: com.localfirst.assistant.tools.phoneuse.PhoneApp): com.localfirst.assistant.tools.phoneuse.AccessDecision {
+        val answer = ask(
+            PendingApproval(
+                toolName = "get_app_state",
+                title = "Allow FRIDAY to use ${target.label}?",
+                prompt = "FRIDAY will see ${target.label}'s screen and can tap, type and scroll in it for this request. It asks again before sending, buying or deleting anything.",
+                approveLabel = "Allow in this chat",
+                alwaysLabel = "Always allow",
+            ),
+            "Can I use ${target.label} on your phone? Reply yes or no.",
+        )
+        return when (answer) {
+            ApprovalAnswer.DENY -> com.localfirst.assistant.tools.phoneuse.AccessDecision.DENY
+            ApprovalAnswer.ALLOW -> com.localfirst.assistant.tools.phoneuse.AccessDecision.ALLOW_FOR_CONVERSATION
+            ApprovalAnswer.ALWAYS -> com.localfirst.assistant.tools.phoneuse.AccessDecision.ALWAYS_ALLOW
+        }
+    }
+
+    /** Asks before a consequential tap, like Codex's review of risky computer actions. */
+    private suspend fun reviewPhoneAction(target: com.localfirst.assistant.tools.phoneuse.PhoneApp, description: String): Boolean =
+        ask(
+            PendingApproval(toolName = "click", title = "Allow this in ${target.label}?", prompt = description, approveLabel = "Allow"),
+            "$description Should I go ahead? Reply yes or no.",
+        ) != ApprovalAnswer.DENY
+
+    private fun newPhoneUseSession() = phoneUse?.newConversation(::askPhoneApp, ::reviewPhoneAction)
 
     private var provider: ModelProvider = providers(settingsStore.load())
     private var session: ConversationSession = newSession(emptyList())
@@ -292,6 +324,9 @@ class ChatViewModel(
         if (app != null) viewModelScope.launch {
             voiceState.collect { it ?: run { VoiceForegroundService.stop(app); VoiceBubbleService.stop(app) } }
         }
+        // Stop on the "FRIDAY is using …" banner stops the turn, wherever the user is.
+        viewModelScope.launch { com.localfirst.assistant.phone.PhoneUseSignals.stop.collect { stop() } }
+        newPhoneUseSession()
         syncWakeWord()
     }
 
@@ -437,7 +472,12 @@ class ChatViewModel(
     }
 
     fun answerApproval(approved: Boolean) {
-        approval?.complete(approved)
+        approval?.complete(if (approved) ApprovalAnswer.ALLOW else ApprovalAnswer.DENY)
+    }
+
+    /** The remembered choice on cards that offer one ("Always allow"). */
+    fun answerApprovalAlways() {
+        approval?.complete(ApprovalAnswer.ALWAYS)
     }
 
     // ---- voice -----------------------------------------------------------------
@@ -612,6 +652,7 @@ class ChatViewModel(
         session.latestUserNote = AssistantPrompts.timeNote(now)
         _state.update { it.copy(busy = true, error = null, turnMessagesReady = false) }
         holdForeground()
+        phoneUse?.current?.beginTurn()
         turnJob = viewModelScope.launch {
             var outcome: TurnOutcome? = null
             var groundingAttempted = false
@@ -673,6 +714,9 @@ class ChatViewModel(
                         error = (outcome as? TurnOutcome.Failed)?.error ?: it.error,
                     )
                 }
+                // Like Codex's turn-ended hook: drop the screen references and the banner.
+                phoneUse?.current?.endTurn()
+                withContext(NonCancellable) { runCatching { phoneUseDriver?.endSession() } }
                 turnJob = null
                 if (carTurn) {
                     carTurn = false
@@ -697,7 +741,8 @@ class ChatViewModel(
 
     private var attachmentPickerOpen = false
     fun setAttachmentPickerOpen(open: Boolean) { attachmentPickerOpen = open }
-    fun onAppLeft() { if (_state.value.privacy.incognito && !attachmentPickerOpen) { closeVoice(); newChat() } }
+    /** Leaving ends an incognito chat, except while a turn runs: phone use leaves FRIDAY to work in other apps. */
+    fun onAppLeft() { if (_state.value.privacy.incognito && !attachmentPickerOpen && !_state.value.busy) { closeVoice(); newChat() } }
 
     /** The user returned to the app: the floating bubble hands control back to the inline voice panel. */
     fun onAppResumed() { app?.let(VoiceBubbleService::stop) }
@@ -711,6 +756,7 @@ class ChatViewModel(
             app?.getSharedPreferences("brief-privacy", Context.MODE_PRIVATE)?.edit()?.putBoolean("incognito", true)?.apply()
             _state.update { it.copy(privacy = privacy, projectId = null, showWorkspace = false, imageMode = false, recallSources = emptyList(), recallStatus = null) }
             session = newSession(emptyList(), privacy)
+            newPhoneUseSession()
         }
     }
     private suspend fun clearIncognito() {
@@ -756,10 +802,12 @@ class ChatViewModel(
                 resetToNewChat()
             }
             withContext(Dispatchers.IO) {
-                val files = conversationStore.load(id)?.messages.orEmpty()
-                    .filterIsInstance<Message.User>().flatMap { it.attachments }
+                val messages = conversationStore.load(id)?.messages.orEmpty()
+                val files = messages.filterIsInstance<Message.User>().flatMap { it.attachments }
                 conversationStore.delete(id)
                 attachments?.delete(files)
+                // Phone-use screenshots kept for the transcript go with the chat.
+                messages.filterIsInstance<Message.ToolResult>().mapNotNull { it.image }.forEach { File(it).delete() }
             }
             refreshConversationList()
         }
@@ -783,6 +831,7 @@ class ChatViewModel(
             }
             clearDraftAttachments()
             session = newSession(stored.messages)
+            newPhoneUseSession()
             createdAt = stored.summary.createdAt
             _state.update {
                 it.copy(
@@ -810,6 +859,7 @@ class ChatViewModel(
         _state.update { it.copy(pcSessionId=null,pcSession=null) }
         clearDraftAttachments()
         session = newSession(emptyList())
+        newPhoneUseSession()
         _state.update {
             it.copy(
                 conversationId = null,
@@ -1901,7 +1951,6 @@ class ChatViewModel(
         private const val CONNECT_TIMEOUT_MILLIS = 10_000
         private const val CAR_REPLY_CHARS = 1_200
         const val MAX_ATTACHMENTS = 6
-        private const val PHONE_CONTROL_TOOL = "control_phone_screen"
     }
 }
 
@@ -1916,11 +1965,15 @@ class ChatViewModelFactory(
         val conversations = FileConversationStore(File(app.filesDir, "conversations"))
         val knowledge = KnowledgeStore(File(app.filesDir, "knowledge.json"))
         val workspace = WorkspaceClient(app, settingsStore::load)
+        var created: ChatViewModel? = null
+        val phoneUse = com.localfirst.assistant.phone.PhoneUseController(app, com.localfirst.assistant.phone.PhoneUseSettings.get(app))
+        val phoneUseDriver = com.localfirst.assistant.phone.AndroidPhoneUseDriver(app) { created?.state?.value?.privacy?.incognito == true }
         val registry = ToolRegistry().apply {
             workspaceTools(workspace, knowledge, conversations).forEach(::register)
             register(SetMediaVolumeTool { level -> volume.setPercent(level) })
             register(GroundedWebSearchTool(workspace))
             phoneTools(AndroidPhoneActions(app)).forEach(::register)
+            com.localfirst.assistant.tools.phoneuse.phoneUseTools(phoneUseDriver, phoneUse::active) { phoneUse.settings.state.value.screenshots }.forEach(::register)
         }
         return ChatViewModel(
             settingsStore = settingsStore,
@@ -1935,7 +1988,9 @@ class ChatViewModelFactory(
             chatSync = ChatSync(app, workspace, conversations, knowledge),
             backups = BackupService(app, conversations, knowledge),
             app = app,
-        ) as T
+            phoneUse = phoneUse,
+            phoneUseDriver = phoneUseDriver,
+        ).also { created = it } as T
     }
 }
 

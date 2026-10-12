@@ -47,6 +47,8 @@ sealed interface Message {
         val success: Boolean,
         /** Display-only links (for example, search sources). Not sent to the model. */
         val sources: List<SourceLink> = emptyList(),
+        /** Display-only screenshot path (phone use). The model saw it once, right after this result. */
+        val image: String? = null,
     ) : Message {
         override val role: MessageRole = MessageRole.TOOL_RESULT
     }
