@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import uuid
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -34,6 +35,36 @@ class StorageTests(unittest.TestCase):
         uploaded = self.workspace.put_file(b'hello', '../../my%20file.txt')
         self.assertEqual(uploaded['name'], 'my file.txt')
         with self.assertRaises(HTTPException): self.workspace.file('../workspace.sqlite')
+    def test_portable_preferences_are_independent_and_revision_protected(self):
+        w = self.workspace
+        w.sync('preferences-theme', 0, {'preferences': json.dumps({'value': 'LIGHT'})})
+        w.sync('preferences-display_name', 0, {'preferences': json.dumps({'value': 'Alex'})})
+        with self.assertRaises(HTTPException) as conflict:
+            w.sync('preferences-theme', 0, {'preferences': json.dumps({'value': 'DARK'})})
+        self.assertEqual(conflict.exception.status_code, 409)
+        self.assertEqual(len(module.Workspace(self.temp.name).items()), 2)
+        for key, value in [('api_key', 'secret'), ('theme', 'unknown'), ('accent', 'javascript'), ('reduced_motion', 'true')]:
+            with self.assertRaises(HTTPException) as invalid:
+                w.sync('preferences-' + key, 0, {'preferences': json.dumps({'value': value})})
+            self.assertEqual(invalid.exception.status_code, 400)
+    def test_synced_history_uses_same_native_memory_source_as_android(self):
+        from desktop.memory.store import MemoryStore
+        w = self.workspace
+        w.memory_store = MemoryStore(Path(self.temp.name) / 'memory')
+        cid = str(uuid.uuid4())
+        chat = {'version': 1, 'summary': {'id': cid, 'title': 'Shared', 'createdAt': 1000, 'updatedAt': 2000},
+                'messages': [{'role': 'user', 'content': 'Shared browser history'}, {'role': 'tool_result', 'content': 'inert'}]}
+        w.sync(cid, 0, {'chat': json.dumps(chat)})
+        source = w.memory_store.source('native-' + uuid.UUID(cid).hex)
+        self.assertEqual(source['messages'], [{'role': 'user', 'content': 'Shared browser history'}])
+        w.memory_store.exclude(source['id'], True)
+        chat['messages'].append({'role': 'assistant', 'content': 'New answer'})
+        w.sync(cid, 1, {'chat': json.dumps(chat)})
+        self.assertTrue(w.memory_store.source(source['id'])['excluded'])
+        w.memory_store.set_settings({'archive_chats': False})
+        chat['messages'].append({'role': 'user', 'content': 'Do not index'})
+        w.sync(cid, 2, {'chat': json.dumps(chat)})
+        self.assertEqual(len(w.memory_store.source(source['id'])['messages']), 2)
     def test_python_cannot_see_host_or_network_and_can_create_workbook(self):
         info = self.workspace.put_file(b'value\n2\n3\n', 'input.csv')
         result = self.workspace.analyze('''import os, socket, glob
@@ -110,6 +141,22 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         r = await self.client.post('/workspace/items/bad/continue', json={'revision': 0, 'payload': {'chat': '{}'}})
         self.assertEqual(r.status_code, 400)
         self.assertEqual(self.workspace.items(), [])
+    async def test_browser_recall_obeys_shared_memory_settings(self):
+        from desktop.memory.store import MemoryStore
+        self.workspace.memory_store = MemoryStore(Path(self.temp.name) / 'memory')
+        self.workspace.memory_store.remember('Prefer concise answers', category='preference')
+        chat = {'version': 1, 'summary': {'id': 'memory-chat', 'title': 'Test', 'createdAt': 1, 'updatedAt': 1},
+                'messages': [{'role': 'user', 'content': 'Hello'}]}
+        r = await self.client.post('/workspace/items/memory-chat/continue', json={'revision': 0, 'payload': {'chat': json.dumps(chat)}})
+        with self.workspace.db() as db:
+            messages = json.loads(db.execute('SELECT messages FROM jobs WHERE id=?', (r.json()['id'],)).fetchone()[0])
+        self.assertIn('Prefer concise answers', messages[0]['content'])
+        self.workspace.memory_store.set_settings({'use_memories': False, 'use_history': False})
+        chat['summary']['id'] = 'fresh-chat'
+        r = await self.client.post('/workspace/items/fresh-chat/continue', json={'revision': 0, 'payload': {'chat': json.dumps(chat)}})
+        with self.workspace.db() as db:
+            messages = json.loads(db.execute('SELECT messages FROM jobs WHERE id=?', (r.json()['id'],)).fetchone()[0])
+        self.assertNotIn('Prefer concise answers', messages[0]['content'])
 
     async def test_completed_reply_does_not_overwrite_concurrent_edit(self):
         chat = {'version': 1, 'summary': {'id': 'racechat', 'title': 'Test', 'createdAt': 1, 'updatedAt': 1},

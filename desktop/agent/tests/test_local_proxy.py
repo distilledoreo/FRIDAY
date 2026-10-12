@@ -21,6 +21,18 @@ class LocalProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('id_slot',body)
         self.assertNotIn('strata_prefix',body)
         self.assertFalse(body['strata_checkpoint'])
+        self.assertEqual(body['reasoning_effort'], 'low')
+        self.assertEqual(body['reasoning_budget_tokens'], 0)
+
+    def test_saved_session_cannot_disable_or_raise_coding_reasoning(self):
+        with patch.dict('os.environ', {'FRIDAY_LLM_BACKEND': 'strata'}):
+            body = local_payload({'messages': [], 'reasoning_effort': 'high',
+                                  'reasoning': {'effort': 'high'}, 'reasoning_budget_tokens': 50000,
+                                  'chat_template_kwargs': {'enable_thinking': False}})
+        self.assertEqual(body['chat_template_kwargs'], {'enable_thinking': True, 'reasoning_effort': 'low'})
+        self.assertEqual(body['reasoning_effort'], 'low')
+        self.assertEqual(body['reasoning_budget_tokens'], 0)
+        self.assertNotIn('reasoning', body)
 
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -55,7 +67,8 @@ class LocalProxyTests(unittest.IsolatedAsyncioTestCase):
         url, body = self.seen[0]
         self.assertEqual(url, 'http://127.0.0.1:8080/v1/chat/completions')
         self.assertEqual(body['id_slot'], 1)
-        self.assertFalse(body['chat_template_kwargs']['enable_thinking'])
+        self.assertTrue(body['chat_template_kwargs']['enable_thinking'])
+        self.assertEqual(body['reasoning_effort'], 'low')
         self.assertTrue(all(p['type'] == 'text' for p in body['messages'][0]['content']))
         self.assertEqual(self.gate.readers, 0)
 

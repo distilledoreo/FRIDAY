@@ -129,7 +129,8 @@ class CodeProjects:
                        'branch TEXT NOT NULL, base TEXT NOT NULL, base_sha TEXT NOT NULL, worktree TEXT NOT NULL, created REAL NOT NULL, '
                        "pr_url TEXT, closed INTEGER NOT NULL DEFAULT 0, stats TEXT NOT NULL DEFAULT '{}')")
         pc.extra_agents[CODE_AGENT] = {
-            'mode': 'primary', 'description': 'FRIDAY coding agent in a repository worktree', 'steps': 200,
+            # Coding tasks can need many iterations; completion or user cancellation ends the run.
+            'mode': 'primary', 'description': 'FRIDAY coding agent in a repository worktree',
             'tools': {COMPUTER + '_screenshot': False, COMPUTER + '_action': False}, 'prompt': CODE_PROMPT,
         }
         pc.rule_builders[CODE_AGENT] = lambda session_id, directory: code_ruleset(pc.settings(), self.trusted_directory(directory))
@@ -158,6 +159,25 @@ class CodeProjects:
             message = (err.strip() or out.strip()).splitlines()[-1:] or ['failed']
             raise HTTPException(502, f'{Path(command[0]).name} {command[1] if len(command) > 1 else ""}: {message[0][:300]}')
         return process.returncode, out, err
+
+    async def ensure_git_identity(self, directory):
+        """Fill missing repository identity from gh, without needing a private email or global config."""
+        missing = []
+        for key in ('user.name', 'user.email'):
+            _, value, _ = await self.run(self.git, 'config', '--get', key, cwd=directory, check=False)
+            if not value.strip(): missing.append(key)
+        if not missing: return
+        _, out, _ = await self.run(self.gh, 'api', 'user', cwd=directory, timeout=30)
+        try:
+            profile = json.loads(out)
+            login, identifier = profile['login'], profile['id']
+            if not isinstance(login, str) or not re.fullmatch(r'[A-Za-z0-9-]+', login): raise ValueError()
+            if type(identifier) is not int or identifier <= 0: raise ValueError()
+        except (ValueError, KeyError, TypeError):
+            raise HTTPException(502, 'Could not read the GitHub account identity; check gh auth status')
+        identity = {'user.name': login, 'user.email': f'{identifier}+{login}@users.noreply.github.com'}
+        for key in missing:
+            await self.run(self.git, 'config', '--local', key, identity[key], cwd=directory)
 
     # ---- projects ----------------------------------------------------------------------------------------
 
@@ -260,6 +280,7 @@ class CodeProjects:
         first = (f'Repository: {project["repo"]} on GitHub. Base branch: {base}. Your branch: {branch} (already checked out in '
                  f'this worktree).\n\nTask:\n{body.prompt.strip()}')
         try:
+            await self.ensure_git_identity(worktree)
             session = await self.pc.start(Prompt(prompt=first, title=title, source='code', model_choice=body.model_choice), directory=str(worktree), agent=CODE_AGENT)
         except Exception:
             # No session, no task: leave nothing behind.
@@ -358,6 +379,7 @@ class CodeProjects:
     async def follow_up(self, task_id, prompt):
         task = self.task(task_id)
         if task['closed']: raise HTTPException(409, 'This task was discarded')
+        await self.ensure_git_identity(task['worktree'])
         await self.pc.send(task['session'], prompt)
         return self.summary(task)
 
@@ -375,6 +397,7 @@ class CodeProjects:
         worktree = Path(task['worktree'])
         _, porcelain, _ = await self.run(self.git, 'status', '--porcelain', cwd=worktree)
         if not porcelain.strip(): return False
+        await self.ensure_git_identity(worktree)
         await self.run(self.git, 'add', '-A', cwd=worktree)
         await self.run(self.git, 'commit', '--quiet', '-m', message, cwd=worktree)
         return True

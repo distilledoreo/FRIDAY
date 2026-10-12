@@ -541,6 +541,7 @@ from memory.integration import enable as enable_memory
 memory_store = enable_memory(app, auth,
     WorkspacePath(__file__).resolve().parent.parent / 'workspace-data' / 'memory',
     llm, gpu_gate)
+workspace_store.memory_store = memory_store
 
 
 # ---- FRIDAY isolated cloud agent ----

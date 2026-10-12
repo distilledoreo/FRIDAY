@@ -20,6 +20,7 @@ IDENTITY = {'GIT_AUTHOR_NAME': 'Test', 'GIT_AUTHOR_EMAIL': 'test@example.invalid
 FAKE_GH = '''#!/bin/sh
 echo "$@" >> "$GH_LOG"
 case "$1 $2" in
+  "api user") echo '{"login":"octo","id":123,"email":null}' ;;
   "repo list") echo '[{"nameWithOwner":"octo/demo","description":"Demo","isPrivate":false,"updatedAt":"2026-10-01T00:00:00Z","defaultBranchRef":{"name":"main"}}]' ;;
   "repo clone") git clone --quiet "$FAKE_ORIGIN" "$4" ;;
   "pr create") echo "https://github.com/octo/demo/pull/7" ;;
@@ -81,7 +82,7 @@ class CodeProjectsTest(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         self.addCleanup(self.temp.cleanup)
-        patcher = patch.dict(os.environ, IDENTITY)
+        patcher = patch.dict(os.environ, {**IDENTITY, 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull})
         patcher.start()
         self.addCleanup(patcher.stop)
         # origin: a bare repository with one commit on main.
@@ -123,6 +124,7 @@ class CodeProjectsTest(unittest.IsolatedAsyncioTestCase):
     async def test_registers_the_coding_agent(self):
         self.assertIn(CODE_AGENT, self.pc.extra_agents)
         self.assertIn('worktree', self.pc.extra_agents[CODE_AGENT]['prompt'])
+        self.assertNotIn('steps', self.pc.config([('friday-local', 'qwen3.8-27b')])['agent'][CODE_AGENT])
         self.assertIn(CODE_AGENT, self.pc.rule_builders)
 
     async def test_add_validates_and_clones_once(self):
@@ -155,6 +157,47 @@ class CodeProjectsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.pc.record(task_id := self.code.task(task['id'])['session'])['agent'], CODE_AGENT)
         self.assertEqual(self.pc.scope(task_id), {'params': {'directory': directory}})
         self.assertEqual([t['id'] for t in self.code.tasks(project['id'])], [task['id']])
+
+    async def test_task_identity_is_available_to_agent_without_private_email(self):
+        project, task = await self.task()
+        directory = self.code.task(task['id'])['worktree']
+        self.assertEqual(git('config', '--get', 'user.name', cwd=directory).strip(), 'octo')
+        self.assertEqual(git('config', '--get', 'user.email', cwd=directory).strip(), '123+octo@users.noreply.github.com')
+        self.assertEqual(git('config', '--get', 'user.email', cwd=project['path']).strip(), '123+octo@users.noreply.github.com')
+
+    async def test_identity_preserves_existing_configuration(self):
+        project = await self.code.add('octo/demo')
+        git('config', 'user.name', 'Existing', cwd=project['path'])
+        git('config', 'user.email', 'existing@users.noreply.github.com', cwd=project['path'])
+        await self.code.ensure_git_identity(project['path'])
+        self.assertNotIn('api user', self.log.read_text())
+        git('config', '--unset', 'user.email', cwd=project['path'])
+        await self.code.ensure_git_identity(project['path'])
+        self.assertEqual(git('config', '--get', 'user.name', cwd=project['path']).strip(), 'Existing')
+        self.assertEqual(git('config', '--get', 'user.email', cwd=project['path']).strip(), '123+octo@users.noreply.github.com')
+
+    async def test_pr_repairs_existing_task_with_no_git_identity(self):
+        _, task = await self.task()
+        self.idle(task)
+        directory = self.code.task(task['id'])['worktree']
+        git('config', '--unset', 'user.name', cwd=directory)
+        git('config', '--unset', 'user.email', cwd=directory)
+        (Path(directory) / 'new.txt').write_text('Recovered task\n')
+        # Neither system/global config nor author/committer environment can supply an identity.
+        with patch.dict(os.environ):
+            for key in IDENTITY: os.environ.pop(key, None)
+            result = await self.code.pull_request(task['id'], PullRequest())
+        self.assertEqual(result['pr_url'], 'https://github.com/octo/demo/pull/7')
+        self.assertEqual(git('log', '-1', '--format=%ae|%ce', cwd=directory).strip(),
+                         '123+octo@users.noreply.github.com|123+octo@users.noreply.github.com')
+
+    async def test_follow_up_repairs_existing_task_identity(self):
+        _, task = await self.task()
+        self.idle(task)
+        directory = self.code.task(task['id'])['worktree']
+        git('config', '--unset', 'user.email', cwd=directory)
+        await self.code.follow_up(task['id'], 'Continue the task')
+        self.assertEqual(git('config', '--get', 'user.email', cwd=directory).strip(), '123+octo@users.noreply.github.com')
 
     async def test_local_selection_reaches_code_session_and_summary(self):
         project = await self.code.add('octo/demo')

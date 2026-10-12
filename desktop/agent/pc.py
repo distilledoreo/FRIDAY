@@ -35,6 +35,7 @@ from .model_ranking import ModelRanking, PROVIDER, ENDPOINT
 PORT = 4097
 MODES = ('ask', 'ask_changes', 'full')
 DEFAULTS = {'enabled': True, 'mode': 'ask_changes', 'computer_use': True, 'allow': [], 'deny': []}
+UNHEALTHY_GRACE = 60
 MAX_MCP_SERVERS = 10
 MCP_NAME = re.compile(r'[a-z0-9-]{1,32}')
 RESERVED_MCP = frozenset({'friday-computer', 'friday'})
@@ -195,6 +196,7 @@ class PcAgent:
         self.python = python or sys.executable
         self.password = secrets.token_urlsafe(24)
         self.process = None
+        self.unhealthy_since = None
         self.client = None
         self.chain = None
         self.ranking = ModelRanking(self.root)
@@ -454,7 +456,7 @@ class PcAgent:
                            'options': {'baseURL': 'http://127.0.0.1:8700/workspace/pc/internal/v1', 'apiKey': self.password},
                            # Slot 1 is llama.cpp's background slot; the proxy adapts the request for Strata.
                            'models': {LOCAL[1]: {'name': 'Qwen3.8 Flash Next' if os.environ.get('FRIDAY_LLM_BACKEND') == 'strata' else 'Qwen3.8 27B', 'tool_call': True, 'attachment': False, 'modalities': {'input': ['text'], 'output': ['text']}, 'limit': {'context': int(os.environ.get('FRIDAY_LLM_CONTEXT', '65536')), 'output': 8192},
-                                                 'options': {'id_slot': 1, 'chat_template_kwargs': {'enable_thinking': False}}}}},
+                                                 'options': {'id_slot': 1, 'reasoning_effort': 'low', 'chat_template_kwargs': {'enable_thinking': True, 'reasoning_effort': 'low'}}}}},
             },
             'permission': {'*': 'ask', 'bash': 'ask', 'edit': 'ask', 'read': 'allow', 'webfetch': 'allow'},
             'mcp': {COMPUTER: {'type': 'local', 'command': [self.python, '-m', 'agent.computer'], 'enabled': settings['computer_use'],
@@ -473,19 +475,28 @@ class PcAgent:
             config = self.config(registry)
             digest = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
             if self.process and self.process.returncode is None and self.client:
+                healthy = False
                 with contextlib.suppress(Exception):
-                    if (await self.client.get('/global/health', timeout=3)).status_code == 200:
-                        active = any(row['state'] == 'busy' for row in self.sessions(200))
-                        # Never reload config while a task/tool or approval is in flight.
-                        if digest == self.config_digest or active: return self.client
-                        try:
-                            for path in ('/session/status', '/permission', '/question'):
-                                response = await self.client.get(path, timeout=3)
-                                response.raise_for_status()
-                                if response.json(): return self.client
-                        except Exception:
-                            # Uncertain activity is a reason to defer, never to stop work.
-                            return self.client
+                    healthy = (await self.client.get('/global/health', timeout=3)).status_code == 200
+                if healthy:
+                    self.unhealthy_since = None
+                    active = any(row['state'] == 'busy' for row in self.sessions(200))
+                    # Never reload config while a task/tool or approval is in flight.
+                    if digest == self.config_digest or active: return self.client
+                    try:
+                        for path in ('/session/status', '/permission', '/question'):
+                            response = await self.client.get(path, timeout=3)
+                            response.raise_for_status()
+                            if response.json(): return self.client
+                    except Exception:
+                        # Uncertain activity is a reason to defer, never to stop work.
+                        return self.client
+                else:
+                    # A live server that answers slowly (a busy PC, a long tool result) is not a dead one, and
+                    # restarting it ends every running task. Only a minute of silence counts as a hang.
+                    self.unhealthy_since = self.unhealthy_since or time.monotonic()
+                    if time.monotonic() - self.unhealthy_since < UNHEALTHY_GRACE: return self.client
+            self.unhealthy_since = None
             await self.stop()
             # Removing the old registry exposes newly available candidates after idle.
             chain = await self.models()

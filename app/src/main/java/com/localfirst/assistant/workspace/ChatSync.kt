@@ -8,24 +8,37 @@ import java.security.MessageDigest
 import kotlinx.serialization.json.*
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 data class SyncConflict(val id: String, val label: String, val remote: JSONObject, val phonePreview: String = "Preview unavailable", val computerPreview: String = "Preview unavailable", val phoneHash: String? = null)
 
 /** Three-way sync: remote changes never silently overwrite local edits. */
 @android.annotation.SuppressLint("ApplySharedPref") // Revision checkpoints must reach disk before the next mutation; this runs on IO.
 class ChatSync(private val context: Context, private val client: WorkspaceClient, private val chats: ConversationStore,
-               private val knowledge: KnowledgeStore) {
+               private val knowledge: KnowledgeStore,
+               private val exchange: suspend (String, String, JSONObject?, Int) -> String = { path, method, body, timeout -> client.request(path, method, body, timeoutMs = timeout) }) {
+    private suspend fun request(path: String, method: String = "GET", body: JSONObject? = null, timeoutMs: Int = 120000) = exchange(path, method, body, timeoutMs)
+    private val lock = Mutex()
+    // Only portable preferences are allowed onto the shared server. Never credentials or phone access.
+    private val appearance get() = context.getSharedPreferences("friday_appearance", Context.MODE_PRIVATE)
+    private val preferenceKeys = listOf("theme", "accent", "proactivity", "reduced_motion", "display_name", "interactive_answers")
+    private fun preferenceKey(id: String) = id.removePrefix("preferences-").takeIf { id.startsWith("preferences-") && it in preferenceKeys }
     private val prefs get() = context.getSharedPreferences("workspace-sync-${digest(client.serverIdentity)}", Context.MODE_PRIVATE)
     private val attachments = File(context.filesDir, "attachments")
 
     private fun digest(text: String?) = text?.let { MessageDigest.getInstance("SHA-256").digest(it.toByteArray()).joinToString("") { b -> "%02x".format(b) } } ?: "deleted"
-    private fun local(id: String): String? = if (id == "knowledge") {
+    private fun local(id: String): String? = if (preferenceKey(id) != null) {
+        val key = preferenceKey(id)!!
+        appearance.all[key]?.let { JSONObject().put("value", it).toString() }
+    } else if (id == "knowledge") {
         val k = knowledge.load()
         if (k.memories.isEmpty() && k.projects.isEmpty() && !prefs.contains("hash:knowledge")) null
         else JsonCodec.json.encodeToString(Knowledge.serializer(), k)
     } else chats.load(id)?.let(::encodeConversation)
 
     private suspend fun portable(id: String, text: String): JSONObject {
+        if (preferenceKey(id) != null) return JSONObject().put("preferences", text)
         if (id == "knowledge") return JSONObject().put("knowledge", text)
         val json = JSONObject(text)
         val messages = json.getJSONArray("messages")
@@ -55,15 +68,32 @@ class ChatSync(private val context: Context, private val client: WorkspaceClient
         return JSONObject().put("chat", json.toString())
     }
 
-    private suspend fun apply(id: String, remote: JSONObject) {
+    private suspend fun apply(id: String, remote: JSONObject): String {
         val before = digest(local(id))
+        preferenceKey(id)?.let { key ->
+            val edit = appearance.edit()
+            if (remote.optBoolean("deleted")) edit.remove(key)
+            else {
+                val value = JSONObject(remote.getJSONObject("payload").getString("preferences")).get("value")
+                when (key) {
+                    "reduced_motion", "interactive_answers" -> { require(value is Boolean); edit.putBoolean(key, value) }
+                    else -> { require(value is String); edit.putString(key, value) }
+                }
+            }
+            require(digest(local(id)) == before) { "Preferences changed during sync. Sync again." }
+            check(edit.commit()) { "Could not save synced preferences." }
+            return digest(if (remote.optBoolean("deleted")) null else remote.getJSONObject("payload").getString("preferences"))
+        }
         if (remote.optBoolean("deleted")) {
             if (id == "knowledge") knowledge.save(Knowledge()) else chats.delete(id)
-            return
+            return if (id == "knowledge") digest(JsonCodec.json.encodeToString(Knowledge.serializer(), Knowledge())) else digest(null)
         }
         val payload = remote.getJSONObject("payload")
         if (id == "knowledge") {
-            knowledge.save(JsonCodec.json.decodeFromString(Knowledge.serializer(), payload.getString("knowledge")))
+            require(digest(local(id)) == before) { "Projects changed during sync. Sync again." }
+            val value = JsonCodec.json.decodeFromString(Knowledge.serializer(), payload.getString("knowledge"))
+            knowledge.save(value)
+            return digest(JsonCodec.json.encodeToString(Knowledge.serializer(), value))
         } else {
             val raw = JSONObject(payload.getString("chat"))
             val messages = raw.getJSONArray("messages")
@@ -88,14 +118,16 @@ class ChatSync(private val context: Context, private val client: WorkspaceClient
             require(chat.summary.id == id) { "Invalid synced chat." }
             require(digest(local(id)) == before) { "Chat changed during sync. Sync again to resolve it." }
             chats.save(chat)
+            return digest(encodeConversation(chat))
         }
     }
 
-    suspend fun sync(): List<SyncConflict> {
-        val list = JSONArray(client.request("/workspace/items"))
+    suspend fun sync(): List<SyncConflict> = lock.withLock {
+        val list = JSONArray(request("/workspace/items", timeoutMs = 3000))
         val remote = (0 until list.length()).map { list.getJSONObject(it) }.associateBy { it.getString("id") }
         val known = prefs.all.keys.filter { it.startsWith("hash:") }.map { it.removePrefix("hash:") }
-        val ids = (chats.list().map { it.id } + "knowledge" + remote.keys + known).distinct()
+        val supported = remote.values.filter { it.getString("id") == "knowledge" || preferenceKey(it.getString("id")) != null || it.getJSONObject("payload").has("chat") || it.optBoolean("deleted") }.map { it.getString("id") }
+        val ids = (chats.list().map { it.id } + "knowledge" + preferenceKeys.map { "preferences-$it" } + supported + known).distinct()
         val conflicts = mutableListOf<SyncConflict>()
         for (id in ids) {
             val text = local(id)
@@ -104,41 +136,47 @@ class ChatSync(private val context: Context, private val client: WorkspaceClient
             val expected = prefs.getInt("revision:$id", 0)
             val server = remote[id]
             val actual = server?.getInt("revision") ?: 0
-            if (actual != expected && (last == null && text != null || last != null && hash != last)) {
-                val remoteText = if (server!!.optBoolean("deleted")) null else server.getJSONObject("payload").optString(if (id == "knowledge") "knowledge" else "chat", "").takeIf { it.isNotEmpty() }
-                conflicts += SyncConflict(id, chats.load(id)?.summary?.title ?: if (id == "knowledge") "Memories and projects" else id, server,
-                    com.localfirst.assistant.presentation.SyncPreview.describe(text, id == "knowledge"),
-                    com.localfirst.assistant.presentation.SyncPreview.describe(remoteText, id == "knowledge"), hash)
+            if (text == null && last == null && actual == 0) continue
+            if (preferenceKey(id) != null && text != null && server != null && !server.optBoolean("deleted") &&
+                JSONObject(text).get("value") == JSONObject(server.getJSONObject("payload").getString("preferences")).get("value")) {
+                prefs.edit().putInt("revision:$id", actual).putString("hash:$id", hash).commit()
                 continue
             }
-            if (actual != expected && server != null) {
+            if (actual != expected && (last == null && text != null || last != null && hash != last)) {
+                val remoteText = if (server!!.optBoolean("deleted")) null else server.getJSONObject("payload").optString(if (id == "knowledge") "knowledge" else if (preferenceKey(id) != null) "preferences" else "chat", "").takeIf { it.isNotEmpty() }
+                conflicts += SyncConflict(id, chats.load(id)?.summary?.title ?: if (id == "knowledge") "Memories and projects" else id, server,
+                    if (preferenceKey(id) != null) text ?: "Default" else com.localfirst.assistant.presentation.SyncPreview.describe(text, id == "knowledge"),
+                    if (preferenceKey(id) != null) remoteText ?: "Default" else com.localfirst.assistant.presentation.SyncPreview.describe(remoteText, id == "knowledge"), hash)
+                continue
+            }
+            val syncedHash = if (actual != expected && server != null) {
                 apply(id, server)
             } else if (hash != last) {
                 val body = JSONObject().put("revision", actual).put("deleted", text == null)
                     .put("payload", if (text == null) JSONObject() else portable(id, text))
-                val saved = JSONObject(client.request("/workspace/items/$id", "PUT", body))
+                val saved = JSONObject(request("/workspace/items/$id", "PUT", body))
                 // An edit during upload remains dirty and is sent next time.
                 prefs.edit().putInt("revision:$id", saved.getInt("revision")).putString("hash:$id", hash).commit()
                 continue
-            }
-            prefs.edit().putInt("revision:$id", actual).putString("hash:$id", digest(local(id))).commit()
+            } else hash
+            prefs.edit().putInt("revision:$id", actual).putString("hash:$id", syncedHash).commit()
         }
-        return conflicts
+        conflicts
     }
 
-    suspend fun resolve(conflict: SyncConflict, keepPhone: Boolean) {
+    suspend fun resolve(conflict: SyncConflict, keepPhone: Boolean) = lock.withLock {
         require(conflict.phoneHash == null || digest(local(conflict.id)) == conflict.phoneHash) { "This phone’s copy changed. Sync again to compare the latest versions." }
         if (keepPhone) {
             val text = local(conflict.id)
-            val saved = JSONObject(client.request("/workspace/items/${conflict.id}", "PUT", JSONObject()
+            val saved = JSONObject(request("/workspace/items/${conflict.id}", "PUT", JSONObject()
                 .put("revision", conflict.remote.getInt("revision")).put("deleted", text == null)
                 .put("payload", if (text == null) JSONObject() else portable(conflict.id, text))))
             prefs.edit().putInt("revision:${conflict.id}", saved.getInt("revision"))
                 .putString("hash:${conflict.id}", digest(text)).commit()
         } else {
-            apply(conflict.id, conflict.remote)
+            val hash = apply(conflict.id, conflict.remote)
             prefs.edit().putInt("revision:${conflict.id}", conflict.remote.getInt("revision"))
-                .putString("hash:${conflict.id}", digest(local(conflict.id))).commit()
+                .putString("hash:${conflict.id}", hash).commit()
         }
     }
 }

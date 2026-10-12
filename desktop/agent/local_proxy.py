@@ -10,11 +10,14 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from .prefix_warm import PrefixWarmer
+from .prompt_slim import slim
+
 
 def local_payload(value):
     if not isinstance(value, dict) or not isinstance(value.get('messages'), list):
         raise HTTPException(422, 'Invalid local model request')
-    value = dict(value)
+    value = dict(slim(value))
     messages = []
     for message in value['messages']:
         message = dict(message)
@@ -23,11 +26,18 @@ def local_payload(value):
                                   {'type': 'text', 'text': '[Image unavailable: the local fallback is text-only.]'}
                                   for part in message['content']]
         messages.append(message)
-    value.update(messages=messages, id_slot=1, chat_template_kwargs={'enable_thinking': False})
+    # This private OpenCode route is separate from foreground chat. Keep coding
+    # reasoning low even when a saved OpenCode session still sends thinking off.
+    value.update(messages=messages, id_slot=1, reasoning_effort='low',
+                 chat_template_kwargs={'enable_thinking': True, 'reasoning_effort': 'low'})
+    value.pop('reasoning', None)
     # A caller cannot select a paid/remote model or a different destination here.
     value['model'] = 'qwen3.8-27b'
     if os.environ.get('FRIDAY_LLM_BACKEND') == 'strata':
         value['model'] = 'qwen3.8-flash-next'
+        # Low effort controls the reasoning style; do not impose an additional
+        # thinking cap. Explicit zero also overrides any backend default budget.
+        value['reasoning_budget_tokens'] = 0
         value.pop('id_slot', None)
         if value.pop('cache_prompt', None) is False:
             value['strata_checkpoint'] = False
@@ -50,6 +60,9 @@ async def supports_parallel(client):
 def install(app, agent, gate, client_factory=None):
     router = APIRouter(prefix='/workspace/pc/internal/v1')
     inference = asyncio.Lock()
+    warmer = PrefixWarmer(agent.root, gate, inference, lambda: agent.settings()['enabled'], client_factory)
+    app.router.add_event_handler('startup', warmer.start)
+    app.router.add_event_handler('shutdown', warmer.stop)
 
     @router.post('/chat/completions')
     async def completions(request: Request):
@@ -62,6 +75,7 @@ def install(app, agent, gate, client_factory=None):
         if len(raw) > 2 * 1024 * 1024: raise HTTPException(413, 'Local request too large')
         try: body = local_payload(json.loads(raw))
         except (ValueError, TypeError, AttributeError): raise HTTPException(422, 'Invalid local model request') from None
+        warmer.remember(body)
         await inference.acquire()
         acquired = False
         client = response = None
