@@ -32,8 +32,9 @@ def local_payload(value):
     value['model'] = 'qwen3.8-27b'
     if os.environ.get('FRIDAY_LLM_BACKEND') == 'strata':
         value['model'] = 'qwen3.8-flash-next'
-        # Strata enforces this independently of the total answer/tool-call budget.
-        value['reasoning_budget_tokens'] = 2048
+        # Low effort controls the reasoning style; do not impose an additional
+        # thinking cap. Explicit zero also overrides any backend default budget.
+        value['reasoning_budget_tokens'] = 0
         value.pop('id_slot', None)
         if value.pop('cache_prompt', None) is False:
             value['strata_checkpoint'] = False

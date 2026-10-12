@@ -22,7 +22,7 @@ class LocalProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('strata_prefix',body)
         self.assertFalse(body['strata_checkpoint'])
         self.assertEqual(body['reasoning_effort'], 'low')
-        self.assertEqual(body['reasoning_budget_tokens'], 2048)
+        self.assertEqual(body['reasoning_budget_tokens'], 0)
 
     def test_saved_session_cannot_disable_or_raise_coding_reasoning(self):
         with patch.dict('os.environ', {'FRIDAY_LLM_BACKEND': 'strata'}):
@@ -31,7 +31,7 @@ class LocalProxyTests(unittest.IsolatedAsyncioTestCase):
                                   'chat_template_kwargs': {'enable_thinking': False}})
         self.assertEqual(body['chat_template_kwargs'], {'enable_thinking': True, 'reasoning_effort': 'low'})
         self.assertEqual(body['reasoning_effort'], 'low')
-        self.assertEqual(body['reasoning_budget_tokens'], 2048)
+        self.assertEqual(body['reasoning_budget_tokens'], 0)
         self.assertNotIn('reasoning', body)
 
     async def asyncSetUp(self):
