@@ -1,5 +1,7 @@
 package com.localfirst.assistant.genui.script
 
+import com.localfirst.assistant.platform.platformRegex
+
 import com.localfirst.assistant.platform.PlatformBigDecimal
 import com.localfirst.assistant.platform.buildRegex
 import kotlin.math.abs
@@ -167,7 +169,7 @@ object Values {
         if (s.startsWith("0x") || s.startsWith("0X")) return s.substring(2).toLongOrNull(16)?.toDouble() ?: Double.NaN
         if (s.startsWith("0b") || s.startsWith("0B")) return s.substring(2).toLongOrNull(2)?.toDouble() ?: Double.NaN
         if (s.startsWith("0o") || s.startsWith("0O")) return s.substring(2).toLongOrNull(8)?.toDouble() ?: Double.NaN
-        if (!s.matches(Regex("[+-]?(\\d+\\.?\\d*|\\.\\d+)([eE][+-]?\\d+)?"))) return Double.NaN
+        if (!s.matches(platformRegex("[+-]?(\\d+\\.?\\d*|\\.\\d+)([eE][+-]?\\d+)?"))) return Double.NaN
         return s.toDoubleOrNull() ?: Double.NaN
     }
 

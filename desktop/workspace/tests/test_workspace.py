@@ -136,6 +136,10 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job['status'], 'completed')
         saved = json.loads(self.workspace.items()[0]['payload']['chat'])
         self.assertEqual(saved['messages'][-1]['role'], 'assistant')
+        self.assertEqual([m['role'] for m in saved['messages']], ['user', 'tool_call', 'tool_result', 'assistant'])
+        self.assertEqual(saved['messages'][1]['id'], saved['messages'][2]['id'])
+        result = json.loads(saved['messages'][2]['content'])
+        self.assertEqual(result['results'][0]['ref'], 'web_' + __import__('hashlib').sha1(b'https://example.com').hexdigest()[:6])
         self.assertEqual(self.workspace.items()[0]['revision'], 2)
     async def test_invalid_continuation_does_not_write_chat(self):
         r = await self.client.post('/workspace/items/bad/continue', json={'revision': 0, 'payload': {'chat': '{}'}})
@@ -157,6 +161,39 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         with self.workspace.db() as db:
             messages = json.loads(db.execute('SELECT messages FROM jobs WHERE id=?', (r.json()['id'],)).fetchone()[0])
         self.assertNotIn('Prefer concise answers', messages[0]['content'])
+
+    async def test_interface_prompt_is_opt_in_bounded_and_not_archived(self):
+        chat = {'version': 1, 'summary': {'id': 'interface-chat', 'title': 'Test', 'createdAt': 1, 'updatedAt': 1},
+                'messages': [{'role': 'user', 'content': 'A calculator'}]}
+        body = {'revision': 0, 'payload': {'chat': json.dumps(chat)}, 'interface_prompt': 'Render supported client interfaces.'}
+        r = await self.client.post('/workspace/items/interface-chat/continue', json=body)
+        self.assertEqual(r.status_code, 200)
+        with self.workspace.db() as db:
+            messages = json.loads(db.execute('SELECT messages FROM jobs WHERE id=?', (r.json()['id'],)).fetchone()[0])
+        self.assertIn(body['interface_prompt'], messages[0]['content'])
+        self.assertEqual(set(next(i for i in self.workspace.items() if i['id'] == 'interface-chat')['payload']), {'chat'})
+        body['interface_prompt'] = 'x' * 24001
+        r = await self.client.post('/workspace/items/oversized/continue', json=body)
+        self.assertEqual(r.status_code, 422)
+        self.assertFalse(any(i['id'] == 'oversized' for i in self.workspace.items()))
+
+    async def test_compose_assets_are_public_but_shared_data_requires_token(self):
+        from unittest.mock import patch
+        source = Path(self.temp.name) / 'web-module'
+        assets = source / 'web-dist'; assets.mkdir(parents=True)
+        (assets / 'index.html').write_text('<!doctype html><title>FRIDAY</title>')
+        test_app = FastAPI()
+        def auth(authorization: str = Header(default='')):
+            if authorization != 'Bearer test': raise HTTPException(401)
+        async def model(messages, tools): return {'role': 'assistant', 'content': 'Hi'}
+        with patch.object(module, '__file__', str(source / 'workspace.py')):
+            module.install(test_app, [Depends(auth)], source / 'data', model, None, None)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=test_app), base_url='http://test') as client:
+            page = await client.get('/friday/')
+            self.assertEqual(page.status_code, 200)
+            self.assertIn('FRIDAY', page.text)
+            self.assertEqual((await client.get('/workspace/items')).status_code, 401)
+            self.assertEqual((await client.get('/friday/../workspace.sqlite')).status_code, 404)
 
     async def test_completed_reply_does_not_overwrite_concurrent_edit(self):
         chat = {'version': 1, 'summary': {'id': 'racechat', 'title': 'Test', 'createdAt': 1, 'updatedAt': 1},
@@ -182,6 +219,28 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         job = await self.wait_job(jid)
         self.assertEqual(job['status'], 'completed')
         self.assertEqual(self.calls, 1)
+
+    async def test_resumed_browser_job_archives_tool_checkpoint_once(self):
+        await self.lifespan.__aexit__(None, None, None)
+        chat = {'version': 1, 'summary': {'id': 'resumechat', 'title': 'Resume', 'createdAt': 1, 'updatedAt': 1},
+                'messages': [{'role': 'user', 'content': 'Research'}]}
+        self.workspace.sync('resumechat', 0, {'chat': json.dumps(chat)})
+        jid = self.workspace.create_job('Research', 0)
+        initial = [{'role': 'system', 'content': 'Research'}, {'role': 'user', 'content': 'Research'}]
+        checkpoint = initial + [{'role': 'assistant', 'content': '', 'tool_calls': [{'id': 'prior', 'type': 'function',
+            'function': {'name': 'web_search', 'arguments': '{"query":"searched"}'}}]},
+            {'role': 'tool', 'tool_call_id': 'prior', 'content': '{"result":"done"}'}]
+        self.workspace.update_job(jid, status='running', messages=json.dumps(checkpoint))
+        with self.workspace.db() as db:
+            db.execute('UPDATE jobs SET item_id=?,base_revision=?,chat=?,initial_count=? WHERE id=?',
+                       ('resumechat', 1, json.dumps(chat), len(initial), jid))
+        self.lifespan = self.app.router.lifespan_context(self.app)
+        await self.lifespan.__aenter__()
+        job = await self.wait_job(jid)
+        self.assertEqual(job['status'], 'completed')
+        self.assertEqual(self.calls, 1)
+        saved = json.loads(next(i for i in self.workspace.items() if i['id'] == 'resumechat')['payload']['chat'])
+        self.assertEqual([m['role'] for m in saved['messages']], ['user', 'tool_call', 'tool_result', 'assistant'])
 
     async def test_paused_jobs_do_not_run_and_resume(self):
         r = await self.client.post('/workspace/jobs', json={'prompt': 'Later', 'run_at': 9999999999})

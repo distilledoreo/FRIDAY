@@ -1,5 +1,7 @@
 package com.localfirst.assistant.presentation
 
+import com.localfirst.assistant.platform.platformRegex
+
 import com.localfirst.assistant.json.JsonCodec
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -78,7 +80,7 @@ object UiBlocks {
             is UiSegment.Invalid -> ""
             UiSegment.Pending -> ""
         }
-    }.replace(Regex("\n{3,}"), "\n\n").trim()
+    }.replace(platformRegex("\n{3,}"), "\n\n").trim()
 
     fun parse(raw: String): UiBlock? {
         val obj = runCatching { JsonCodec.json.parseToJsonElement(raw) as? JsonObject }.getOrNull() ?: return null
@@ -122,13 +124,13 @@ object UiBlocks {
         }
     }
 
-    private val varName = Regex("[a-z][a-z0-9_]{0,15}")
-    private val formulaChars = Regex("[0-9a-z_+\\-*/^%().,\\s]*")
+    private val varName = platformRegex("[a-z][a-z0-9_]{0,15}")
+    private val formulaChars = platformRegex("[0-9a-z_+\\-*/^%().,\\s]*")
 
     private fun parseCalculator(title: String?, obj: JsonObject): UiBlock.Calculator? {
         val formula = obj.text("formula", 200)?.takeIf { it.matches(formulaChars) && it.any(Char::isDigit) } ?: return null
         // Every variable the formula names must be declared; undeclared names reject the block.
-        val names = Regex("[a-z][a-z0-9_]*").findAll(formula).map { it.value }.toSet() - FormulaEval.functions
+        val names = platformRegex("[a-z][a-z0-9_]*").findAll(formula).map { it.value }.toSet() - FormulaEval.functions
         val vars = obj.list("vars", 6) { o ->
             val name = o.text("name", 16)?.lowercase()?.takeIf { it.matches(varName) } ?: return@list null
             val min = o.number("min") ?: 0.0
@@ -155,7 +157,7 @@ object UiBlocks {
         return UiBlock.Chart(title, kind, labels, series)
     }
 
-    private val fieldId = Regex("[a-z][a-z0-9_]{0,15}")
+    private val fieldId = platformRegex("[a-z][a-z0-9_]{0,15}")
 
     private fun parseForm(title: String?, obj: JsonObject): UiBlock.Form? {
         val fields = obj.list("fields", 8) { o ->

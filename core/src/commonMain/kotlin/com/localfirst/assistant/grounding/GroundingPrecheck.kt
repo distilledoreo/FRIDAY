@@ -1,5 +1,7 @@
 package com.localfirst.assistant.grounding
 
+import com.localfirst.assistant.platform.platformRegex
+
 import com.localfirst.assistant.tools.*
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -7,13 +9,13 @@ import com.localfirst.assistant.platform.PlatformUri
 
 /** CPU-only retrieval trigger and citation coverage check; neither proves truth. */
 object GroundingPrecheck {
-    private val optOut = Regex("(?i)\\b(don['’]?t|do not|without)\\s+(search|browse)|\\boffline only\\b")
-    private val transformation = Regex("(?i)^\\s*(translate|rewrite|summarize|proofread|rephrase)\\b")
-    private val reference = Regex("(?i)^\\s*(read|summarize|review|check|explain)\\s+(?:this\\s+)?(?:https://|(?:page|source|article|paper)\\s+https://)")
-    private val privateData = Regex("(?i)\\bmy\\s+(?:inbox|e-?mails?|mail|calendar|appointments?|events?|schedule|situations?|follow[- ]?ups?|account|password|token)\\b|\\b(?:emails? I (?:received|sent)|(?:this|that|these|those|the selected)\\s+(?:e-?mails?|messages?|calendar|inbox)|private (?:account|message|data)|bearer\\s+[a-z0-9_-]{12,}|(?:password|api[_ -]?key)\\s*[:=])|\\bsk-[a-z0-9_-]{15,}")
-    private val current = Regex("(?i)\\b(latest|current|currently|today|tonight|tomorrow|yesterday|recent|news|forecast|weather|price|prices|costs?|availability|in stock|opening hours|schedule|score|standings|release|version|recommend|recommendation|best|cheapest|laws?|regulations?|tax|visa|president|prime minister|ceo|exchange rate|stock market|interest rate|symptoms?|dosage|medication|recall|research|verify|sources|citations|evidence|studies)\\b")
-    private val dated = Regex("\\b20(2[5-9]|[3-9][0-9])\\b")
-    private val research = Regex("(?i)\\b(research|investigate|comprehensive|in[- ]depth|compare|fact[- ]?check)\\b")
+    private val optOut = platformRegex("(?i)\\b(don['’]?t|do not|without)\\s+(search|browse)|\\boffline only\\b")
+    private val transformation = platformRegex("(?i)^\\s*(translate|rewrite|summarize|proofread|rephrase)\\b")
+    private val reference = platformRegex("(?i)^\\s*(read|summarize|review|check|explain)\\s+(?:this\\s+)?(?:https://|(?:page|source|article|paper)\\s+https://)")
+    private val privateData = platformRegex("(?i)\\bmy\\s+(?:inbox|e-?mails?|mail|calendar|appointments?|events?|schedule|situations?|follow[- ]?ups?|account|password|token)\\b|\\b(?:emails? I (?:received|sent)|(?:this|that|these|those|the selected)\\s+(?:e-?mails?|messages?|calendar|inbox)|private (?:account|message|data)|bearer\\s+[a-z0-9_-]{12,}|(?:password|api[_ -]?key)\\s*[:=])|\\bsk-[a-z0-9_-]{15,}")
+    private val current = platformRegex("(?i)\\b(latest|current|currently|today|tonight|tomorrow|yesterday|recent|news|forecast|weather|price|prices|costs?|availability|in stock|opening hours|schedule|score|standings|release|version|recommend|recommendation|best|cheapest|laws?|regulations?|tax|visa|president|prime minister|ceo|exchange rate|stock market|interest rate|symptoms?|dosage|medication|recall|research|verify|sources|citations|evidence|studies)\\b")
+    private val dated = platformRegex("\\b20(2[5-9]|[3-9][0-9])\\b")
+    private val research = platformRegex("(?i)\\b(research|investigate|comprehensive|in[- ]depth|compare|fact[- ]?check)\\b")
     fun blocksWeb(query: String) = optOut.containsMatchIn(query)
     fun privateRequest(query: String) = privateData.containsMatchIn(query)
     fun largerResearch(query: String) = research.containsMatchIn(query) && !blocksWeb(query) && !privateRequest(query)
@@ -52,8 +54,8 @@ object GroundingPrecheck {
         "${scheme.lowercase()}://${host.lowercase()}$port${value.rawPath.ifEmpty { "/" }}${value.rawQuery?.let { "?$it" }.orEmpty()}"
     }.getOrNull()
     private fun urls(answer: String): List<String> {
-        val text = answer.replace(Regex("(?s)```.*?```"), "").replace(Regex("`[^`]*`"), "")
-        return Regex("https?://").findAll(text).map { start ->
+        val text = answer.replace(platformRegex("(?s)```.*?```"), "").replace(platformRegex("`[^`]*`"), "")
+        return platformRegex("https?://").findAll(text).map { start ->
             var end = start.range.first; var depth = 0
             while (end < text.length) {
                 val c = text[end]

@@ -1,5 +1,7 @@
 package com.localfirst.assistant.grounding
 
+import com.localfirst.assistant.platform.platformRegex
+
 /**
  * Finds private details in what the model wants to send to the public web: words that
  * came from recalled memories or private tool results (inbox, calendar, briefs) and that
@@ -11,14 +13,14 @@ object PrivateLeak {
     /** Marks the start of recalled memories in the system prompt. */
     const val RECALL_MARKER = "\n\nRetrieved personal context."
 
-    private val word = Regex("[\\p{L}\\p{N}][\\p{L}\\p{N}'’]*")
-    private val contact = Regex("[\\w.+-]+@[\\w-]+(?:\\.[\\w-]+)+|\\+?\\d[\\d\\s().-]{7,}\\d")
-    private val streetAddress = Regex(
+    private val word = platformRegex("[\\p{L}\\p{N}][\\p{L}\\p{N}'’]*")
+    private val contact = platformRegex("[\\w.+-]+@[\\w-]+(?:\\.[\\w-]+)+|\\+?\\d[\\d\\s().-]{7,}\\d")
+    private val streetAddress = platformRegex(
         "\\b\\d{1,6}\\s+(?:[\\p{L}.]+\\s+){1,3}(?:st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|ln|lane|ct|court|way|pl|place|pkwy|parkway|cir|circle|trl|trail|hwy|highway)\\b",
         RegexOption.IGNORE_CASE,
     )
-    private val idNumber = Regex("\\b\\d{6,}\\b")
-    private val sentence = Regex("[^.!?\\n]+[.!?]?")
+    private val idNumber = platformRegex("\\b\\d{6,}\\b")
+    private val sentence = platformRegex("[^.!?\\n]+[.!?]?")
 
     /** What a web call would carry out: [identifying] always needs approval; [other] only if it singles someone out. */
     class Found(val identifying: List<String>, val other: List<String>, val context: List<String>) {
@@ -101,5 +103,5 @@ object PrivateLeak {
         friday saturday sunday january february march april may june july august september october november december 2024 2025 2026 2027
         user user's mentioned memory memories chat chats fact facts approved past said says prefers likes like loves enjoys wants
         work works working home family friend friends help information info about details detail question answer answers
-    """.trim().split(Regex("\\s+")).toSet()
+    """.trim().split(platformRegex("\\s+")).toSet()
 }

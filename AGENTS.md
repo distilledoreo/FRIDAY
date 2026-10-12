@@ -8,8 +8,9 @@ edit here, commit, push. Nothing else on the PC is source code.
 | Folder | What it is |
 | --- | --- |
 | `app/` | Android app (Kotlin, Jetpack Compose): UI, voice, phone tools, Android Auto |
-| `core/` | Plain-JVM logic the app uses: conversation engine, model client, tools, UI blocks (unit-tested) |
+| `core/` | Kotlin Multiplatform logic: shared models, presentation and interface runtime in `commonMain`; JVM/phone infrastructure in `androidMain`; JS platform implementations in `jsMain` (unit-tested) |
 | `desktop/` | PC server feature modules: `agent` (FRIDAY tasks, PC access via OpenCode, accounts, daily brief), `memory`, `workspace`, `imagegen`, `model_server` (the Strata backend adapter), plus `search_service` |
+| `web/` | Kotlin/JS + Compose client using the shared PC history, preferences and memory APIs; see `web/README.md` |
 | `server/` | PC server core (`api/app.py`, `api/prompt_cache.py`), Docker compose, llama launcher, systemd units (`systemd/strata/` for the Strata backend), `scripts/setup.sh` |
 
 ## The running server is a separate copy
@@ -31,7 +32,7 @@ the user's data, `.env` tokens, Python venv and llama runtime. Rules:
 ## Build and test
 
 - Android: `./gradlew :app:testDebugUnitTest :core:test` and `./gradlew :app:assembleDebug`
-  (needs `ANDROID_HOME`). The version is in `app/build.gradle.kts` (`versionCode`/`versionName`).
+  (needs Android SDK 35 and JDK 17). Web/shared JS: `./gradlew :core:jsNodeTest :web:jsNodeTest :web:stageGateway`. The version is in `app/build.gradle.kts` (`versionCode`/`versionName`).
 - Server modules: `python -m unittest desktop.agent.tests.<module>` from the repo root, using the server's
   venv (`~/assistant-server/api/.venv/bin/python`).
 

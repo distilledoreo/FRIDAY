@@ -24,6 +24,19 @@ kotlin {
     }
 
     sourceSets {
+        val commonMain by getting {
+            dependencies {
+                implementation(project(":core"))
+                implementation(libs.kotlinx.coroutines.core)
+                implementation(libs.kotlinx.serialization.json)
+            }
+        }
+        val commonTest by getting {
+            dependencies {
+                implementation(libs.kotlin.test)
+                implementation(libs.kotlinx.coroutines.test)
+            }
+        }
         val jsMain by getting {
             // The shared engine and presentation layer come from core's JS target.
             // Browser-backed implementations of the JVM-only infra (HTTP, storage) live here.
@@ -34,6 +47,7 @@ kotlin {
                 implementation(compose.material3)
                 implementation(compose.ui)
                 implementation(compose.components.resources)
+                implementation(libs.markdown.renderer.m3)
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.kotlinx.serialization.json)
             }
@@ -44,4 +58,17 @@ kotlin {
             }
         }
     }
+}
+
+// Serve the compiled Compose app from the existing PC gateway, with no extra public listener.
+tasks.named<org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpack>("jsBrowserProductionWebpack") {
+    outputFileName = "friday-web.js"
+}
+tasks.named<org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpack>("jsBrowserDevelopmentWebpack") {
+    outputFileName = "friday-web.js"
+}
+tasks.register<Sync>("stageGateway") {
+    dependsOn("jsBrowserDistribution")
+    from(layout.buildDirectory.dir("dist/js/productionExecutable"))
+    into(rootProject.layout.projectDirectory.dir("desktop/workspace/web-dist"))
 }

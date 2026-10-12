@@ -5,7 +5,6 @@ import com.localfirst.assistant.json.JsonCodec
 import com.localfirst.assistant.platform.PlatformMessageDigest
 import com.localfirst.assistant.platform.PlatformUri
 import com.localfirst.assistant.platform.encodeUtf8
-import com.localfirst.assistant.platform.formatString
 import com.localfirst.assistant.platform.putIfAbsent
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -23,7 +22,7 @@ object UiBindings {
     /** A short id that is the same for a URL in every conversation. */
     fun ref(url: String): String {
         val digest = PlatformMessageDigest.sha1(encodeUtf8(url))
-        return "web_" + digest.take(3).joinToString("") { formatString("%02x", it) }
+        return "web_" + digest.take(3).joinToString("") { it.toUByte().toString(16).padStart(2, '0') }
     }
 
     /** Adds a `ref` to each search evidence item (and to a fetched page), so the model can cite it. */

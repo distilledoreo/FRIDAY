@@ -25,6 +25,10 @@ Milestones implemented:
 
 Phone search/page tools retrieve bounded public static passages with source provenance, dates and explicit snippet/unavailable states. Chat enforces no-search requests and separate exact public-query/URL confirmation after private tool results or recalled memory. Citation status checks link coverage only; factual support still requires checking the supplied passages. Eligible deeper research is proposed in Activity and runs only after approval. Private account-scoped agent tasks cannot use public web tools. See [delivery and verification](desktop/FRIDAY-ROADMAP.md). Sending remains disabled pending real provider/device verification and explicit activation.
 
+## Compose web client
+
+The Kotlin/JS + Compose app in `web/` connects to the same PC gateway as Android and shares history, projects, memory and portable appearance preferences. Build with `./gradlew :web:stageGateway`, install the gateway, and open `/friday/`. Android **0.23.0** uses the corresponding preference protocol. See [web client build, sync behavior and validation](web/README.md). The older `/workspace-ui` remains available.
+
 ## Layout
 
 ```

@@ -132,7 +132,7 @@ fun buildRegex(pattern: String, ignoreCase: Boolean, multiline: Boolean, dotAll:
         if (ignoreCase) add(RegexOption.IGNORE_CASE)
         if (multiline) add(RegexOption.MULTILINE)
     }
-    return Regex((if (dotAll) "(?s)" else "") + pattern, opts)
+    return platformRegex((if (dotAll) "(?s)" else "") + pattern, opts)
 }
 
 /** `@Volatile` cross-thread hint (no-op on JS). */
@@ -166,3 +166,7 @@ expect fun <K : Comparable<K>, V> sortedMapOf(): MutableMap<K, V>
 
 /** `Throwable.javaClass.simpleName` (constructor name on JS). */
 expect fun Throwable.className(): String
+
+/** Regex construction with portable JVM inline flag semantics. */
+expect fun platformRegex(pattern: String, options: Set<RegexOption> = emptySet()): Regex
+fun platformRegex(pattern: String, option: RegexOption): Regex = platformRegex(pattern, setOf(option))

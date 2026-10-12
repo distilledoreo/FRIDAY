@@ -1,8 +1,5 @@
 package com.localfirst.assistant.web.settings
 
-import kotlinx.browser.localStorage
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
 
 enum class ThemeMode(val label: String) { DARK("Dark"), LIGHT("Light"), SYSTEM("Follow system") }
 enum class ProactivityLevel(val label: String, val suggestionLimit: Int) {
@@ -30,26 +27,4 @@ data class AppearanceSettings(
             interactive,
         )
     }
-}
-
-/** Browser-backed appearance preferences, persisted in localStorage. */
-class AppearanceStore {
-    private fun load() = AppearanceSettings.from(
-        get("theme"), get("accent"), get("proactivity"),
-        get("reduced_motion") == "true", get("display_name"),
-        get("interactive_answers") != "false",
-    )
-    private val mutable = MutableStateFlow(load())
-    val state = mutable.asStateFlow()
-
-    fun save(settings: AppearanceSettings) {
-        val accent = AppearanceSettings.accent(settings.accentHex) ?: return
-        put("theme", settings.theme.name); put("accent", accent)
-        put("proactivity", settings.proactivity.name); put("reduced_motion", settings.reducedMotion.toString())
-        put("display_name", settings.displayName.trim().take(60)); put("interactive_answers", settings.interactiveAnswers.toString())
-        mutable.value = settings.copy(accentHex = accent)
-    }
-
-    private fun get(key: String): String? = runCatching { localStorage.getItem("friday_appearance:$key") }.getOrNull()
-    private fun put(key: String, value: String) { runCatching { localStorage.setItem("friday_appearance:$key", value) } }
 }

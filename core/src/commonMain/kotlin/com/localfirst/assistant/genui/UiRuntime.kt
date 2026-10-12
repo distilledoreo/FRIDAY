@@ -1,5 +1,7 @@
 package com.localfirst.assistant.genui
 
+import com.localfirst.assistant.platform.platformRegex
+
 import com.localfirst.assistant.genui.script.Attribute
 import com.localfirst.assistant.platform.putIfAbsent
 import com.localfirst.assistant.genui.script.BodyNode
@@ -361,12 +363,12 @@ class UiRuntime(
             }
             PropType.RADIUS -> when (v) { is Double -> v; is String -> if (v in DesignTokens.radius) v else cssLength(v)?.let { "${it}px" } ?: Invalid; else -> Invalid }
             PropType.SIZE -> when (v) { is Double -> v; is String -> if (v in DesignTokens.sizes || v == "full" || v == "auto") v else cssLength(v)?.let { "${it}px" } ?: (if (v.endsWith("%")) v else Invalid); else -> Invalid }
-            PropType.COLOR -> (v as? String)?.takeIf { it in DesignTokens.colors || it.matches(Regex("#[0-9a-fA-F]{3,8}")) || it.startsWith("rgb") || it.startsWith("var(") } ?: Invalid
+            PropType.COLOR -> (v as? String)?.takeIf { it in DesignTokens.colors || it.matches(platformRegex("#[0-9a-fA-F]{3,8}")) || it.startsWith("rgb") || it.startsWith("var(") } ?: Invalid
             PropType.ANY -> v
         }
     }
 
-    private fun cssLength(text: String): Double? = Regex("^\\s*(-?\\d+(?:\\.\\d+)?)\\s*(px|dp)?\\s*$").find(text)?.groupValues?.get(1)?.toDoubleOrNull()
+    private fun cssLength(text: String): Double? = platformRegex("^\\s*(-?\\d+(?:\\.\\d+)?)\\s*(px|dp)?\\s*$").find(text)?.groupValues?.get(1)?.toDoubleOrNull()
 
     private fun safeUrl(url: String) = (url.startsWith("https://") || url.startsWith("http://")) && url.length < 4_000 && ' ' !in url
 

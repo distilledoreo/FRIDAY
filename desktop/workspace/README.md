@@ -35,7 +35,7 @@ Supported libraries include pandas/openpyxl, matplotlib, numpy, python-docx, and
 
 Background jobs have public-web search, page fetch, and isolated Python tools. They have no phone actions. A completed assistant/tool group is checkpointed before the next model call. After a restart, running jobs resume from their last complete checkpoint. Uncheckpointed model generations may repeat; interrupted file generation can leave an extra artifact. Completed tool groups are not replayed. Twenty tool rounds pause a job for explicit resumption. Recurrence is at least 15 minutes. Pause/cancel can interrupt model waits; an in-progress tool finishes before the worker stops. Results remain available while the phone is offline. Android polls for changed results roughly every 15 minutes, subject to OS scheduling and notification permission.
 
-The browser saves its prompt before generation and records the final answer only if the chat revision still matches. If another device edits the chat while generation runs, the answer remains in Tasks and does not overwrite the edit. Browser history displays final messages; full original Android tool transcripts remain in synced chat archives.
+The browser saves its prompt before generation and records the completed assistant/tool transcript only if the chat revision still matches. If another device edits the chat while generation runs, the answer remains in Tasks and does not overwrite the edit. The older workspace UI displays final messages; the Compose web client also displays synced tool activity. Browser tool groups use the same archive format as Android, including stable source references.
 
 ## App updates
 
@@ -66,3 +66,7 @@ Chat is the default screen. Open the sidebar to search chats, browse date-groupe
 The sidebar footer opens Settings. Memory and Data controls have separate screens; server/model/voice configuration is under Voice and server. Task creation uses local date/time pickers and repeat choices; non-existent daylight-saving times and past times are rejected. Sync conflicts show bounded, readable previews of both versions, and require another sync if the phone copy changed after comparison.
 
 Device UX checks still required: back navigation across nested screens, date/time pickers, keyboard and system insets, large font sizes, light/dark mode, project chat creation/rename/delete, and selecting a sync version.
+
+## Compose frontend
+
+The Android-style Kotlin/JS frontend is served at `/friday/` after `./gradlew :web:stageGateway` and the normal gateway installation. It uses the same shared APIs as this module. See [web client documentation](../../web/README.md).

@@ -305,3 +305,5 @@ actual object PlatformTime {
 actual fun <K : Comparable<K>, V> sortedMapOf(): MutableMap<K, V> = java.util.TreeMap()
 
 actual fun Throwable.className(): String = javaClass.simpleName
+
+actual fun platformRegex(pattern: String, options: Set<RegexOption>): Regex = Regex(pattern, options)

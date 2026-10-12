@@ -1,47 +1,40 @@
 package com.localfirst.assistant.web
 
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.window.ComposeViewport
-import com.localfirst.assistant.genui.UiCompiler
-import com.localfirst.assistant.web.data.ConversationStore
-import com.localfirst.assistant.web.data.ServerSettingsStore
-import com.localfirst.assistant.web.settings.AppearanceStore
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.UriHandler
+import kotlinx.browser.window
+import com.localfirst.assistant.platform.PlatformSystem
+import com.localfirst.assistant.web.data.*
 import com.localfirst.assistant.web.state.ChatViewModel
 import com.localfirst.assistant.web.theme.AssistantTheme
-import com.localfirst.assistant.web.ui.ChatScreen
-import com.localfirst.assistant.web.ui.SettingsDialog
+import com.localfirst.assistant.web.ui.WorkspaceApp
 import kotlinx.browser.document
+import org.w3c.dom.events.Event
+import org.jetbrains.skiko.wasm.onWasmReady
 
-/**
- * Browser entry point. The shared engine and presentation layer come from core's JS target; the
- * chat UI and the browser-backed infra (HTTP, storage) are added on top of it.
- */
 @OptIn(ExperimentalComposeUiApi::class)
-fun main() {
-    val compiled = UiCompiler.compile("<div>hello</div>", complete = true)
-    console.log("FRIDAY web engine ready: compiled ${compiled.nodes.size} node(s)")
+fun main() = onWasmReady {
+    removeLegacyToken()
+    document.getElementById("loading")?.remove()
     ComposeViewport(document.body!!) {
-        App()
-    }
-}
-
-@Composable
-private fun App() {
-    val appearance = remember { AppearanceStore() }
-    val prefs by appearance.state.collectAsState()
-    val settings = remember { ServerSettingsStore() }
-    val scope = rememberCoroutineScope()
-    val vm = remember { ChatViewModel(ConversationStore(), settings, scope) }
-    var showSettings by remember { mutableStateOf(false) }
-    AssistantTheme(prefs, appearance::save) {
-        ChatScreen(vm) { showSettings = true }
-        if (showSettings) SettingsDialog(vm, settings) { showSettings = false }
+        val scope = rememberCoroutineScope()
+        val vm = remember { ChatViewModel(WorkspaceRepository(FetchWorkspaceGateway()), scope, ::randomConversationId, PlatformSystem::currentTimeMillis) }
+        val state by vm.state.collectAsState()
+        DisposableEffect(vm) {
+            vm.startPolling { document.asDynamic().hidden != true }
+            val listener: (Event) -> Unit = { if (document.asDynamic().hidden != true && vm.state.value.connected) vm.refresh(true) }
+            document.addEventListener("visibilitychange", listener)
+            onDispose { document.removeEventListener("visibilitychange", listener); vm.close() }
+        }
+        CompositionLocalProvider(LocalUriHandler provides object : UriHandler {
+            override fun openUri(uri: String) {
+                val artifact = Regex("^assistant://artifact/([a-f0-9]{32})$").matchEntire(uri)
+                if (artifact != null) vm.artifact(artifact.groupValues[1])
+                else if (uri.startsWith("https://") || uri.startsWith("http://")) window.open(uri, "_blank", "noopener,noreferrer")
+            }
+        }) { AssistantTheme(state.preferences) { WorkspaceApp(vm, state) } }
     }
 }

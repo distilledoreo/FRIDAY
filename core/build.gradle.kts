@@ -5,7 +5,7 @@ plugins {
 }
 
 kotlin {
-    jvmToolchain(21)
+    jvmToolchain(17)
 
     androidTarget {
         compilerOptions {
@@ -28,6 +28,9 @@ kotlin {
         }
         jsMain.dependencies {
             implementation(libs.kotlinx.coroutines.core)
+        }
+        androidUnitTest.dependencies {
+            implementation(libs.junit)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)

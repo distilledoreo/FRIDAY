@@ -1,5 +1,7 @@
 package com.localfirst.assistant.genui
 
+import com.localfirst.assistant.platform.platformRegex
+
 import com.localfirst.assistant.genui.script.Values
 import com.localfirst.assistant.platform.formatString
 
@@ -10,7 +12,7 @@ import com.localfirst.assistant.platform.formatString
  */
 object UiFallback {
     fun markdown(nodes: List<UiNode>): String =
-        blocks(nodes).joinToString("\n\n").replace(Regex("\n{3,}"), "\n\n").trim()
+        blocks(nodes).joinToString("\n\n").replace(platformRegex("\n{3,}"), "\n\n").trim()
 
     /** The reply as plain text for speech: Markdown markers removed by the caller's speech cleaner. */
     fun markdown(source: String, complete: Boolean = true): String = markdown(UiRuntime.renderOnce(source, complete).nodes)
@@ -31,7 +33,7 @@ object UiFallback {
                 else -> block(node).joinToString(" ")
             }
         }
-    }.replace(Regex("[ \\t]+"), " ")
+    }.replace(platformRegex("[ \\t]+"), " ")
 
     private fun label(e: UiElement) = e.string("label") ?: e.string("title") ?: e.string("name")
 

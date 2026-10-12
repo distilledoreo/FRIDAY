@@ -1,10 +1,12 @@
 package com.localfirst.assistant.presentation
 
+import com.localfirst.assistant.platform.platformRegex
+
 /** Native rendering policy derived from real response content, independent of UI and model vendor. */
 enum class ResponsePattern { BUBBLE, FULL_WIDTH, EXPANDABLE }
 
 object ResponseLayout {
-    private val tableSeparator=Regex("^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?\\s*$")
+    private val tableSeparator=platformRegex("^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?\\s*$")
     fun choose(content:String):ResponsePattern {
         var fence:String?=null
         var previous=""
@@ -22,7 +24,7 @@ object ResponseLayout {
     }
     /** Unknown HTML/component tags remain visible text rather than disappearing in Markdown. */
     fun requiresTextFallback(content:String):Boolean {
-        val tag=Regex("<[/]?[A-Za-z][A-Za-z0-9_-]*(?:\\s[^>]*)?>")
+        val tag=platformRegex("<[/]?[A-Za-z][A-Za-z0-9_-]*(?:\\s[^>]*)?>")
         var fence:String?=null
         for(line in content.lineSequence()) {
             val trimmed=line.trimStart()

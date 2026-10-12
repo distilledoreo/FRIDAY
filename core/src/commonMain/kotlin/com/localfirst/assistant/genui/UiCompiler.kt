@@ -1,5 +1,7 @@
 package com.localfirst.assistant.genui
 
+import com.localfirst.assistant.platform.platformRegex
+
 import com.localfirst.assistant.genui.script.ArrayPattern
 import com.localfirst.assistant.genui.script.BodyNode
 import com.localfirst.assistant.genui.script.CallExpr
@@ -37,11 +39,11 @@ data class CompiledUi(
  * closed, and each repair is recorded.
  */
 object UiCompiler {
-    private val directive = Regex("\\{(@body|@const|#if|#each)\\b")
-    private val tag = Regex("<([A-Za-z][A-Za-z0-9_-]*)")
-    private val userComponent = Regex("(?:function\\s+([A-Z][A-Za-z0-9_]*)\\s*\\(|(?:const|let|var)\\s+([A-Z][A-Za-z0-9_]*)\\s*=)")
-    private val fence = Regex("(?ms)^\\s*(```|~~~).*?(^\\s*\\1\\s*$|\\z)")
-    private val inlineCode = Regex("`[^`\\n]*`")
+    private val directive = platformRegex("\\{(@body|@const|#if|#each)\\b")
+    private val tag = platformRegex("<([A-Za-z][A-Za-z0-9_-]*)")
+    private val userComponent = platformRegex("(?:function\\s+([A-Z][A-Za-z0-9_]*)\\s*\\(|(?:const|let|var)\\s+([A-Z][A-Za-z0-9_]*)\\s*=)")
+    private val fence = platformRegex("(?ms)^\\s*(```|~~~).*?(^\\s*\\1\\s*$|\\z)")
+    private val inlineCode = platformRegex("`[^`\\n]*`")
 
     /** Whether a reply uses interface components at all; plain Markdown takes the faster path. */
     fun isInterface(text: String, catalog: Catalog = Catalog.default): Boolean {

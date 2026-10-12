@@ -1,5 +1,7 @@
 package com.localfirst.assistant.voice
 
+import com.localfirst.assistant.platform.platformRegex
+
 /**
  * Tells the assistant's own voice, picked up by the phone's mic from car or
  * room speakers, apart from the user talking. Recognition of that echo is
@@ -16,5 +18,5 @@ object EchoFilter {
     }
 
     internal fun words(text: String): List<String> =
-        text.lowercase().replace('’', '\'').split(Regex("[^\\p{L}\\p{N}']+")).map { it.trim('\'') }.filter { it.isNotEmpty() }
+        text.lowercase().replace('’', '\'').split(platformRegex("[^\\p{L}\\p{N}']+")).map { it.trim('\'') }.filter { it.isNotEmpty() }
 }

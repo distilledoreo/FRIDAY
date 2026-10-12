@@ -1,5 +1,7 @@
 package com.localfirst.assistant.presentation
 
+import com.localfirst.assistant.platform.platformRegex
+
 sealed interface ResponsePart {
     data class Prose(val markdown:String):ResponsePart
     data class Table(val headers:List<String>,val rows:List<List<String>>):ResponsePart
@@ -7,7 +9,7 @@ sealed interface ResponsePart {
 
 /** Conservative Markdown table adapter; malformed/unknown content stays in the prose fallback. */
 object ResponseParts {
-    private val separator=Regex("^:?-{3,}:?$")
+    private val separator=platformRegex("^:?-{3,}:?$")
     fun parse(content:String):List<ResponsePart> {
         val lines=content.lines();val result=mutableListOf<ResponsePart>();val prose=mutableListOf<String>()
         var i=0;var fence:String?=null

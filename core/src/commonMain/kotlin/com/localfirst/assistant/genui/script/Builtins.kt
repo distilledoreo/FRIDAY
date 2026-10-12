@@ -1,5 +1,7 @@
 package com.localfirst.assistant.genui.script
 
+import com.localfirst.assistant.platform.platformRegex
+
 import com.localfirst.assistant.json.JsonCodec
 import com.localfirst.assistant.platform.PlatformBigDecimal
 import com.localfirst.assistant.platform.PlatformCollator
@@ -387,7 +389,7 @@ object Builtins {
             }
             return out.toString()
         }
-        val regex = (pattern as? JsRegExp)?.pattern ?: Regex(Regex.escape(Values.toStr(pattern)))
+        val regex = (pattern as? JsRegExp)?.pattern ?: platformRegex(Regex.escape(Values.toStr(pattern)))
         val result = if (all) regex.replace(s) { expand(it) } else regex.find(s)?.let { m -> s.substring(0, m.range.first) + expand(m) + s.substring(m.range.last + 1) } ?: s
         interp.checkString(result.length)
         return result
@@ -580,7 +582,7 @@ object Builtins {
 
     fun parseFloat(text: String): Double {
         val s = text.trim()
-        val m = Regex("^[+-]?(Infinity|\\d+\\.?\\d*([eE][+-]?\\d+)?|\\.\\d+([eE][+-]?\\d+)?)").find(s) ?: return Double.NaN
+        val m = platformRegex("^[+-]?(Infinity|\\d+\\.?\\d*([eE][+-]?\\d+)?|\\.\\d+([eE][+-]?\\d+)?)").find(s) ?: return Double.NaN
         return Values.parseNumber(m.value)
     }
 

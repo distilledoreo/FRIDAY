@@ -3,16 +3,6 @@ package com.localfirst.assistant.conversation
 import com.localfirst.assistant.json.JsonCodec
 import java.io.File
 import java.util.UUID
-import kotlinx.serialization.Serializable
-
-@Serializable
-data class SavedMemory(val id: String, val text: String, val updatedAt: Long)
-
-@Serializable
-data class AssistantProject(val id: String, val name: String, val instructions: String = "", val context: String = "")
-
-@Serializable
-data class Knowledge(val memories: List<SavedMemory> = emptyList(), val projects: List<AssistantProject> = emptyList())
 
 /** User-managed knowledge, independent of individual transcripts. Does not read server settings or credentials. */
 class KnowledgeStore(private val file: File) {

@@ -1,16 +1,18 @@
 package com.localfirst.assistant.voice
 
+import com.localfirst.assistant.platform.platformRegex
+
 import kotlin.math.max
 
 /** Turns Markdown into text worth reading aloud. */
 object SpeechText {
-    private val link = Regex("""\[([^\]]+)]\((?:[^)]+)\)""")
-    private val bareUrl = Regex("""https?://\S+""")
-    private val emphasis = Regex("""(\*\*|__|\*|_|~~)(?=\S)(.+?)(?<=\S)\1""")
-    private val heading = Regex("""^\s{0,3}#{1,6}\s+""", RegexOption.MULTILINE)
-    private val bullet = Regex("""^\s*(?:[-*+]|\d+[.)])\s+""", RegexOption.MULTILINE)
-    private val tableRule = Regex("""^\s*\|?\s*:?-{3,}.*$""", RegexOption.MULTILINE)
-    private val codeFence = Regex("""```[\s\S]*?(?:```|$)""")
+    private val link = platformRegex("""\[([^\]]+)]\((?:[^)]+)\)""")
+    private val bareUrl = platformRegex("""https?://\S+""")
+    private val emphasis = platformRegex("""(\*\*|__|\*|_|~~)(?=\S)(.+?)(?<=\S)\1""")
+    private val heading = platformRegex("""^\s{0,3}#{1,6}\s+""", RegexOption.MULTILINE)
+    private val bullet = platformRegex("""^\s*(?:[-*+]|\d+[.)])\s+""", RegexOption.MULTILINE)
+    private val tableRule = platformRegex("""^\s*\|?\s*:?-{3,}.*$""", RegexOption.MULTILINE)
+    private val codeFence = platformRegex("""```[\s\S]*?(?:```|$)""")
 
     fun fromMarkdown(markdown: String): String {
         var text = codeFence.replace(markdown) { " The code is on screen. " }
@@ -25,7 +27,7 @@ object SpeechText {
             val cells = line.trim().trim('|').split('|').map(String::trim).filter(String::isNotEmpty)
             if (line.trim().startsWith("|") && cells.size > 1) cells.joinToString(", ") + "." else line
         }
-        return text.replace(Regex("""\s+"""), " ").trim()
+        return text.replace(platformRegex("""\s+"""), " ").trim()
     }
 }
 
@@ -116,7 +118,7 @@ object VoiceReplies {
 
     /** True for yes, false for no, null when unclear. Negatives win ("no, don't send it"). */
     fun approval(text: String): Boolean? {
-        val words = " " + text.lowercase().replace(Regex("[^a-z' ]"), " ").replace(Regex("\\s+"), " ").trim() + " "
+        val words = " " + text.lowercase().replace(platformRegex("[^a-z' ]"), " ").replace(platformRegex("\\s+"), " ").trim() + " "
         if (no.any { words.contains(" $it ") }) return false
         if (yes.any { words.contains(" $it ") }) return true
         return null

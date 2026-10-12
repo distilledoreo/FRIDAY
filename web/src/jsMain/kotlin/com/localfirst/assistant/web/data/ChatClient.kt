@@ -1,82 +1,73 @@
 package com.localfirst.assistant.web.data
 
-import com.localfirst.assistant.conversation.Message
-import kotlinx.browser.localStorage
 import kotlinx.browser.window
+import kotlinx.browser.document
+import org.w3c.dom.HTMLAnchorElement
+import org.w3c.files.Blob
+import org.w3c.dom.url.URL
 import kotlinx.coroutines.await
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.add
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonArray
-import kotlinx.serialization.json.putJsonObject
 import org.w3c.fetch.RequestInit
+import org.w3c.fetch.Headers
 
-/** OpenAI-compatible server settings, persisted in localStorage. */
-data class ServerSettings(val baseUrl: String = "", val apiKey: String = "", val model: String = "") {
-    val configured get() = baseUrl.isNotBlank() && model.isNotBlank()
-}
-
-class ServerSettingsStore {
-    private fun load() = ServerSettings(
-        localStorage.getItem("friday.server.baseUrl") ?: "",
-        localStorage.getItem("friday.server.apiKey") ?: "",
-        localStorage.getItem("friday.server.model") ?: "",
-    )
-    private val mutable = MutableStateFlow(load())
-    val state = mutable.asStateFlow()
-    fun save(s: ServerSettings) {
-        localStorage.setItem("friday.server.baseUrl", s.baseUrl)
-        localStorage.setItem("friday.server.apiKey", s.apiKey)
-        localStorage.setItem("friday.server.model", s.model)
-        mutable.value = s
+/** Same-origin by default; the gateway authenticates every request. Abort on timeout or tab lock. */
+class FetchWorkspaceGateway : WorkspaceGateway {
+    private var base = ""
+    private var token = ""
+    private var epoch = 0
+    private val controllers = mutableListOf<dynamic>()
+    override fun connect(baseUrl: String, token: String) {
+        lock()
+        val parsed = js("new URL(baseUrl || window.location.origin, window.location.origin)")
+        require(parsed.protocol == "https:" || parsed.protocol == "http:") { "Use an HTTP or HTTPS gateway address." }
+        require(parsed.username == "" && parsed.password == "" && parsed.search == "" && parsed.hash == "") { "Use a gateway address without credentials, query or fragment." }
+        this.base = baseUrl.trim().trimEnd('/')
+        this.token = token.trim()
+        require(this.token.isNotBlank()) { "Enter your computer API token." }
     }
-}
-
-/** Talks to an OpenAI-compatible chat-completions endpoint over fetch. */
-class ChatClient(private val settings: ServerSettings) {
-    private val json = Json { ignoreUnknownKeys = true }
-
-    suspend fun complete(messages: List<Message>): String {
-        val url = settings.baseUrl.trimEnd('/') + "/chat/completions"
-        val payload = buildJsonObject {
-            put("model", settings.model)
-            put("stream", false)
-            putJsonArray("messages") {
-                for (m in messages) when (m) {
-                    is Message.System -> add(buildJsonObject { put("role", "system"); put("content", m.content) })
-                    is Message.User -> add(buildJsonObject { put("role", "user"); put("content", m.content) })
-                    is Message.Assistant -> add(buildJsonObject { put("role", "assistant"); put("content", m.content) })
-                    else -> {}
-                }
-            }
-        }
-        val init = RequestInit(
-            method = "POST",
-            headers = buildJsonObject {
-                put("Content-Type", "application/json")
-                if (settings.apiKey.isNotBlank()) put("Authorization", "Bearer ${settings.apiKey}")
-            },
-            body = payload.toString(),
-        )
-        val response = window.fetch(url, init).await()
-        if (!response.ok) {
+    override fun lock() {
+        epoch++; token = ""
+        controllers.toList().forEach { it.abort() }; controllers.clear()
+    }
+    override suspend fun artifact(id: String) {
+        require(Regex("[a-f0-9]{32}").matches(id))
+        val identity = epoch; val controller = js("new AbortController()")
+        controllers.add(controller)
+        val timeout = window.setTimeout({ controller.abort() }, 30000)
+        try {
+            val headers = Headers(); headers.set("Authorization", "Bearer $token")
+            val init = RequestInit(method = "GET", headers = headers); init.asDynamic().signal = controller.signal
+            val response = window.fetch(base + "/workspace/files/$id", init).await()
+            check(response.ok) { "File download failed (${response.status})" }
+            val blob = response.blob().await()
+            check(identity == epoch) { "Session was locked." }
+            val url = URL.createObjectURL(blob)
+            val link = document.createElement("a") as HTMLAnchorElement
+            link.href = url; link.download = Regex("filename=\"([^\"]+)\"").find(response.headers.get("Content-Disposition").orEmpty())?.groupValues?.get(1) ?: "assistant-file"
+            link.click(); window.setTimeout({ URL.revokeObjectURL(url) }, 10000)
+        } finally { window.clearTimeout(timeout); controllers.remove(controller); controller.abort() }
+    }
+    override suspend fun request(path: String, method: String, body: JsonObject?): JsonElement {
+        require(path.startsWith("/workspace/")) { "Unknown workspace path." }
+        val identity = epoch
+        val controller = js("new AbortController()")
+        controllers.add(controller)
+        val timeout = window.setTimeout({ controller.abort() }, 15000)
+        try {
+            val headers = Headers(); headers.set("Authorization", "Bearer $token")
+            if (body != null) headers.set("Content-Type", "application/json")
+            val init = RequestInit(method = method, headers = headers, body = body?.toString())
+            init.asDynamic().signal = controller.signal
+            val response = window.fetch(base + path, init).await()
             val text = response.text().await()
-            throw IllegalStateException("Model server returned ${response.status}: ${text.take(300)}")
-        }
-        val root = json.parseToJsonElement(response.text().await()) as? JsonObject
-            ?: throw IllegalStateException("Model server returned a response this app could not read.")
-        val choices = root["choices"] as? JsonArray ?: throw IllegalStateException("Model server response had no choices.")
-        val first = choices.firstOrNull() as? JsonObject ?: throw IllegalStateException("Model server returned no choices.")
-        val message = first["message"] as? JsonObject
-        val content = (message?.get("content") as? JsonPrimitive)?.contentOrNull
-        return content ?: throw IllegalStateException("Model server response had no content.")
+            check(identity == epoch) { "Session was locked." }
+            if (!response.ok) throw WorkspaceException(response.status.toInt(), when (response.status.toInt()) {
+                409 -> "Changed on another client. Refresh and review before retrying; your draft is retained."
+                401, 403 -> "The computer did not accept this token. Lock and reconnect."
+                else -> "Computer request failed (${response.status}): ${text.take(250)}"
+            })
+            return wireJson.parseToJsonElement(text)
+        } finally { window.clearTimeout(timeout); controllers.remove(controller); controller.abort() }
     }
 }

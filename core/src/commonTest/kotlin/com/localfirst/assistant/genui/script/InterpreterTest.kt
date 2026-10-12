@@ -1,10 +1,9 @@
 package com.localfirst.assistant.genui.script
 
-import java.time.ZoneId
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
-import org.junit.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import kotlin.test.fail
+import kotlin.test.Test
 
 class InterpreterTest {
     private fun run(src: String, limits: Limits = Limits()): Any? {
@@ -183,6 +182,7 @@ class InterpreterTest {
 
     @Test
     fun dates() {
+        val oldZone = Dates.zone
         Dates.zone = "America/New_York"
         try {
             assertEquals("2026", js("new Date('2026-10-11T09:30:00').getFullYear()"))
@@ -196,7 +196,7 @@ class InterpreterTest {
             assertEquals("86400000", js("new Date('2026-01-02') - new Date('2026-01-01')"))
             assertEquals("true", js("typeof Date.now() === 'number'"))
         } finally {
-            Dates.zone = java.time.ZoneId.systemDefault().id
+            Dates.zone = oldZone
         }
     }
 
@@ -236,7 +236,7 @@ class InterpreterTest {
     @Test
     fun theSandboxHasNoWayOut() {
         for (name in listOf("fetch", "XMLHttpRequest", "setTimeout", "setInterval", "eval", "Function", "require", "process", "globalThis", "window", "importScripts", "WebSocket")) {
-            assertEquals(name, "undefined", js("typeof $name"))
+            assertEquals("undefined", js("typeof $name"), name)
         }
         assertTrue(throws("new Function('return 1')").contains("not defined"))
         assertEquals("undefined", js("({}).constructor"))

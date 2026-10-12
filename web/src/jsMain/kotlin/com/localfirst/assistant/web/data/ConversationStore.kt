@@ -1,65 +1,22 @@
 package com.localfirst.assistant.web.data
 
-import com.localfirst.assistant.conversation.Message
 import kotlinx.browser.localStorage
+import com.localfirst.assistant.platform.PlatformMessageDigest
 
-/** A stored chat turn. Kept simple for localStorage; mapped to core's Message for the API call. */
-data class ChatMessage(val role: String, val content: String) {
-    fun toMessage(): Message = when (role) {
-        "system" -> Message.System(content)
-        "assistant" -> Message.Assistant(content)
-        else -> Message.User(content)
-    }
-    companion object {
-        fun of(m: Message): ChatMessage = ChatMessage(
-            when (m) {
-                is Message.System -> "system"
-                is Message.Assistant -> "assistant"
-                else -> "user"
-            },
-            when (m) {
-                is Message.System -> m.content
-                is Message.Assistant -> m.content
-                is Message.User -> m.content
-                else -> ""
-            },
-        )
-    }
+/** Explicit migration only. Canonical history is on the PC, not in localStorage. */
+fun legacyChats(): List<LegacyConversation> = runCatching { decodeLegacyChats(localStorage.getItem("friday.conversations")) }.getOrDefault(emptyList())
+fun importId(legacyId: String): String {
+    val hex = PlatformMessageDigest.sha1(("friday-web-legacy:$legacyId").encodeToByteArray()).take(16).joinToString("") { it.toUByte().toString(16).padStart(2, '0') }
+    return "${hex.take(8)}-${hex.substring(8,12)}-${hex.substring(12,16)}-${hex.substring(16,20)}-${hex.substring(20,32)}"
 }
-
-data class Conversation(val id: String, val title: String, val messages: List<ChatMessage>)
-
-/** Conversations persisted in localStorage as JSON. */
-class ConversationStore {
-    private val key = "friday.conversations"
-
-    fun load(): List<Conversation> = runCatching {
-        val raw = localStorage.getItem(key) ?: return emptyList()
-        val arr = kotlinx.serialization.json.Json.parseToJsonElement(raw)
-        (arr as? kotlinx.serialization.json.JsonArray)?.map { el ->
-            val o = el as kotlinx.serialization.json.JsonObject
-            val msgs = (o["messages"] as? kotlinx.serialization.json.JsonArray)?.map {
-                val m = it as kotlinx.serialization.json.JsonObject
-                ChatMessage(m["role"].toString().trim('"'), m["content"].toString().trim('"'))
-            } ?: emptyList()
-            Conversation(o["id"].toString().trim('"'), o["title"].toString().trim('"'), msgs)
-        } ?: emptyList()
-    }.getOrDefault(emptyList())
-
-    fun save(list: List<Conversation>) {
-        val sb = StringBuilder("[")
-        list.forEachIndexed { i, c ->
-            if (i > 0) sb.append(',')
-            sb.append("{\"id\":\"").append(esc(c.id)).append("\",\"title\":\"").append(esc(c.title)).append("\",\"messages\":[")
-            c.messages.forEachIndexed { j, m ->
-                if (j > 0) sb.append(',')
-                sb.append("{\"role\":\"").append(esc(m.role)).append("\",\"content\":\"").append(esc(m.content)).append("\"}")
-            }
-            sb.append("]}")
-        }
-        sb.append(']')
-        runCatching { localStorage.setItem(key, sb.toString()) }
-    }
-
-    private fun esc(s: String): String = s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "").replace("\t", "\\t")
+/** getRandomValues also works on private LAN HTTP origins where randomUUID is unavailable. */
+fun randomConversationId(): String {
+    val bytes = js("new Uint8Array(16)")
+    if (js("!!(globalThis.crypto && globalThis.crypto.getRandomValues)").unsafeCast<Boolean>()) js("globalThis.crypto.getRandomValues(bytes)")
+    else for (i in 0 until 16) bytes[i] = kotlin.random.Random.nextInt(256)
+    bytes[6] = (bytes[6].unsafeCast<Int>() and 15) or 64
+    bytes[8] = (bytes[8].unsafeCast<Int>() and 63) or 128
+    val hex = (0 until 16).joinToString("") { bytes[it].unsafeCast<Int>().toString(16).padStart(2, '0') }
+    return "${hex.take(8)}-${hex.substring(8,12)}-${hex.substring(12,16)}-${hex.substring(16,20)}-${hex.substring(20,32)}"
 }
+fun removeLegacyToken() { localStorage.removeItem("friday.server.apiKey") }

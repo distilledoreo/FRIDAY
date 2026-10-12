@@ -1,5 +1,7 @@
 package com.localfirst.assistant.search
 
+import com.localfirst.assistant.platform.platformRegex
+
 import com.localfirst.assistant.json.JsonCodec
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -51,7 +53,7 @@ internal fun parseSearchResponse(body: String): WebSearchResponse {
 }
 
 internal fun searchErrorSnippet(text: String): String {
-    val clean = text.replace(Regex("\\s+"), " ").trim()
+    val clean = text.replace(platformRegex("\\s+"), " ").trim()
     if (clean.isEmpty()) return ""
     return if (clean.length <= 300) clean else clean.take(300) + "…"
 }

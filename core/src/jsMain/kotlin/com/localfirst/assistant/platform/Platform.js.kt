@@ -48,12 +48,18 @@ actual object PlatformMath {
     actual fun sign(v: Double) = js("Math.sign(v)").unsafeCast<Double>()
     actual fun pow(a: Double, b: Double) = js("Math.pow(a, b)").unsafeCast<Double>()
     actual fun atan2(y: Double, x: Double) = js("Math.atan2(y, x)").unsafeCast<Double>()
-    actual fun ulp(v: Double) = js("Math.ulp ? Math.ulp(v) : Number.MIN_VALUE").unsafeCast<Double>()
+    actual fun ulp(v: Double): Double {
+        if (v.isNaN()) return Double.NaN
+        if (v.isInfinite()) return Double.POSITIVE_INFINITY
+        val result = js("Math.pow(2, Math.floor(Math.log2(Math.abs(v))) - 52)").unsafeCast<Double>()
+        return maxOf(result, js("Number.MIN_VALUE").unsafeCast<Double>())
+    }
 }
 
 actual object PlatformCharacter {
     actual fun digit(c: Char, radix: Int): Int {
-        val v = js("parseInt(String.fromCharCode(c.code), radix)").unsafeCast<Double>()
+        val charCode = c.code
+        val v = js("parseInt(String.fromCharCode(charCode), radix)").unsafeCast<Double>()
         return if (v.isNaN()) -1 else v.toInt()
     }
     actual fun toChars(codePoint: Int): CharArray =
@@ -65,23 +71,22 @@ actual object PlatformCharacter {
 }
 
 actual class PlatformBigDecimal internal constructor(internal val value: Double, internal val scale: Int) {
-    actual fun setScale(scale: Int, @Suppress("UNUSED_PARAMETER") mode: PlatformRoundingMode): PlatformBigDecimal {
-        val factor = js("Math.pow(10, scale)").unsafeCast<Double>()
-        return PlatformBigDecimal(js("Math.round((value + Number.EPSILON) * factor) / factor").unsafeCast<Double>(), scale)
-    }
+    private var forceScale = false
+    actual fun setScale(scale: Int, @Suppress("UNUSED_PARAMETER") mode: PlatformRoundingMode): PlatformBigDecimal = PlatformBigDecimal(value, scale).also { it.forceScale = true }
     actual fun round(context: PlatformMathContext): PlatformBigDecimal {
-        if (value == 0.0) return PlatformBigDecimal(0.0, 0)
-        val e = floor(js("Math.log10(Math.abs(value))").unsafeCast<Double>()).toInt()
-        val factor = js("Math.pow(10, context.precision - 1 - e)").unsafeCast<Double>()
-        val r = js("Math.round(value * factor) / factor").unsafeCast<Double>()
-        return PlatformBigDecimal(r, naturalScale(r))
+        val number = value
+        val precision = context.precision
+        val rounded = js("Number(number.toPrecision(precision))").unsafeCast<Double>()
+        return PlatformBigDecimal(rounded, naturalScale(rounded))
     }
     actual fun stripTrailingZeros(): PlatformBigDecimal = PlatformBigDecimal(value, 0)
     actual fun toPlainString(): String {
-        if (value.isNaN() || value.isInfinite()) return value.toString()
-        if (scale > 0) return js("value.toFixed(scale)").unsafeCast<String>()
-        if (value == floor(value) && abs(value) < 1e21) return value.toLong().toString()
-        return js("String(value)").unsafeCast<String>()
+        val number = value
+        val places = scale
+        if (number.isNaN() || number.isInfinite()) return number.toString()
+        if (places > 0 || forceScale) return js("number.toFixed(places)").unsafeCast<String>()
+        if (number == floor(number) && abs(number) < 1e21) return js("number.toFixed(0)").unsafeCast<String>()
+        return js("String(number)").unsafeCast<String>()
     }
     actual fun precision(): Int {
         val digits = toPlainString().replace("-", "").replace(".", "").trimStart('0').trimEnd('0')
@@ -107,7 +112,10 @@ actual class PlatformDecimalFormat actual constructor(@Suppress("UNUSED_PARAMETE
     actual var maximumFractionDigits: Int = 3
     actual var isGroupingUsed: Boolean = true
     actual fun format(v: Double): String {
-        val opts = js("({minimumFractionDigits: minimumFractionDigits, maximumFractionDigits: maximumFractionDigits, useGrouping: isGroupingUsed})")
+        val opts = js("({})")
+        opts.minimumFractionDigits = minimumFractionDigits
+        opts.maximumFractionDigits = maximumFractionDigits
+        opts.useGrouping = isGroupingUsed
         return js("v.toLocaleString('en-US', opts)").unsafeCast<String>()
     }
 }
@@ -213,87 +221,78 @@ actual annotation class PlatformVolatile actual constructor()
 actual class PlatformStackOverflowError : Throwable()
 
 actual object PlatformTime {
-    actual var zone: String = js("(typeof Intl!=='undefined')?Intl.DateTimeFormat().resolvedOptions().timeZone:'UTC'").unsafeCast<String>()
+    actual var zone: String = js("Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'").unsafeCast<String>()
     actual fun nowMillis(): Long = js("Date.now()").unsafeCast<Double>().toLong()
-
     private fun d(t: Double): dynamic = js("new Date(t)")
-
+    private fun localWall(t: Double): Double {
+        val requestedZone = zone
+        val parts = js("new Intl.DateTimeFormat('en-US', {timeZone: requestedZone, year:'numeric',month:'numeric',day:'numeric',hour:'numeric',minute:'numeric',second:'numeric',hourCycle:'h23'}).formatToParts(new Date(t))")
+        val fields = mutableMapOf<String, Int>()
+        for (i in 0 until parts.length.unsafeCast<Int>()) {
+            val part = parts[i]; val text = part.value.unsafeCast<String>()
+            text.toIntOrNull()?.let { fields[part.type.unsafeCast<String>()] = it }
+        }
+        val year = fields.getValue("year"); val month = fields.getValue("month") - 1; val day = fields.getValue("day")
+        val hour = fields.getValue("hour") % 24; val minute = fields.getValue("minute"); val second = fields.getValue("second")
+        val ms = d(t).getUTCMilliseconds().unsafeCast<Int>()
+        return js("Date.UTC(year, month, day, hour, minute, second, ms)").unsafeCast<Double>()
+    }
+    private fun instant(wall: Double): Double {
+        var result = wall
+        repeat(3) { result = wall - (localWall(result) - result) }
+        return result
+    }
     actual fun isoString(t: Double): String = if (t.isNaN()) "Invalid Date" else d(t).toISOString().unsafeCast<String>()
-
     actual fun displayString(t: Double): String {
         if (t.isNaN()) return "Invalid Date"
-        val dt = d(t)
+        val wall = localWall(t); val dt = d(wall)
         val days = listOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
         val months = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
-        val off = -dt.getTimezoneOffset().unsafeCast<Int>()
-        val sign = if (off >= 0) "+" else "-"
-        val o = abs(off)
-        return "${days[dt.getDay().unsafeCast<Int>()]} ${months[dt.getMonth().unsafeCast<Int>()]} " +
-            "${dt.getDate().unsafeCast<Int>().toString().padStart(2, '0')} ${dt.getFullYear().unsafeCast<Int>()} " +
-            "${pad2(dt.getHours().unsafeCast<Int>())}:${pad2(dt.getMinutes().unsafeCast<Int>())}:${pad2(dt.getSeconds().unsafeCast<Int>())} " +
-            "GMT$sign${pad2(o / 60)}${pad2(o % 60)}"
+        val offset = ((wall - t) / 60000).toInt(); val sign = if (offset >= 0) "+" else "-"; val o = abs(offset)
+        return "${days[dt.getUTCDay().unsafeCast<Int>()]} ${months[dt.getUTCMonth().unsafeCast<Int>()]} " +
+            "${pad2(dt.getUTCDate().unsafeCast<Int>())} ${dt.getUTCFullYear().unsafeCast<Int>()} " +
+            "${pad2(dt.getUTCHours().unsafeCast<Int>())}:${pad2(dt.getUTCMinutes().unsafeCast<Int>())}:${pad2(dt.getUTCSeconds().unsafeCast<Int>())} GMT$sign${pad2(o/60)}${pad2(o%60)}"
     }
-
-    actual fun dateString(t: Double): String = if (t.isNaN()) "Invalid Date" else d(t).toDateString().unsafeCast<String>()
-    actual fun timeString(t: Double): String = if (t.isNaN()) "Invalid Date" else d(t).toTimeString().unsafeCast<String>()
+    actual fun dateString(t: Double): String = if (t.isNaN()) "Invalid Date" else displayString(t).split(' ').take(4).joinToString(" ")
+    actual fun timeString(t: Double): String = if (t.isNaN()) "Invalid Date" else displayString(t).split(' ').drop(4).joinToString(" ")
     actual fun utcString(t: Double): String = if (t.isNaN()) "Invalid Date" else d(t).toUTCString().unsafeCast<String>()
-
     actual fun parse(text: String): Double {
         val s = text.trim()
-        val iso = js("Date.parse(s)").unsafeCast<Double>()
-        return if (iso.isNaN()) Double.NaN else iso
+        val local = Regex("^(\\d{4})-(\\d{2})-(\\d{2})[T ](\\d{2}):(\\d{2})(?::(\\d{2})(?:\\.(\\d{1,3}))?)?$").matchEntire(s)
+        if (local != null) {
+            val g = local.groupValues
+            return fromParts(listOf(g[1].toDouble(),g[2].toDouble()-1,g[3].toDouble(),g[4].toDouble(),g[5].toDouble(),g[6].toDoubleOrNull() ?: 0.0,g[7].padEnd(3,'0').toDoubleOrNull() ?: 0.0), false)
+        }
+        return js("Date.parse(s)").unsafeCast<Double>()
     }
-
     actual fun format(t: Double, options: Map<String, String>, kind: String): String {
         if (t.isNaN()) return "Invalid Date"
-        val opts = js("({})")
-        for ((k, v) in options) opts[k] = v
-        if (kind == "date" && opts.dateStyle == null && opts.year == null) opts.dateStyle = "medium"
-        if (kind == "time" && opts.timeStyle == null && opts.hour == null) opts.timeStyle = "medium"
-        return js("new Date(t).toLocaleString('en-US', opts)").unsafeCast<String>()
+        val opts = js("({})"); opts.timeZone = zone
+        for ((key,value) in options) opts[key] = if (key == "hour12") value == "true" else value
+        val dt = d(t)
+        return when(kind) { "date" -> dt.toLocaleDateString("en-US",opts); "time" -> dt.toLocaleTimeString("en-US",opts); else -> dt.toLocaleString("en-US",opts) }.unsafeCast<String>()
     }
-
     actual fun field(t: Double, utc: Boolean, field: String): Int {
-        val dt = d(t)
-        val u = if (utc) "UTC" else ""
-        return when (field) {
-            "FullYear" -> js("dt['get'+u+'FullYear']()").unsafeCast<Int>()
-            "Month" -> js("dt['get'+u+'Month']()").unsafeCast<Int>()
-            "Date" -> js("dt['get'+u+'Date']()").unsafeCast<Int>()
-            "Day" -> js("dt['get'+u+'Day']()").unsafeCast<Int>()
-            "Hours" -> js("dt['get'+u+'Hours']()").unsafeCast<Int>()
-            "Minutes" -> js("dt['get'+u+'Minutes']()").unsafeCast<Int>()
-            "Seconds" -> js("dt['get'+u+'Seconds']()").unsafeCast<Int>()
-            "Milliseconds" -> js("dt['get'+u+'Milliseconds']()").unsafeCast<Int>()
-            "TimezoneOffset" -> -dt.getTimezoneOffset().unsafeCast<Int>()
-            else -> 0
-        }
+        if (field == "TimezoneOffset") return ((t - localWall(t)) / 60000).toInt()
+        val dt = d(if (utc) t else localWall(t))
+        return when(field) {
+            "FullYear" -> dt.getUTCFullYear(); "Month" -> dt.getUTCMonth(); "Date" -> dt.getUTCDate(); "Day" -> dt.getUTCDay()
+            "Hours" -> dt.getUTCHours(); "Minutes" -> dt.getUTCMinutes(); "Seconds" -> dt.getUTCSeconds(); "Milliseconds" -> dt.getUTCMilliseconds(); else -> 0
+        }.unsafeCast<Int>()
     }
-
     actual fun setFields(t: Double, utc: Boolean, year: Double?, month: Double?, day: Double?, hour: Double?, min: Double?, sec: Double?, ms: Double?): Double {
-        val dt = d(t)
-        val u = if (utc) "UTC" else ""
-        if (year != null) js("dt['set'+u+'FullYear'](year)")
-        if (month != null) js("dt['set'+u+'Month'](month)")
-        if (day != null) js("dt['set'+u+'Date'](day)")
-        if (hour != null) js("dt['set'+u+'Hours'](hour)")
-        if (min != null) js("dt['set'+u+'Minutes'](min)")
-        if (sec != null) js("dt['set'+u+'Seconds'](sec)")
-        if (ms != null) js("dt['set'+u+'Milliseconds'](ms)")
-        return dt.getTime().unsafeCast<Double>()
+        val dt = d(if (utc) t else localWall(t))
+        if (year != null) dt.setUTCFullYear(year); if (month != null) dt.setUTCMonth(month); if (day != null) dt.setUTCDate(day)
+        if (hour != null) dt.setUTCHours(hour); if (min != null) dt.setUTCMinutes(min); if (sec != null) dt.setUTCSeconds(sec); if (ms != null) dt.setUTCMilliseconds(ms)
+        val result = dt.getTime().unsafeCast<Double>()
+        return if (utc) result else instant(result)
     }
-
     actual fun fromParts(parts: List<Double>, utc: Boolean): Double {
-        if (parts.any { it.isNaN() || it.isInfinite() }) return Double.NaN
-        val year = parts.getOrElse(0) { 1970.0 }.let { if (it in 0.0..99.0) 1900 + it else it }.toInt()
-        val month = parts.getOrElse(1) { 0.0 }.toInt()
-        val day = parts.getOrElse(2) { 1.0 }.toInt()
-        val hour = parts.getOrElse(3) { 0.0 }.toInt()
-        val min = parts.getOrElse(4) { 0.0 }.toInt()
-        val sec = parts.getOrElse(5) { 0.0 }.toInt()
-        val ms = parts.getOrElse(6) { 0.0 }.toInt()
-        val dt = if (utc) js("new Date(Date.UTC(year, month, day, hour, min, sec, ms))") else js("new Date(year, month, day, hour, min, sec, ms)")
-        return dt.getTime().unsafeCast<Double>()
+        if (parts.any { !it.isFinite() }) return Double.NaN
+        val year = parts.getOrElse(0){1970.0}.toInt(); val month = parts.getOrElse(1){0.0}.toInt(); val day = parts.getOrElse(2){1.0}.toInt()
+        val hour = parts.getOrElse(3){0.0}.toInt(); val minute = parts.getOrElse(4){0.0}.toInt(); val second = parts.getOrElse(5){0.0}.toInt(); val ms = parts.getOrElse(6){0.0}.toInt()
+        val wall = js("Date.UTC(year,month,day,hour,minute,second,ms)").unsafeCast<Double>()
+        return if (utc) wall else instant(wall)
     }
 }
 
@@ -327,3 +326,37 @@ private data class MutableEntry<K, V>(override val key: K, override val value: V
 }
 
 actual fun Throwable.className(): String = js("(this && this.constructor && this.constructor.name) ? this.constructor.name : 'Error'").unsafeCast<String>()
+
+/** JS RegExp has flags on its constructor, rather than JVM inline (?ims) groups. */
+actual fun platformRegex(pattern: String, options: Set<RegexOption>): Regex {
+    var source = pattern
+    val flags = options.toMutableSet()
+    var dotAll = false
+    while (source.startsWith("(?")) {
+        val end = source.indexOf(')')
+        if (end < 0) break
+        val inline = source.substring(2, end)
+        if (inline.isEmpty() || inline.any { it !in "ims" }) break
+        if ('i' in inline) flags.add(RegexOption.IGNORE_CASE)
+        if ('m' in inline) flags.add(RegexOption.MULTILINE)
+        if ('s' in inline) dotAll = true
+        source = source.substring(end + 1)
+    }
+    val translated = StringBuilder()
+    var escaped = false
+    var characterClass = false
+    for (c in source) {
+        if (escaped) {
+            if (c == 'z' && !characterClass) translated.append("(?![\\s\\S])") else translated.append('\\').append(c)
+            escaped = false
+        } else when(c) {
+            '\\' -> escaped = true
+            '[' -> { characterClass = true; translated.append(c) }
+            ']' -> { characterClass = false; translated.append(c) }
+            '.' -> translated.append(if (dotAll && !characterClass) "[\\s\\S]" else ".")
+            else -> translated.append(c)
+        }
+    }
+    if (escaped) translated.append('\\')
+    return Regex(translated.toString(), flags)
+}
