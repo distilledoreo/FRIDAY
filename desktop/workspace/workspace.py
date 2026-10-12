@@ -6,6 +6,8 @@ import asyncio
 import base64
 import contextlib
 import json
+import hashlib
+import logging
 import mimetypes
 import os
 from pathlib import Path
@@ -27,8 +29,17 @@ MAX_FILE = 25 * 1024 * 1024
 MAX_TOTAL = 500 * 1024 * 1024
 
 
+def _is_uuid(value):
+    try:
+        uuid.UUID(value)
+        return True
+    except ValueError:
+        return False
+
+
 class Workspace:
     def __init__(self, root):
+        self.memory_store = None
         self._analysis_lock = threading.Lock()
         self._sandbox_check = (0, False, "Not checked")
         self.root = Path(root)
@@ -55,6 +66,21 @@ class Workspace:
     def sync(self, item_id, revision, payload, deleted=False):
         if len(item_id) > 100 or not item_id or not all(c.isalnum() or c in '-_' for c in item_id):
             raise HTTPException(400, 'Invalid item id')
+        if item_id.startswith('preferences-') and not deleted:
+            try:
+                key = item_id.removeprefix('preferences-')
+                value = json.loads(payload['preferences'])['value']
+                valid = {
+                    'theme': lambda v: v in ('DARK', 'LIGHT', 'SYSTEM'),
+                    'accent': lambda v: isinstance(v, str) and len(v) == 6 and all(c in '0123456789ABCDEF' for c in v),
+                    'proactivity': lambda v: v in ('CONSERVATIVE', 'THOUGHTFUL', 'HIGH'),
+                    'reduced_motion': lambda v: isinstance(v, bool),
+                    'display_name': lambda v: isinstance(v, str) and len(v) <= 60,
+                    'interactive_answers': lambda v: isinstance(v, bool),
+                }
+                if key not in valid or not valid[key](value): raise ValueError()
+            except (KeyError, ValueError, TypeError):
+                raise HTTPException(400, 'Invalid shared preference')
         encoded = json.dumps(payload, ensure_ascii=False)
         if len(encoded.encode()) > 8 * 1024 * 1024:
             raise HTTPException(413, 'Sync item too large')
@@ -66,7 +92,24 @@ class Workspace:
                 raise HTTPException(409, {'revision': actual, 'payload': json.loads(old['payload']) if old else None,
                                            'deleted': bool(old['deleted']) if old else False})
             db.execute('INSERT OR REPLACE INTO items VALUES(?,?,?,?)', (item_id, actual + 1, encoded, int(deleted)))
-            return {'id': item_id, 'revision': actual + 1, 'payload': payload, 'deleted': deleted}
+        # The workspace commit remains successful if secondary recall indexing is unavailable.
+        if self.memory_store is not None and not deleted and 'chat' in payload:
+            try:
+                chat = json.loads(payload['chat'])
+                summary = chat['summary']
+                sid = 'native-' + uuid.UUID(item_id).hex
+                messages = [{'role': m['role'], 'content': m['content']} for m in chat['messages']
+                            if m.get('role') in ('user', 'assistant') and isinstance(m.get('content'), str)]
+                encoded_messages = json.dumps(messages, ensure_ascii=False)
+                self.memory_store.native({'id': sid, 'title': summary['title'], 'origin': 'Local assistant',
+                    'scope': summary.get('projectId') or '', 'messages': messages,
+                    'created': summary['createdAt'] / 1000, 'updated': summary['updatedAt'] / 1000,
+                    'digest': hashlib.sha256(encoded_messages.encode()).hexdigest()})
+            except (KeyError, ValueError, TypeError):
+                logging.getLogger(__name__).warning('Saved chat could not be indexed for recall')
+            except Exception:
+                logging.getLogger(__name__).exception('Recall indexing unavailable; chat is saved')
+        return {'id': item_id, 'revision': actual + 1, 'payload': payload, 'deleted': deleted}
 
     def items(self):
         with self.db() as db:
@@ -387,10 +430,16 @@ def install(app, auth, root, model, search, fetch):
             raise HTTPException(400, 'Invalid conversation')
         item = workspace.sync(item_id, body.revision, body.payload, body.deleted)
         context = ''
+        if workspace.memory_store is not None:
+            query = next((e.get('content', '') for e in reversed(chat['messages']) if e['role'] == 'user'), '')
+            context = workspace.memory_store.context(query[:4000], chat['summary'].get('projectId') or '',
+                'native-' + uuid.UUID(item_id).hex if _is_uuid(item_id) else item_id)['context']
         knowledge_item = next((i for i in workspace.items() if i['id'] == 'knowledge' and not i['deleted']), None)
         if knowledge_item:
             knowledge = json.loads(knowledge_item['payload']['knowledge'])
-            context = '\nSaved user preferences:\n' + '\n'.join(m['text'][:400] for m in knowledge.get('memories', [])[-30:])
+            # Legacy memory is used only when the PC memory extension is absent.
+            if workspace.memory_store is None:
+                context += '\nSaved user preferences:\n' + '\n'.join(m['text'][:400] for m in knowledge.get('memories', [])[-30:])
             project = next((p for p in knowledge.get('projects', []) if p['id'] == chat['summary'].get('projectId')), None)
             if project:
                 context += '\nProject instructions:\n' + project.get('instructions', '')[:8000]

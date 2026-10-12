@@ -351,6 +351,7 @@ class ChatViewModel(
     /** Null when voice mode is closed. */
     val voiceState: StateFlow<VoiceUiState?> = voice?.state ?: MutableStateFlow(null)
 
+    private var automaticSync: Job? = null
     init {
         app?.getSharedPreferences("brief-privacy", Context.MODE_PRIVATE)?.edit()?.putBoolean("incognito", false)?.apply()
         refreshConversationList()
@@ -366,6 +367,18 @@ class ChatViewModel(
         viewModelScope.launch { com.localfirst.assistant.phone.PhoneUseSignals.stop.collect { stop() } }
         newPhoneUseSession()
         syncWakeWord()
+        startAutomaticSync()
+    }
+
+    private fun startAutomaticSync() {
+        if (chatSync == null || automaticSync?.isActive == true) return
+        automaticSync = viewModelScope.launch {
+            while (true) {
+                val current = _state.value
+                if (!current.busy && !current.workspaceBusy && !current.privacy.incognito && current.settings.searchBaseUrl.isNotBlank() && current.settings.searchApiKey.isNotBlank()) runChatSync(automatic = true)
+                delay(15000)
+            }
+        }
     }
 
     /** Starts or stops the "Hey FRIDAY" listener to match the saved setting. */
@@ -784,10 +797,10 @@ class ChatViewModel(
     private var attachmentPickerOpen = false
     fun setAttachmentPickerOpen(open: Boolean) { attachmentPickerOpen = open }
     /** Leaving ends an incognito chat, except while a turn runs: phone use leaves FRIDAY to work in other apps. */
-    fun onAppLeft() { if (_state.value.privacy.incognito && !attachmentPickerOpen && !_state.value.busy) { closeVoice(); newChat() } }
+    fun onAppLeft() { automaticSync?.cancel(); automaticSync = null; if (_state.value.privacy.incognito && !attachmentPickerOpen && !_state.value.busy) { closeVoice(); newChat() } }
 
     /** The user returned to the app: the floating bubble hands control back to the inline voice panel. */
-    fun onAppResumed() { app?.let(VoiceBubbleService::stop) }
+    fun onAppResumed() { app?.let(VoiceBubbleService::stop); startAutomaticSync() }
     fun startIncognito(freshSlate: Boolean = false) {
         if (_state.value.busy || _state.value.workspaceBusy) return
         viewModelScope.launch {
@@ -1650,7 +1663,7 @@ class ChatViewModel(
         target
     }
 
-    private fun workspaceAction(allowDuringChat: Boolean = false, action: suspend () -> String) {
+    private fun workspaceAction(allowDuringChat: Boolean = false, quiet: Boolean = false, action: suspend () -> String) {
         if (_state.value.workspaceBusy || _state.value.busy && !allowDuringChat) return
         if (_state.value.privacy.incognito) { _state.update { it.copy(error = "Leave incognito before managing saved workspace data.") }; return }
         _state.update { it.copy(workspaceBusy = true, workspaceStatus = null) }
@@ -1660,7 +1673,7 @@ class ChatViewModel(
                 _state.update { it.copy(workspaceStatus = status, knowledge = knowledgeStore?.load() ?: Knowledge()) }
                 refreshConversationList()
             } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { _state.update { it.copy(workspaceStatus = e.message ?: "Workspace request failed.", error = if (it.showWorkspace) it.error else e.message ?: "Workspace request failed.") } }
+            catch (e: Exception) { _state.update { it.copy(workspaceStatus = e.message ?: "Workspace request failed.", error = if (quiet || it.showWorkspace) it.error else e.message ?: "Workspace request failed.") } }
             finally { _state.update { it.copy(workspaceBusy = false) } }
         }
     }
@@ -1874,14 +1887,18 @@ class ChatViewModel(
         store.save(k.copy(projects = k.projects.map { if (it.id == id) it.copy(context = (it.context + "\n" + files.joinToString("\n\n") { a -> "${a.name}\n${a.text}" }).take(60000)) else it }))
         "Chat document text added to project context."
     }
-    fun syncChats() = workspaceAction {
+    fun syncChats() = runChatSync()
+    private fun runChatSync(automatic: Boolean = false) = workspaceAction(quiet = automatic) {
         val conflicts = chatSync?.sync() ?: error("Sync unavailable.")
         _state.update { it.copy(syncConflicts = conflicts) }
         // Reload the open chat only when it has no in-flight edits.
-        _state.value.conversationId?.let { id -> conversationStore.load(id)?.let { c ->
-            session = newSession(c.messages); _state.update { it.copy(messages = c.messages, title = c.summary.title, projectId = c.summary.projectId) }
-        } }
-        if (conflicts.isEmpty()) "Chats, memory, and projects synced." else "Choose which version to keep for ${conflicts.size} conflict(s)."
+        _state.value.conversationId?.let { id ->
+            val c = conversationStore.load(id)
+            session = newSession(c?.messages ?: emptyList())
+            createdAt = c?.summary?.createdAt ?: 0
+            _state.update { it.copy(conversationId = c?.summary?.id, messages = c?.messages ?: emptyList(), title = c?.summary?.title ?: "New chat", projectId = c?.summary?.projectId) }
+        }
+        if (conflicts.isEmpty()) "History, projects, and preferences synced. Memory is shared on the computer." else "Choose which version to keep for ${conflicts.size} conflict(s)."
     }
     fun resolveSync(conflict: SyncConflict, phone: Boolean) = workspaceAction {
         chatSync?.resolve(conflict, phone)

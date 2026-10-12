@@ -17,5 +17,7 @@ local.properties
 .kotlin/
 __pycache__/
 *.pyc
+node_modules/
+/work/
 .venv/
 desktop/search_service/.venv/
