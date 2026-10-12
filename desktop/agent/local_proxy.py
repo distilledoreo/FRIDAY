@@ -10,6 +10,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from .prefix_warm import PrefixWarmer
 from .prompt_slim import slim
 
 
@@ -59,6 +60,9 @@ async def supports_parallel(client):
 def install(app, agent, gate, client_factory=None):
     router = APIRouter(prefix='/workspace/pc/internal/v1')
     inference = asyncio.Lock()
+    warmer = PrefixWarmer(agent.root, gate, inference, lambda: agent.settings()['enabled'], client_factory)
+    app.router.add_event_handler('startup', warmer.start)
+    app.router.add_event_handler('shutdown', warmer.stop)
 
     @router.post('/chat/completions')
     async def completions(request: Request):
@@ -71,6 +75,7 @@ def install(app, agent, gate, client_factory=None):
         if len(raw) > 2 * 1024 * 1024: raise HTTPException(413, 'Local request too large')
         try: body = local_payload(json.loads(raw))
         except (ValueError, TypeError, AttributeError): raise HTTPException(422, 'Invalid local model request') from None
+        warmer.remember(body)
         await inference.acquire()
         acquired = False
         client = response = None
