@@ -1,5 +1,6 @@
 package com.localfirst.assistant.tools
 
+import com.localfirst.assistant.platform.className
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -41,7 +42,7 @@ class SetMediaVolumeTool(
         } catch (e: Exception) {
             ToolExecutionResult(
                 success = false,
-                content = "Failed to set media volume: ${e.message ?: e.javaClass.simpleName}",
+                content = "Failed to set media volume: ${e.message ?: e.className()}",
             )
         }
     }

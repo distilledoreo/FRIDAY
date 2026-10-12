@@ -294,12 +294,4 @@ private fun messageText(content: JsonElement?): String? {
     return text?.ifEmpty { null }
 }
 
-internal fun errorMessage(error: JsonElement?): String? {
-    val objectMessage = (error as? JsonObject)?.get("message")
-    val text = primitiveContent(objectMessage) ?: primitiveContent(error)
-    return text?.trim()?.ifEmpty { null }
-}
 
-private fun primitiveContent(element: JsonElement?): String? {
-    return (element as? JsonPrimitive)?.contentOrNull
-}

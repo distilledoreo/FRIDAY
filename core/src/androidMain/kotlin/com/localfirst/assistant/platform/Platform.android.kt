@@ -48,6 +48,7 @@ actual object PlatformMath {
     actual fun tanh(v: Double) = Math.tanh(v)
     actual fun ceil(v: Double) = Math.ceil(v)
     actual fun floor(v: Double) = Math.floor(v)
+    actual fun round(v: Double): Long = Math.round(v)
     actual fun abs(v: Double) = Math.abs(v)
     actual fun sign(v: Double) = Math.signum(v)
     actual fun pow(a: Double, b: Double) = Math.pow(a, b)
@@ -300,3 +301,7 @@ actual object PlatformTime {
         return start.atZone(if (utc) ZoneOffset.UTC else zoneId()).toInstant().toEpochMilli().toDouble()
     }
 }
+
+actual fun <K : Comparable<K>, V> sortedMapOf(): MutableMap<K, V> = java.util.TreeMap()
+
+actual fun Throwable.className(): String = javaClass.simpleName

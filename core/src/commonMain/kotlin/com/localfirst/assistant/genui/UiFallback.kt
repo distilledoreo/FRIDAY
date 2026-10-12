@@ -1,6 +1,7 @@
 package com.localfirst.assistant.genui
 
 import com.localfirst.assistant.genui.script.Values
+import com.localfirst.assistant.platform.formatString
 
 /**
  * Plain Markdown for an interface, made from the rendered tree: it is what copy, voice, Android Auto,
@@ -134,6 +135,6 @@ object UiFormat {
 
     fun duration(seconds: Long): String {
         val h = seconds / 3600; val m = seconds % 3600 / 60; val s = seconds % 60
-        return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
+        return if (h > 0) formatString("%d:%02d:%02d", h, m, s) else formatString("%d:%02d", m, s)
     }
 }

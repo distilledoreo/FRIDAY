@@ -1,6 +1,7 @@
 package com.localfirst.assistant.genui
 
 import com.localfirst.assistant.genui.script.Attribute
+import com.localfirst.assistant.platform.putIfAbsent
 import com.localfirst.assistant.genui.script.BodyNode
 import com.localfirst.assistant.genui.script.EachNode
 import com.localfirst.assistant.genui.script.ElementNode

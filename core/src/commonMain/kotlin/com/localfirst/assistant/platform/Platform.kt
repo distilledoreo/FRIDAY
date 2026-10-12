@@ -35,6 +35,7 @@ expect object PlatformMath {
     fun tanh(v: Double): Double
     fun ceil(v: Double): Double
     fun floor(v: Double): Double
+    fun round(v: Double): Long
     fun abs(v: Double): Double
     fun sign(v: Double): Double
     fun pow(a: Double, b: Double): Double
@@ -155,3 +156,13 @@ expect object PlatformTime {
     fun setFields(t: Double, utc: Boolean, year: Double?, month: Double?, day: Double?, hour: Double?, min: Double?, sec: Double?, ms: Double?): Double
     fun fromParts(parts: List<Double>, utc: Boolean): Double
 }
+
+/** `Map.putIfAbsent` (a JVM default method; Kotlin's MutableMap lacks it). */
+fun <K, V> MutableMap<K, V>.putIfAbsent(key: K, value: V): V? =
+    if (containsKey(key)) this[key] else { put(key, value); null }
+
+/** A map kept in natural key order (TreeMap on JVM, insertion-sorted on JS). */
+expect fun <K : Comparable<K>, V> sortedMapOf(): MutableMap<K, V>
+
+/** `Throwable.javaClass.simpleName` (constructor name on JS). */
+expect fun Throwable.className(): String

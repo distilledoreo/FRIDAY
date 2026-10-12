@@ -3,7 +3,7 @@ package com.localfirst.assistant.grounding
 import com.localfirst.assistant.tools.*
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import java.net.URI
+import com.localfirst.assistant.platform.PlatformUri
 
 /** CPU-only retrieval trigger and citation coverage check; neither proves truth. */
 object GroundingPrecheck {
@@ -44,10 +44,12 @@ object GroundingPrecheck {
         return CitationCheck(known.size, links.count { it.first in known }, links.filter { it.first !in known }.map { it.second })
     }
     private fun canonical(url: String): String? = runCatching {
-        val value = URI(url)
-        if (value.scheme !in listOf("https", "http") || value.host == null || value.rawUserInfo != null) return@runCatching null
-        val port = if (value.port == -1 || value.port == 443 && value.scheme == "https" || value.port == 80 && value.scheme == "http") "" else ":${value.port}"
-        "${value.scheme.lowercase()}://${value.host.lowercase()}$port${value.rawPath.ifEmpty { "/" }}${value.rawQuery?.let { "?$it" }.orEmpty()}"
+        val value = PlatformUri(url)
+        val host = value.host ?: return@runCatching null
+        val scheme = value.scheme ?: return@runCatching null
+        if (scheme !in listOf("https", "http") || value.rawUserInfo != null) return@runCatching null
+        val port = if (value.port == -1 || value.port == 443 && scheme == "https" || value.port == 80 && scheme == "http") "" else ":${value.port}"
+        "${scheme.lowercase()}://${host.lowercase()}$port${value.rawPath.ifEmpty { "/" }}${value.rawQuery?.let { "?$it" }.orEmpty()}"
     }.getOrNull()
     private fun urls(answer: String): List<String> {
         val text = answer.replace(Regex("(?s)```.*?```"), "").replace(Regex("`[^`]*`"), "")

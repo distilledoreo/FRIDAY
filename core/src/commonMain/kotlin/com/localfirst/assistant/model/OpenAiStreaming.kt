@@ -1,6 +1,8 @@
 package com.localfirst.assistant.model
 
 import com.localfirst.assistant.json.JsonCodec
+import kotlinx.serialization.json.JsonElement
+import com.localfirst.assistant.platform.sortedMapOf
 import com.localfirst.assistant.tools.ToolCall
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -82,3 +84,12 @@ internal class ChatCompletionStreamAccumulator {
         val arguments = StringBuilder()
     }
 }
+
+/** Pulls a human-readable message out of an OpenAI-style `error` field. */
+internal fun errorMessage(error: JsonElement?): String? {
+    val objectMessage = (error as? JsonObject)?.get("message")
+    val text = primitiveContent(objectMessage) ?: primitiveContent(error)
+    return text?.trim()?.ifEmpty { null }
+}
+
+internal fun primitiveContent(element: JsonElement?): String? = (element as? JsonPrimitive)?.contentOrNull

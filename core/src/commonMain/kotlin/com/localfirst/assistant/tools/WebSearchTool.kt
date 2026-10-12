@@ -1,5 +1,6 @@
 package com.localfirst.assistant.tools
 
+import com.localfirst.assistant.platform.className
 import com.localfirst.assistant.search.SearchService
 import com.localfirst.assistant.search.SearchServiceException
 import com.localfirst.assistant.search.WebSearchHit
@@ -55,7 +56,7 @@ class WebSearchTool(
         } catch (e: Exception) {
             ToolExecutionResult(
                 success = false,
-                content = "Web search failed: ${e.message ?: e.javaClass.simpleName}",
+                content = "Web search failed: ${e.message ?: e.className()}",
             )
         }
     }

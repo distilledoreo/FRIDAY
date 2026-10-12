@@ -2,7 +2,11 @@ package com.localfirst.assistant.genui
 
 import com.localfirst.assistant.conversation.Message
 import com.localfirst.assistant.json.JsonCodec
-import java.security.MessageDigest
+import com.localfirst.assistant.platform.PlatformMessageDigest
+import com.localfirst.assistant.platform.PlatformUri
+import com.localfirst.assistant.platform.encodeUtf8
+import com.localfirst.assistant.platform.formatString
+import com.localfirst.assistant.platform.putIfAbsent
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -18,8 +22,8 @@ import kotlinx.serialization.json.contentOrNull
 object UiBindings {
     /** A short id that is the same for a URL in every conversation. */
     fun ref(url: String): String {
-        val digest = MessageDigest.getInstance("SHA-1").digest(url.toByteArray())
-        return "web_" + digest.take(3).joinToString("") { "%02x".format(it) }
+        val digest = PlatformMessageDigest.sha1(encodeUtf8(url))
+        return "web_" + digest.take(3).joinToString("") { formatString("%02x", it) }
     }
 
     /** Adds a `ref` to each search evidence item (and to a fetched page), so the model can cite it. */
@@ -48,7 +52,7 @@ object UiBindings {
                 val obj = item as? JsonObject ?: continue
                 val url = (obj["url"] as? JsonPrimitive)?.contentOrNull ?: continue
                 val data = plain(obj) as Map<*, *>
-                val domain = runCatching { java.net.URI(url).host?.removePrefix("www.") }.getOrNull()
+                val domain = runCatching { PlatformUri(url).host?.removePrefix("www.") }.getOrNull()
                 out[ref(url)] = linkedMapOf<String, Any?>().apply {
                     data.forEach { (k, v) -> put(k.toString(), v) }
                     put("ref", ref(url))

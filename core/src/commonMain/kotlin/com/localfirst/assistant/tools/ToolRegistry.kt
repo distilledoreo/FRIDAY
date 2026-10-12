@@ -1,5 +1,6 @@
 package com.localfirst.assistant.tools
 
+import com.localfirst.assistant.platform.className
 import com.localfirst.assistant.json.JsonCodec
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
@@ -57,7 +58,7 @@ class ToolRegistry {
         } catch (e: Exception) {
             ToolExecutionResult(
                 success = false,
-                content = "Tool '${tool.name}' failed: ${e.message ?: e.javaClass.simpleName}",
+                content = "Tool '${tool.name}' failed: ${e.message ?: e.className()}",
             )
         }
     }

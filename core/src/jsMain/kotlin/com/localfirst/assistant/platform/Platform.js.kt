@@ -43,6 +43,7 @@ actual object PlatformMath {
     actual fun tanh(v: Double) = js("Math.tanh(v)").unsafeCast<Double>()
     actual fun ceil(v: Double) = js("Math.ceil(v)").unsafeCast<Double>()
     actual fun floor(v: Double) = js("Math.floor(v)").unsafeCast<Double>()
+    actual fun round(v: Double): Long = js("Math.round(v)").unsafeCast<Double>().toLong()
     actual fun abs(v: Double) = js("Math.abs(v)").unsafeCast<Double>()
     actual fun sign(v: Double) = js("Math.sign(v)").unsafeCast<Double>()
     actual fun pow(a: Double, b: Double) = js("Math.pow(a, b)").unsafeCast<Double>()
@@ -297,3 +298,32 @@ actual object PlatformTime {
 }
 
 private fun pad2(v: Int): String = v.toString().padStart(2, '0')
+
+/** Insertion-ordered map re-sorted by key on each insert (JS has no TreeMap). */
+actual fun <K : Comparable<K>, V> sortedMapOf(): MutableMap<K, V> = SortedMapImpl()
+
+private class SortedMapImpl<K : Comparable<K>, V> : MutableMap<K, V> {
+    private val keyList = mutableListOf<K>()
+    private val valMap = LinkedHashMap<K, V>()
+    override val size: Int get() = valMap.size
+    override fun containsKey(key: K) = valMap.containsKey(key)
+    override fun containsValue(value: V) = valMap.containsValue(value)
+    override fun get(key: K): V? = valMap[key]
+    override fun isEmpty() = valMap.isEmpty()
+    override val entries: MutableSet<MutableMap.MutableEntry<K, V>> get() = keyList.map { MutableEntry(it, valMap[it] as V) }.toMutableSet()
+    override val keys: MutableSet<K> get() = keyList.toMutableSet()
+    override val values: MutableCollection<V> get() = keyList.mapNotNull { valMap[it] }.toMutableList()
+    override fun put(key: K, value: V): V? {
+        val prev = valMap.put(key, value)
+        if (prev == null) { keyList.add(key); keyList.sortWith { a, b -> a.compareTo(b) } }
+        return prev
+    }
+    override fun remove(key: K): V? { val prev = valMap.remove(key); keyList.remove(key); return prev }
+    override fun putAll(from: Map<out K, V>) { from.forEach { put(it.key, it.value) } }
+    override fun clear() { keyList.clear(); valMap.clear() }
+}
+private data class MutableEntry<K, V>(override val key: K, override val value: V) : MutableMap.MutableEntry<K, V> {
+    override fun setValue(newValue: V): V { val old = value; return old }
+}
+
+actual fun Throwable.className(): String = js("(this && this.constructor && this.constructor.name) ? this.constructor.name : 'Error'").unsafeCast<String>()
