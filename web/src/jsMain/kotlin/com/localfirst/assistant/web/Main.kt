@@ -1,22 +1,22 @@
 package com.localfirst.assistant.web
 
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.ExperimentalComposeUiApi
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.window.ComposeViewport
 import com.localfirst.assistant.genui.UiCompiler
+import com.localfirst.assistant.web.data.ConversationStore
+import com.localfirst.assistant.web.data.ServerSettingsStore
 import com.localfirst.assistant.web.settings.AppearanceStore
+import com.localfirst.assistant.web.state.ChatViewModel
 import com.localfirst.assistant.web.theme.AssistantTheme
+import com.localfirst.assistant.web.ui.ChatScreen
+import com.localfirst.assistant.web.ui.SettingsDialog
 import kotlinx.browser.document
 
 /**
@@ -34,15 +34,14 @@ fun main() {
 
 @Composable
 private fun App() {
-    val store = remember { AppearanceStore() }
-    val prefs by store.state.collectAsState()
-    AssistantTheme(prefs, store::save) {
-        Surface(Modifier.fillMaxSize()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column {
-                    Text("FRIDAY", style = MaterialTheme.typography.headlineLarge)
-                }
-            }
-        }
+    val appearance = remember { AppearanceStore() }
+    val prefs by appearance.state.collectAsState()
+    val settings = remember { ServerSettingsStore() }
+    val scope = rememberCoroutineScope()
+    val vm = remember { ChatViewModel(ConversationStore(), settings, scope) }
+    var showSettings by remember { mutableStateOf(false) }
+    AssistantTheme(prefs, appearance::save) {
+        ChatScreen(vm) { showSettings = true }
+        if (showSettings) SettingsDialog(vm, settings) { showSettings = false }
     }
 }
