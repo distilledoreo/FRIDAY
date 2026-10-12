@@ -1,14 +1,11 @@
-import org.jetbrains.kotlin.gradle.ExperimentalKotlinJsCompilerPlugin
-import org.jetbrains.kotlin.gradle.targets.js.dsl.ExperimentalWasmDsl
-import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
-
 plugins {
-    alias(libs.plugins.kotlin.multiplatform)
-    alias(libs.plugins.kotlin.serialization)
+    // The Kotlin plugins are already on the classpath from the root build (apply false),
+    // so apply them here without re-declaring the version.
+    id("org.jetbrains.kotlin.multiplatform")
+    id("org.jetbrains.kotlin.plugin.serialization")
 }
 
 kotlin {
-    @OptIn(ExperimentalKotlinJsCompilerPlugin::class)
     js(IR) {
         browser {
             testTask {
@@ -26,38 +23,15 @@ kotlin {
 
     sourceSets {
         val jsMain by getting {
-            // The shared engine: the app's core module, compiled for the browser.
-            // Only files that are JVM-free on the JVM side are wired in here.
-            kotlin.srcDir("../core/src/main/kotlin")
-            // Phone, voice and PC-server plumbing is Android/device specific and stays out of the web build.
-            kotlin.exclude("**/voice/**")
-            kotlin.exclude("**/tools/phone/**")
-            kotlin.exclude("**/tools/phoneuse/**")
-            kotlin.exclude("**/tools/PcTools.kt")
-            kotlin.exclude("**/tools/WorkspaceTools.kt")
-            kotlin.exclude("**/tools/CodeTools.kt")
-            kotlin.exclude("**/tools/WorkspaceToolSupport.kt")
-            kotlin.exclude("**/presentation/PhoneUseActivity.kt")
-            kotlin.exclude("**/presentation/TaskSchedule.kt")
-            kotlin.exclude("**/presentation/ChatExport.kt")
-            kotlin.exclude("**/conversation/KnowledgeStore.kt")
-            kotlin.exclude("**/conversation/ConversationStore.kt")
-            kotlin.exclude("**/search/HttpSearchService.kt")
-            kotlin.exclude("**/model/OpenAiCompatibleModelProvider.kt")
-            kotlin.exclude("**/grounding/PrivateLeak.kt")
+            // The shared engine and presentation layer come from core's JS target.
+            // Browser-backed implementations of the JVM-only infra (HTTP, storage) live here.
             dependencies {
+                implementation(project(":core"))
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.kotlinx.serialization.json)
             }
         }
         val jsTest by getting {
-            kotlin.srcDir("../core/src/test/kotlin")
-            kotlin.exclude("**/voice/**")
-            kotlin.exclude("**/tools/**")
-            kotlin.exclude("**/search/**")
-            kotlin.exclude("**/model/**")
-            kotlin.exclude("**/conversation/**")
-            kotlin.exclude("**/grounding/**")
             dependencies {
                 implementation(libs.kotlinx.coroutines.test)
             }
