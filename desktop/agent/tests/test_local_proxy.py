@@ -54,6 +54,24 @@ class LocalProxyTests(unittest.IsolatedAsyncioTestCase):
         await self.client.aclose()
         self.tmp.cleanup()
 
+    async def test_stream_is_unchanged_and_usage_is_recorded_without_content(self):
+        wire = b'data: {"choices":[{"delta":{"content":"synthetic private source"}}]}\n\ndata: {"usage":{"prompt_tokens":10,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":7}}}\n\ndata: [DONE]\n\n'
+        self.responses = [httpx.Response(200, content=wire)]
+        response = await self.client.post(self.path, headers={**self.headers, 'x-friday-session': 'ses_synthetic'}, json=self.body)
+        self.assertEqual(response.content, wire)
+        with self.agent.metrics.db() as db:
+            row = db.execute('SELECT session,prompt_tokens,cached_prompt_tokens,completion_tokens,finished FROM requests').fetchone()
+        self.assertEqual(row, ('ses_synthetic',10,7,3,1))
+        self.assertNotIn(b'synthetic private source', self.agent.metrics.path.read_bytes())
+
+    async def test_metrics_write_happens_after_gpu_lease_release(self):
+        original = self.agent.metrics.request
+        def record(*args):
+            self.assertEqual(self.gate.readers,0)
+            original(*args)
+        with patch.object(self.agent.metrics,'request',side_effect=record):
+            self.assertEqual((await self.client.post(self.path,headers=self.headers,json=self.body)).status_code,200)
+
     async def test_private_token_and_loopback_required(self):
         self.assertEqual((await self.client.post(self.path, json=self.body)).status_code, 401)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app, client=('192.0.2.1', 1)), base_url='http://test') as foreign:

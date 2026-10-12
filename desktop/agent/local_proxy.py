@@ -10,6 +10,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from .code_metrics import UsageObserver
+
 
 def local_payload(value):
     if not isinstance(value, dict) or not isinstance(value.get('messages'), list):
@@ -69,6 +71,10 @@ def install(app, agent, gate, client_factory=None):
         if len(raw) > 2 * 1024 * 1024: raise HTTPException(413, 'Local request too large')
         try: body = local_payload(json.loads(raw))
         except (ValueError, TypeError, AttributeError): raise HTTPException(422, 'Invalid local model request') from None
+        session = request.headers.get('x-friday-session', '')
+        if not re.fullmatch(r'ses_[A-Za-z0-9_-]{1,120}', session): session = None
+        started, clock_start = time.time(), time.monotonic()
+        observer = UsageObserver(bool(body.get('stream')))
         await inference.acquire()
         acquired = False
         client = response = None
@@ -116,18 +122,29 @@ def install(app, agent, gate, client_factory=None):
             if client is not None: await client.aclose()
             if acquired: await gate.release_chat()
             inference.release()
+            if hasattr(agent, 'metrics'):
+                await asyncio.to_thread(agent.metrics.request, session, started, time.monotonic() - clock_start,
+                                        response.status_code if response is not None else 503, {}, False)
             raise
 
         async def stream():
+            finished = False
             try:
                 if error_content is not None: yield error_content
                 else:
-                    async for chunk in response.aiter_bytes(): yield chunk
+                    async for chunk in response.aiter_bytes():
+                        observer.feed(chunk)
+                        yield chunk
+                finished = True
             finally:
+                usage = observer.finish()
                 await response.aclose()
                 await client.aclose()
                 await gate.release_chat()
                 inference.release()
+                if hasattr(agent, 'metrics'):
+                    await asyncio.to_thread(agent.metrics.request, session, started, time.monotonic() - clock_start,
+                                            response.status_code, usage, finished)
         return StreamingResponse(stream(), status_code=response.status_code,
                                  media_type='text/event-stream' if response.status_code == 200 and body.get('stream') else 'application/json',
                                  headers={'Cache-Control': 'no-store'})

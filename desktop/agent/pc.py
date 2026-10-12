@@ -37,7 +37,7 @@ MODES = ('ask', 'ask_changes', 'full')
 DEFAULTS = {'enabled': True, 'mode': 'ask_changes', 'computer_use': True, 'allow': [], 'deny': []}
 MAX_MCP_SERVERS = 10
 MCP_NAME = re.compile(r'[a-z0-9-]{1,32}')
-RESERVED_MCP = frozenset({'friday-computer', 'friday'})
+RESERVED_MCP = frozenset({'friday-computer', 'friday', 'friday-code-lookup'})
 
 
 def _digest(entry):
@@ -194,6 +194,8 @@ class PcAgent:
         self.opencode = opencode or shutil.which('opencode') or str(Path.home() / '.nvm/versions/node/v24.19.0/bin/opencode')
         self.python = python or sys.executable
         self.password = secrets.token_urlsafe(24)
+        from .code_metrics import CodeMetrics
+        self.metrics = CodeMetrics(self.root)
         self.process = None
         self.client = None
         self.chain = None
@@ -420,14 +422,14 @@ class PcAgent:
             if meta.get('interleaved'): cloud[name]['interleaved'] = meta['interleaved']
         vision = [row['id'] for row in self.ranking.ranked(vision=True) if (PROVIDER, row['id']) in chain]
         agents = {'friday': {'mode': 'primary', 'description': 'FRIDAY on the user’s PC', 'steps': 80,
-                             'tools': {COMPUTER + '_screenshot': False, COMPUTER + '_action': False},
+                             'tools': {COMPUTER + '_screenshot': False, COMPUTER + '_action': False, 'friday-code-lookup_search_code': False},
                              'prompt': prompt_text(os.environ.get('USER', 'user'), str(Path.home()))}}
         if settings['computer_use'] and vision:
             agents[DESKTOP_AGENT] = {'mode': 'subagent', 'description': 'View and operate the desktop using real screenshots and input. Delegate all visual PC work here.',
                 'model': VISION_PROVIDER + '/' + vision[0], 'steps': 80,
                 # Provider-side failover keeps the parent's task call waiting for the
                 # actual result, without replaying tools or interrupting child sessions.
-                'tools': {'task': False, 'bash': False, 'edit': False, 'write': False, 'apply_patch': False},
+                'tools': {'task': False, 'bash': False, 'edit': False, 'write': False, 'apply_patch': False, 'friday-code-lookup_search_code': False},
                 'prompt': 'You are FRIDAY’s desktop vision helper on the user’s real PC. Use ' + COMPUTER + '_screenshot before input; '
                           'coordinates refer to its latest image. Use ' + COMPUTER + '_action only for the requested task. '
                           'Respect approvals and denied actions; never approve your own requests. Do not send messages, buy, post, '
@@ -459,7 +461,14 @@ class PcAgent:
             'permission': {'*': 'ask', 'bash': 'ask', 'edit': 'ask', 'read': 'allow', 'webfetch': 'allow'},
             'mcp': {COMPUTER: {'type': 'local', 'command': [self.python, '-m', 'agent.computer'], 'enabled': settings['computer_use'],
                                'environment': {'DISPLAY': os.environ.get('DISPLAY', ':0'), 'PYTHONPATH': str(Path(__file__).resolve().parent.parent)}},
-                    **self.mcp_servers()},
+                    **self.mcp_servers(),
+                    'friday-code-lookup': {'type': 'local', 'command': [self.python, '-m', 'agent.code_lookup'],
+                        'enabled': os.environ.get('FRIDAY_CODE_LOOKUP_ENABLED') == '1' and bool(os.environ.get('FRIDAY_CODE_LOOKUP_URL')),
+                        'environment': {'PYTHONPATH': str(Path(__file__).resolve().parent.parent),
+                            'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': '2',
+                            'FRIDAY_CODE_LOOKUP_DATA': str(self.root.parent / 'code-lookup'),
+                            'FRIDAY_CODE_LOOKUP_URL': os.environ.get('FRIDAY_CODE_LOOKUP_URL', ''),
+                            'FRIDAY_CODE_LOOKUP_MODEL': os.environ.get('FRIDAY_CODE_LOOKUP_MODEL', 'embeddinggemma-2-Q8_0')}}},
             'agent': agents,
         }
 
@@ -512,6 +521,9 @@ class PcAgent:
                   const result = await client.session.update({path: {id: input.sessionID}, body: {permission: parent.data.permission}});
                   if (result.error) throw new Error("Could not apply the user's desktop permission rules.");
                 },
+                "chat.headers": async (input, output) => {
+                  if (input.model.providerID === LOCAL_PROVIDER) output.headers["x-friday-session"] = input.sessionID;
+                },
                 "chat.params": async (input) => { roles.set(input.sessionID, input.agent); },
                 "tool.execute.before": async (input) => {
                   const desktop = input.tool.startsWith("friday-computer_");
@@ -521,7 +533,7 @@ class PcAgent:
                     throw new Error("Shell/file work belongs to the parent assistant. Use desktop screenshot/input tools here.");
                 }
               };
-            };\n'''.replace('RESTORE', json.dumps(restore))
+            };\n'''.replace('RESTORE', json.dumps(restore)).replace('LOCAL_PROVIDER', json.dumps(LOCAL[0]))
             (self.root / 'shell-environment.js').write_text(plugin)
             self.config_path.write_text(json.dumps(config, indent=2))
             os.chmod(self.config_path, 0o600)
@@ -669,6 +681,7 @@ class PcAgent:
                 retrying_since = None
                 if status: continue
                 messages = await self.call('GET', f'/session/{session_id}/message', **where)
+                await self.snapshot_metrics(session_id, messages)
                 last = next((m for m in reversed(messages) if m['info']['role'] == 'assistant'), None)
                 error = (last or {}).get('info', {}).get('error')
                 if error and error.get('name') != 'MessageAbortedError' and retryable(error) and await self.fallback(session_id): continue
@@ -717,7 +730,7 @@ class PcAgent:
                 elif part['type'] == 'tool':
                     state = part.get('state', {})
                     items.append({'id': part['id'], 'role': 'assistant', 'kind': 'tool', 'tool': part.get('tool'), 'status': state.get('status'),
-                                  'title': state.get('title') or describe_tool(part.get('tool'), state.get('input') or {}),
+                                  'title': describe_tool(part.get('tool'), {}) if part.get('tool') == 'friday-code-lookup_search_code' else state.get('title') or describe_tool(part.get('tool'), state.get('input') or {}),
                                   'output': ('[Earlier output omitted]\n' if len(state.get('output') or state.get('error') or '') > 1500 else '') + (state.get('output') or state.get('error') or '')[-1500:] if isinstance(state.get('output') or state.get('error'), str) else ''})
             if info.get('error') and info['error'].get('name') != 'MessageAbortedError':
                 items.append({'id': info['id'] + '-error', 'role': 'assistant', 'kind': 'error', 'text': error_text(info['error'])})
@@ -729,8 +742,36 @@ class PcAgent:
         busy = bool(status) or record['state'] == 'busy' and session_id in self.watchers and not self.watchers[session_id].done()
         provider, model = chain[min(record['model'], len(chain) - 1)]
         timing = session_timing(messages, busy)
-        return {'id': session_id, 'title': record['title'], 'busy': busy, 'model_choice': record['model_choice'], 'timing': timing, 'state': 'waiting' if pending['permissions'] or pending['questions'] else 'busy' if busy else record['state'],
+        metrics = await self.snapshot_metrics(session_id, messages)
+        return {'id': session_id, 'title': record['title'], 'busy': busy, 'model_choice': record['model_choice'], 'timing': timing, 'metrics': metrics, 'state': 'waiting' if pending['permissions'] or pending['questions'] else 'busy' if busy else record['state'],
                 'model': 'Local Qwen' if provider == LOCAL[0] else model, 'items': items, **pending}
+
+    async def snapshot_metrics(self, session_id, messages):
+        """Include delegated OpenCode sessions in task counts, without retaining content."""
+        combined = list(messages)
+        queue, seen = [session_id], {session_id}
+        complete = True
+        while queue and len(seen) < 64:
+            parent = queue.pop(0)
+            try:
+                children = await self.call('GET', f'/session/{parent}/children', **self.scope(session_id))
+                if not isinstance(children, list):
+                    complete = False
+                    continue
+                for child in children:
+                    if len(seen) >= 64:
+                        complete = False
+                        break
+                    identifier = child.get('id')
+                    if not identifier or identifier in seen: continue
+                    seen.add(identifier); queue.append(identifier)
+                    combined.extend(await self.call('GET', f'/session/{identifier}/message', **self.scope(session_id)))
+            except Exception:
+                complete = False
+        combined.sort(key=lambda m: (m.get('info', {}).get('time') or {}).get('created', 0))
+        result = self.metrics.snapshot(session_id, combined)
+        result['delegated_counts_complete'] = complete and not queue
+        return result
 
     async def owner(self, session_id, directory=None):
         if session_id in self.session_roots: return self.session_roots[session_id]
@@ -892,6 +933,7 @@ def error_text(error):
 def describe_tool(tool, arguments):
     if tool == 'bash': return arguments.get('command', 'Run a command')
     if tool in ('read', 'edit', 'write'): return f'{tool.capitalize()} {arguments.get("filePath", "")}'.strip()
+    if tool == 'friday-code-lookup_search_code': return 'Find relevant code'
     if tool == COMPUTER + '_screenshot': return 'Look at the screen'
     if tool == COMPUTER + '_action': return f'{arguments.get("action", "act")} {arguments.get("text") or arguments.get("keys") or ""}'.strip()
     return tool or 'Tool'

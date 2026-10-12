@@ -43,6 +43,12 @@ def decision(rules, permission, value):
 
 
 class CodeRulesTest(unittest.TestCase):
+    def test_lookup_permission_matches_grep_in_each_mode(self):
+        from desktop.agent.code_lookup import TOOL
+        for mode in ('ask', 'ask_changes', 'full'):
+            rules = code_ruleset({**DEFAULTS, 'mode': mode}, trusted=False)
+            self.assertEqual(decision(rules, TOOL, '*'), decision(rules, 'grep', '*'))
+
     def test_edits_run_and_pushes_always_ask(self):
         rules = code_ruleset(dict(DEFAULTS), trusted=False)
         self.assertEqual(decision(rules, 'edit', 'src/app.py'), 'allow')
@@ -198,6 +204,12 @@ class CodeProjectsTest(unittest.IsolatedAsyncioTestCase):
         git('config', '--unset', 'user.email', cwd=directory)
         await self.code.follow_up(task['id'], 'Continue the task')
         self.assertEqual(git('config', '--get', 'user.email', cwd=directory).strip(), '123+octo@users.noreply.github.com')
+
+    async def test_lookup_registration_failure_does_not_fail_task_or_discard(self):
+        with patch.object(self.code.lookup, 'register', side_effect=OSError('synthetic lookup outage')):
+            project,task=await self.task()
+        with patch.object(self.code.lookup, 'discard_task', side_effect=OSError('synthetic cleanup outage')):
+            self.assertEqual((await self.code.discard(task['id']))['state'],'discarded')
 
     async def test_local_selection_reaches_code_session_and_summary(self):
         project = await self.code.add('octo/demo')

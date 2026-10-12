@@ -19,6 +19,9 @@ done
 cp "$HERE"/compose.yml "$HERE"/test.sh "$DEST/"
 cp "$HERE"/maintenance/memory-backup.py "$DEST/maintenance/"
 cp "$HERE"/llama/start-server.sh "$DEST/llama/"
+mkdir -p "$DEST/code-lookup"
+cp "$HERE/code-lookup/start-embeddings.sh" "$DEST/code-lookup/"
+[ -f "$DEST/code-lookup/embeddings.env" ] || cp "$HERE/code-lookup/embeddings.env.example" "$DEST/code-lookup/embeddings.env"
 [ -f "$DEST/llama/llama.env" ] || cp "$HERE/llama/llama.env.example" "$DEST/llama/llama.env"
 [ -f "$DEST/api/imagegen/config.json" ] || cp "$HERE/imagegen/config.example.json" "$DEST/api/imagegen/config.json"
 

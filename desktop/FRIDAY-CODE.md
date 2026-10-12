@@ -88,3 +88,11 @@ the agent commits, FRIDAY pushes.
 | Create PR / push | Create pull request (draft optional), Push branch; PR state and checks in the task |
 | Several tasks at once | Up to four working sessions across FRIDAY |
 | Start from chat (ChatGPT → Codex) | `start_code_task` card in the main chat |
+
+## Optional semantic lookup
+
+The coding agent can use the read-only `friday-code-lookup_search_code` MCP tool for conceptual source
+questions. EmbeddingGemma 2 runs independently on RX580; worktree manifests prevent branch leakage and
+are refreshed before every search. Secret files stay excluded. Ordinary grep/read remain available.
+See [CODE-LOOKUP.md](agent/CODE-LOOKUP.md) for setup, count-only telemetry and verification. Retrieval is
+opt-in and does not inject context automatically or change chat memory.

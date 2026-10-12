@@ -70,6 +70,43 @@ class PcTests(unittest.IsolatedAsyncioTestCase):
         if self.pc.watchers: await __import__('asyncio').gather(*self.pc.watchers.values(), return_exceptions=True)
         self.tmp.cleanup()
 
+    def test_code_lookup_config_is_opt_in_and_disabled_for_non_code_agents(self):
+        from desktop.agent.pc import DESKTOP_AGENT
+        from desktop.agent.code_lookup import SERVER, TOOL
+        with patch.dict('os.environ', {'FRIDAY_CODE_LOOKUP_ENABLED': '0', 'FRIDAY_CODE_LOOKUP_URL': ''}):
+            config = self.pc.config([LOCAL])
+            self.assertFalse(config['mcp'][SERVER]['enabled'])
+        with patch.dict('os.environ', {'FRIDAY_CODE_LOOKUP_ENABLED': '1', 'FRIDAY_CODE_LOOKUP_URL': 'http://127.0.0.1:8093'}):
+            self.pc.save_settings({**self.pc.settings(), 'computer_use': True})
+            self.pc.ranking.ranked = lambda **kwargs: [{'id': 'synthetic:free'}]
+            config = self.pc.config([('opencode', 'synthetic:free'), LOCAL])
+        self.assertTrue(config['mcp'][SERVER]['enabled'])
+        self.assertEqual(config['mcp'][SERVER]['command'][-2:], ['-m', 'agent.code_lookup'])
+        self.assertFalse(config['agent']['friday']['tools'][TOOL])
+        self.assertFalse(config['agent'][DESKTOP_AGENT]['tools'][TOOL])
+
+    async def test_task_metrics_include_delegated_sessions_and_request_usage(self):
+        parent = [{'info': {'role': 'assistant', 'sessionID': self.session}, 'parts': []}]
+        child = [{'info': {'role': 'assistant', 'sessionID': 'ses_child'}, 'parts': [
+            {'id': 'child-tool', 'type': 'tool', 'tool': 'grep', 'state': {}}]}]
+        original = self.pc.call
+        async def call(method, path, **kwargs):
+            if path == f'/session/{self.session}/children': return [{'id': 'ses_child'}]
+            if path == '/session/ses_child/children': return []
+            if path == '/session/ses_child/message': return child
+            return await original(method, path, **kwargs)
+        self.pc.call = call
+        self.pc.metrics.request('ses_child', 1, 1, 200, {'prompt_tokens':300,'cached_prompt_tokens':200,'completion_tokens':4}, True)
+        result = await self.pc.snapshot_metrics(self.session, parent)
+        self.assertEqual(result['turns'], 2)
+        self.assertEqual(result['tools'], {'grep':1})
+        self.assertEqual(result['fresh_prompt_tokens'],100)
+        self.assertTrue(result['delegated_counts_complete'])
+
+    def test_lookup_step_has_a_phone_friendly_title(self):
+        from desktop.agent.pc import describe_tool
+        self.assertEqual(describe_tool('friday-code-lookup_search_code', {'query':'synthetic'}), 'Find relevant code')
+
     def test_modes_and_custom_denials_preserve_permission_order(self):
         settings = Settings().model_dump()
         self.assertEqual(decision(settings, 'bash', 'gh pr list --limit 5'), 'allow')

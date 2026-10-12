@@ -1,0 +1,14 @@
+[Unit]
+Description=FRIDAY EmbeddingGemma 2 code lookup on RX580
+
+[Service]
+Type=simple
+EnvironmentFile=%h/assistant-server/code-lookup/embeddings.env
+ExecStart=%h/assistant-server/code-lookup/start-embeddings.sh
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=default.target
