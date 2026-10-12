@@ -10,11 +10,13 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from .prompt_slim import slim
+
 
 def local_payload(value):
     if not isinstance(value, dict) or not isinstance(value.get('messages'), list):
         raise HTTPException(422, 'Invalid local model request')
-    value = dict(value)
+    value = dict(slim(value))
     messages = []
     for message in value['messages']:
         message = dict(message)
