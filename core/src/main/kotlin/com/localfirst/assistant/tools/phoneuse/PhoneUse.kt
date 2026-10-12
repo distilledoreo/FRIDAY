@@ -63,6 +63,10 @@ data class AppSnapshot(
     val otherWindows: List<String> = emptyList(),
     /** Elements were left out to keep the tree readable. */
     val truncated: Boolean = false,
+    /** What the app announced since the previous look: toasts, alerts and live regions that may be gone already. */
+    val announcements: List<String> = emptyList(),
+    /** Secondary actions nearly every element offers (a web view's "Context menu"), listed once instead of per line. */
+    val commonActions: List<String> = emptyList(),
 ) {
     fun element(index: Int): AppElement? {
         fun find(list: List<AppElement>): AppElement? {
@@ -79,7 +83,24 @@ data class AppSnapshot(
         fun count(list: List<AppElement>): Int = list.sumOf { 1 + count(it.children) }
         return count(elements)
     }
+
+    /** What the model can see of the screen, without indices: equal fingerprints mean nothing visibly changed. */
+    fun fingerprint(): String = buildString {
+        append(app.packageName).append('|').append(windowTitle).append('|').append(keyboard).append('|').append(otherWindows)
+            .append('|').append(width).append('|').append(height).append('|').append(commonActions)
+        fun visit(list: List<AppElement>, depth: Int) {
+            for (e in list) {
+                append('\n').append(depth).append(e.role).append('|').append(e.label).append('|').append(e.value)
+                    .append('|').append(e.states).append('|').append(e.bounds).append('|').append(e.secondaryActions)
+                visit(e.children, depth + 1)
+            }
+        }
+        visit(elements, 0)
+    }
 }
+
+/** An element target no longer exists: the screen changed since the snapshot the model used. */
+class ScreenChangedException(message: String) : com.localfirst.assistant.tools.phone.PhoneActionException(message)
 
 enum class MouseButton(val wireName: String) { LEFT("left"), RIGHT("right"), MIDDLE("middle") }
 

@@ -104,7 +104,7 @@ class PhoneUseToolsTest {
         run("get_app_state", """{"app":"Gmail"}""")
         val click = run("click", """{"app":"Gmail","element_index":2}""")
         assertTrue(click.content, click.success)
-        assertTrue(click.content.startsWith("Clicked Element(index=2) x1 left.\n\nApp: Gmail"))
+        assertTrue(click.content.startsWith("Clicked Element(index=2) x1 left. The app looks the same as before this action.\n\nApp: Gmail"))
 
         // A new turn needs a new look, like Codex's once-per-turn rule.
         session.endTurn()
@@ -279,6 +279,89 @@ class PhoneUseToolsTest {
         assertNull(ConsequentialActions.check(AppElement(1, "button", "Sender settings")))
         assertNull(ConsequentialActions.check(AppElement(1, "text field", "Send a message")))
         assertNull(ConsequentialActions.check(AppElement(1, "button", "Compose")))
+    }
+
+    @Test
+    fun unchangedRepeatsAreRefusedAfterAnotherLookAndReorderedArguments() {
+        run("get_app_state", """{"app":"Gmail"}""")
+        repeat(2) { assertTrue(run("click", """{"app":"Gmail","element_index":2}""").success) }
+        run("get_app_state", """{"app":"Gmail"}""")
+        val refused = run("click", """{"element_index":2,"app":"Gmail"}""")
+        assertFalse(refused.success)
+        assertTrue(refused.content.contains("already ran 2 times"))
+        assertEquals(2, driver.calls.count { it.startsWith("Clicked") })
+    }
+
+    @Test
+    fun unchangedPollingRecordsLatestIndicesAndKeepsAnnouncements() {
+        run("get_app_state", """{"app":"Gmail"}""")
+        var looks = 0
+        driver.next = {
+            looks++
+            gmailScreen().copy(
+                elements = gmailScreen().elements.map { it.copy(index = 100 + looks) },
+                announcements = if (looks == 2) listOf("Field is full") else emptyList(),
+            )
+        }
+        val result = run("click", """{"app":"Gmail","element_index":2}""")
+        assertTrue(result.content, result.success)
+        assertEquals(5, looks)
+        assertEquals(105, session.snapshot!!.elements.single().index)
+        assertTrue(result.content.contains("Field is full"))
+        assertTrue(result.content.contains("105 window Inbox"))
+    }
+
+    @Test
+    fun coordinateActionOnChangedTargetIsRefusedWithCurrentState() {
+        run("get_app_state", """{"app":"Gmail"}""")
+        driver.next = {
+            gmailScreen().copy(elements = listOf(AppElement(10, "button", "Delete", bounds = Bounds(40, 60, 536, 110))))
+        }
+        val result = run("click", """{"app":"Gmail","x":100,"y":80}""")
+        assertFalse(result.success)
+        assertTrue(result.content.contains("Nothing was done"))
+        assertTrue(result.content.contains("10 button Delete"))
+        assertTrue(driver.calls.none { it.startsWith("Clicked") })
+        assertEquals(10, session.snapshot!!.elements.single().index)
+    }
+
+    @Test
+    fun scriptsExposeStructuredElementsAndActionOutcomes() {
+        val result = script("""
+            const s = await phone.getState('Gmail')
+            const field = s.find('Search in mail')
+            console.log(field.enabled, field.states.join(','), field.bounds.join(','), field.parent)
+            const after = await phone.click('Gmail', 'Compose')
+            console.log(after.changed, after.findAll('Send').length)
+        """.trimIndent())
+        assertTrue(result.content, result.success)
+        assertTrue(result.content, result.content.contains("true settable 40,60,536,110 0"))
+        assertTrue(result.content, result.content.contains("false 1"))
+        assertTrue(result.content.contains("Actions taken:"))
+    }
+
+    @Test
+    fun scriptsCanStartFromTheStateAlreadyReadThisTurn() {
+        run("get_app_state", """{"app":"Gmail"}""")
+        val result = script("await phone.click('Gmail', 'Compose')")
+        assertTrue(result.content, result.success)
+        assertTrue(driver.calls.contains("Clicked Element(index=2) x1 left."))
+    }
+
+    @Test
+    fun scriptsDoNotReturnAnOldImageWhenTheFinalStateHasNone() {
+        val file = java.io.File.createTempFile("phone-script", ".jpg")
+        try {
+            val image = Attachment("s", AttachmentKind.IMAGE, "s", "image/jpeg", path = file.path)
+            var looks = 0
+            driver.next = { gmailScreen(if (looks++ == 0) image else null) }
+            val result = script("await phone.getState('Gmail'); await phone.click('Gmail', 'Compose')")
+            assertTrue(result.content, result.success)
+            assertTrue(result.images.isEmpty())
+            assertFalse(file.exists())
+        } finally {
+            file.delete()
+        }
     }
 
     private fun script(code: String) = run("phone_script", kotlinx.serialization.json.buildJsonObject {

@@ -16,6 +16,11 @@ class PhoneUseSession(
 ) {
     private val conversationGrants = mutableSetOf<String>()
     private var snapshotTurn = -1L
+    /** The screen is known to have changed since [snapshot]: indices and coordinates no longer apply. */
+    private var stale = false
+    private var lastAction: String? = null
+    /** How many times in a row [lastAction] ran without changing anything. */
+    private var unchanged = 0
 
     var turn = 0L
         private set
@@ -25,13 +30,16 @@ class PhoneUseSession(
         private set
 
     /** A new user turn: the model has to look at the app again before acting. */
-    fun beginTurn() { turn++ }
+    fun beginTurn() { turn++; forgetActions() }
 
     /** The turn ended (finished, stopped or failed). */
     fun endTurn() {
         snapshot = null
         snapshotTurn = -1
+        forgetActions()
     }
+
+    private fun forgetActions() { lastAction = null; unchanged = 0 }
 
     /** What applies to [app] right now, without asking. */
     fun effectiveAccess(app: PhoneApp): AppAccess = when {
@@ -61,6 +69,32 @@ class PhoneUseSession(
         this.snapshot = snapshot
         this.current = snapshot.app
         snapshotTurn = turn
+        stale = false
+    }
+
+    /** Something showed the screen changed under the latest snapshot. */
+    fun markStale() { stale = true }
+
+    /**
+     * Null when [action] may run. An identical action that already ran twice in a row without changing
+     * anything is refused: repeating it can't work, and a third try is how agents get stuck. Typing the
+     * same key twice is fine, because each press changes the screen.
+     */
+    fun repeatRefusal(action: String, app: PhoneApp): String? =
+        if (action == lastAction && unchanged >= MAX_UNCHANGED_REPEATS)
+            "Not done: this exact action already ran $unchanged times in a row without changing anything in ${app.label}. " +
+                "Look at the state for what is in the way (a message, a full or disabled field, a dialog, a page still loading) and try " +
+                "something different, or tell the user what is blocking you."
+        else null
+
+    /** Records an action that ran and whether the app's state changed after it. */
+    fun noteAction(action: String, changed: Boolean) {
+        unchanged = when {
+            changed -> 0
+            action == lastAction -> unchanged + 1
+            else -> 1
+        }
+        lastAction = action
     }
 
     /** Null when actions on [app] may use the latest snapshot; otherwise what the model must do first. */
@@ -71,12 +105,18 @@ class PhoneUseSession(
                 "Call get_app_state for ${app.label} first. It must run once in each turn before acting on an app, so element indices match the current screen."
             latest.app.packageName != app.packageName ->
                 "FRIDAY's latest look was at ${latest.app.label}, not ${app.label}. Call get_app_state for ${app.label} first."
+            stale -> "The screen of ${app.label} changed since FRIDAY last looked, so indices and coordinates no longer apply. Call get_app_state for ${app.label} first."
             else -> null
         }
     }
 
     /** True when the tap may go ahead; asks the user for consequential ones. */
     suspend fun review(app: PhoneApp, description: String): Boolean = reviewAction?.invoke(app, description) ?: true
+
+    companion object {
+        /** Identical actions in a row that changed nothing, before another identical one is refused. */
+        const val MAX_UNCHANGED_REPEATS = 2
+    }
 }
 
 /**

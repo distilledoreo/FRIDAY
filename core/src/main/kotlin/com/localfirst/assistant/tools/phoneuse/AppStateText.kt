@@ -22,6 +22,8 @@ object AppStateText {
             )
             snapshot.keyboard?.let { add("Keyboard: showing ($it)") }
             if (snapshot.otherWindows.isNotEmpty()) add("Also on screen: " + snapshot.otherWindows.joinToString("; ") { clean(it) })
+            if (snapshot.announcements.isNotEmpty()) add("Announced: " + snapshot.announcements.joinToString(" · ") { "“${clean(it)}”" })
+            if (snapshot.commonActions.isNotEmpty()) add("Every element also offers: " + snapshot.commonActions.joinToString(", "))
         }
         val lines = mutableListOf<String>()
         fun visit(element: AppElement, depth: Int) {

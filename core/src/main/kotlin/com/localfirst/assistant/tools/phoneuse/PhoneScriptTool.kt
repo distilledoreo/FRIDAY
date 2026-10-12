@@ -34,15 +34,21 @@ import kotlinx.serialization.json.buildJsonObject
  * rules and reviews as the one-step tools. The script runs in FRIDAY's sandboxed interpreter: no
  * network, files or timers beyond `phone.wait`.
  */
-class PhoneScriptTool(private val tools: List<Tool>) : Tool {
+class PhoneScriptTool(
+    private val tools: List<Tool>,
+    /** The session's latest snapshot, so scripts see elements exactly as recorded rather than re-parsed. */
+    private val latest: () -> AppSnapshot? = { null },
+) : Tool {
     override val name = PhoneUseToolNames.SCRIPT
     override val description = "Run JavaScript that uses the phone, for several steps you are sure of (fill a form, work through a list). " +
         "Globals: phone (alias cua) with await phone.listApps(), phone.getState(app), phone.click(app, target, {count, button}), " +
         "phone.type(app, text), phone.key(app, key), phone.scroll(app, direction, {element, pages}), phone.drag(app, from, to), " +
         "phone.setValue(app, element, value), phone.secondary(app, element, action), phone.wait(ms); console.log(...). " +
-        "A target is an element index, {x, y}, or a label to find. getState returns {app, window, text, elements, find(label)}; " +
-        "actions return the new state. A failed action throws an Error you can catch. The result shows console output, " +
-        "the script's last value and the final screen with a screenshot. Prefer the one-step tools when unsure what the screen will show."
+        "A target is an element index, {x, y}, or a label to find. getState returns {app, window, text, announcements, elements, find(label), " +
+        "findAll(label)}; each element is {index, role, label, value, states, enabled, focused, selected, checked, actions, bounds: [l,t,r,b], " +
+        "x, y, depth, parent}. Actions return the new state, with changed (false when the app looks the same as before) and outcome. " +
+        "A failed action throws an Error you can catch. The result lists every action the script took, console output, the script's " +
+        "last value and the final screen with a screenshot. Prefer the one-step tools when unsure what the screen will show."
     override val inputSchema: JsonObject = objectSchema {
         string("title", "A short description of what the script does, shown to the user.", required = true)
         string("code", "JavaScript to run. Top-level await works.", required = true)
@@ -61,23 +67,29 @@ class PhoneScriptTool(private val tools: List<Tool>) : Tool {
             return ToolExecutionResult(false, "The script ends early: ${e.message}")
         }
         val interpreter = Interpreter(Limits(maxSteps = 5_000_000, maxMillis = SCRIPT_MILLIS, maxCallDepth = 120))
-        var lastState: String? = null
+        var lastSnapshot: AppSnapshot? = latest()
+        var lastState: String? = lastSnapshot?.let(AppStateText::render)
         var lastImages: List<Attachment> = emptyList()
+        val actions = mutableListOf<String>()
         val job = currentCoroutineContext()[Job]
         val handle = job?.invokeOnCompletion { interpreter.cancelled = true }
 
         fun call(tool: String, args: JsonObject): Any? {
             val target = byName[tool] ?: throw interpreter.error("Error", "$tool isn't available")
             val result = runBlocking { target.execute(args) }
-            if (!result.success) throw interpreter.error("Error", result.content.lineSequence().first().take(500))
-            if (result.images.isNotEmpty()) {
-                lastImages.forEach { old -> old.path?.let { java.io.File(it).delete() } }
-                lastImages = result.images
-            }
             val text = result.content
-            val stateText = text.substringAfter("\n\n", text).takeIf { it.startsWith("App: ") } ?: text.takeIf { it.startsWith("App: ") }
-            if (stateText != null) lastState = stateText
-            return stateObject(interpreter, text.substringBefore("\n\n").takeIf { stateText != null && it != stateText }, stateText ?: text)
+            val stateText = text.substring(text.indexOf("App: ").coerceAtLeast(0)).takeIf { it.startsWith("App: ") }
+            if (stateText != null) {
+                val keptPaths = result.images.mapNotNull { it.path }.toSet()
+                lastImages.forEach { old -> old.path?.takeIf { it !in keptPaths }?.let { java.io.File(it).delete() } }
+                lastImages = result.images
+                lastState = stateText
+                lastSnapshot = latest()
+            }
+            val outcome = text.substringBefore("\n\n").takeIf { stateText != null && !it.startsWith("App: ") } ?: text.takeIf { stateText == null }
+            if (tool != PhoneUseToolNames.GET_APP_STATE) actions += (if (result.success) "" else "Failed: ") + (outcome ?: tool).lineSequence().first().take(300)
+            if (!result.success) throw interpreter.error("Error", text.lineSequence().first().take(500))
+            return stateObject(interpreter, outcome?.takeIf { tool != PhoneUseToolNames.GET_APP_STATE }, stateText ?: text, lastSnapshot.takeIf { stateText != null })
         }
 
         fun str(v: Any?) = Values.toStr(Values.normalize(v))
@@ -85,7 +97,7 @@ class PhoneScriptTool(private val tools: List<Tool>) : Tool {
             put("app", JsonPrimitive(app))
             when (val t = Values.normalize(v)) {
                 is Double -> put("element_index", JsonPrimitive(t.toInt()))
-                is String -> put("element_index", JsonPrimitive(findIndex(interpreter, lastState, t)))
+                is String -> put("element_index", JsonPrimitive(lastSnapshot?.let { s -> findElement(s, t)?.index } ?: findIndex(interpreter, lastState, t)))
                 is JsObject -> {
                     val index = t.get("index")
                     if (index is Double) put("element_index", JsonPrimitive(index.toInt()))
@@ -144,9 +156,11 @@ class PhoneScriptTool(private val tools: List<Tool>) : Tool {
         interpreter.globals.declare("phone", phone, constant = true)
         interpreter.globals.declare("cua", phone, constant = true)
 
+        fun taken() = if (actions.isEmpty()) "" else actions.joinToString("\n", "Actions taken:\n", "\n\n") { "- $it" }.take(4_000)
         return try {
             val value = withContext(Dispatchers.IO) { interpreter.execProgram(program) }
             val output = buildString {
+                append(taken())
                 if (interpreter.console.isNotEmpty()) append("Console:\n").append(interpreter.console.joinToString("\n").take(6_000)).append("\n\n")
                 val shown = Values.normalize(value)
                 if (shown !== Undefined && shown !is StateObject) append("Result: ").append(Values.toStr(shown).take(2_000)).append("\n\n")
@@ -156,33 +170,78 @@ class PhoneScriptTool(private val tools: List<Tool>) : Tool {
         } catch (e: CancellationException) {
             throw e
         } catch (e: JsThrow) {
-            ToolExecutionResult(false, "The script stopped: ${e.message}\n\n" + (interpreter.console.takeIf { it.isNotEmpty() }?.joinToString("\n", "Console:\n", "\n\n").orEmpty()) + (lastState ?: ""), images = lastImages)
+            ToolExecutionResult(false, "The script stopped: ${e.message}\n\n" + taken() + (interpreter.console.takeIf { it.isNotEmpty() }?.joinToString("\n", "Console:\n", "\n\n").orEmpty()) + (lastState ?: ""), images = lastImages)
         } catch (e: ScriptLimit) {
-            ToolExecutionResult(false, "The script stopped: ${e.message}\n\n" + (lastState ?: ""), images = lastImages)
+            ToolExecutionResult(false, "The script stopped: ${e.message}\n\n" + taken() + (lastState ?: ""), images = lastImages)
         } finally {
             handle?.dispose()
         }
     }
 
-    /** A state as the script sees it: {app, window, text, summary, elements, find(label)}. */
+    /** A state as the script sees it: {app, window, text, outcome, changed, announcements, elements, find(label), findAll(label)}. */
     private class StateObject : JsObject()
 
-    private fun stateObject(interpreter: Interpreter, summary: String?, text: String): JsObject {
+    private fun stateObject(interpreter: Interpreter, outcome: String?, text: String, snapshot: AppSnapshot?): JsObject {
         val state = StateObject()
         val lines = text.lines()
         state.set("text", text)
-        summary?.let { state.set("summary", it) }
+        outcome?.let {
+            state.set("outcome", it)
+            state.set("summary", it)
+            state.set("changed", !it.contains("looks the same as before"))
+        }
         lines.firstOrNull { it.startsWith("App: ") }?.removePrefix("App: ")?.let { state.set("app", it.substringBefore(" (")); state.set("package", it.substringAfter("(").removeSuffix(")")) }
         lines.firstOrNull { it.startsWith("Window: ") }?.let { state.set("window", it.removePrefix("Window: ")) }
-        val elements = lines.mapNotNull { parseElementLine(interpreter, it) }
+        state.set("announcements", interpreter.newArray(snapshot?.announcements.orEmpty()))
+        val elements = snapshot?.let { elementObjects(interpreter, it) } ?: lines.mapNotNull { parseElementLine(interpreter, it) }
         state.set("elements", interpreter.newArray(elements))
-        state.set("find", NativeFunction("find", 1) { _, _, a ->
-            val wanted = Values.toStr(a.getOrNull(0)).lowercase()
-            elements.firstOrNull { (it.get("label") as? String)?.lowercase() == wanted }
-                ?: elements.firstOrNull { (it.get("label") as? String)?.lowercase()?.contains(wanted) == true }
-                ?: com.localfirst.assistant.genui.script.Null
-        })
+        fun matches(wanted: String): List<JsObject> {
+            val w = wanted.lowercase()
+            val exact = elements.filter { (it.get("label") as? String)?.lowercase() == w }
+            return exact + elements.filter { it !in exact && (it.get("label") as? String)?.lowercase()?.contains(w) == true }
+        }
+        state.set("find", NativeFunction("find", 1) { _, _, a -> matches(Values.toStr(a.getOrNull(0))).firstOrNull() ?: com.localfirst.assistant.genui.script.Null })
+        state.set("findAll", NativeFunction("findAll", 1) { _, _, a -> interpreter.newArray(matches(Values.toStr(a.getOrNull(0)))) })
         return state
+    }
+
+    /** Elements in reading order, with everything the text form shows. */
+    private fun elementObjects(interpreter: Interpreter, snapshot: AppSnapshot): List<JsObject> {
+        val out = mutableListOf<JsObject>()
+        fun visit(list: List<AppElement>, depth: Int, parent: Int?) {
+            for (e in list) {
+                val obj = interpreter.newObject()
+                obj.set("index", e.index.toDouble())
+                obj.set("role", e.role)
+                obj.set("label", e.label ?: "")
+                obj.set("value", e.value ?: com.localfirst.assistant.genui.script.Null)
+                obj.set("states", interpreter.newArray(e.states))
+                obj.set("enabled", "disabled" !in e.states)
+                obj.set("focused", "focused" in e.states)
+                obj.set("selected", "selected" in e.states)
+                obj.set("checked", if ("checked" in e.states) true else if ("unchecked" in e.states) false else com.localfirst.assistant.genui.script.Null)
+                obj.set("actions", interpreter.newArray(e.secondaryActions + snapshot.commonActions))
+                e.bounds?.let { b ->
+                    obj.set("bounds", interpreter.newArray(listOf(b.left.toDouble(), b.top.toDouble(), b.right.toDouble(), b.bottom.toDouble())))
+                    obj.set("x", b.centerX.toDouble()); obj.set("y", b.centerY.toDouble())
+                    obj.set("width", b.width.toDouble()); obj.set("height", b.height.toDouble())
+                }
+                obj.set("depth", depth.toDouble())
+                obj.set("parent", parent?.toDouble() ?: com.localfirst.assistant.genui.script.Null)
+                out += obj
+                visit(e.children, depth + 1, e.index)
+            }
+        }
+        visit(snapshot.elements, 0, null)
+        return out
+    }
+
+    private fun findElement(snapshot: AppSnapshot, label: String): AppElement? {
+        val wanted = label.lowercase()
+        val all = mutableListOf<AppElement>()
+        fun collect(list: List<AppElement>) { list.forEach { all += it; collect(it.children) } }
+        collect(snapshot.elements)
+        return all.firstOrNull { it.label?.lowercase() == wanted } ?: all.firstOrNull { it.label?.lowercase()?.contains(wanted) == true }
     }
 
     private val elementLine = Regex("^\\t*(\\d+) (.+?)(?: \\[(\\d+),(\\d+),(\\d+),(\\d+)])?$")
@@ -198,6 +257,7 @@ class PhoneScriptTool(private val tools: List<Tool>) : Tool {
         if (label.isNotEmpty()) obj.set("label", label)
         if (m.groupValues[3].isNotEmpty()) {
             val (l, t, r, b) = (3..6).map { m.groupValues[it].toDouble() }
+            obj.set("bounds", interpreter.newArray(listOf(l, t, r, b)))
             obj.set("x", (l + r) / 2); obj.set("y", (t + b) / 2)
         }
         return obj

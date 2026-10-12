@@ -53,7 +53,7 @@ fun phoneUseTools(
         PressKeyTool(context),
         SetValueTool(context),
     )
-    return steps + PhoneScriptTool(steps)
+    return steps + PhoneScriptTool(steps) { session()?.snapshot }
 }
 
 internal class PhoneUseContext(
@@ -74,9 +74,13 @@ internal class PhoneUseContext(
         return apps.first { it.packageName == match.packageName }
     }
 
-    /** Takes a snapshot and records it. Screenshots of apps FRIDAY may not use are never shown. */
-    suspend fun state(session: PhoneUseSession, expected: PhoneApp?): Pair<String, ToolExecutionResult?> {
-        val taken = driver.snapshot(screenshot = screenshots())
+    /**
+     * Takes a snapshot and records it. Screenshots of apps FRIDAY may not use are never shown. After an
+     * action, [previous] is the screen before it: when nothing changed yet, slow screens (web pages,
+     * animations) get a little longer before the result says so.
+     */
+    suspend fun state(session: PhoneUseSession, expected: PhoneApp?, previous: AppSnapshot? = null): Pair<String, ToolExecutionResult?> {
+        val taken = settled(previous)
         // The keyboard, notification shade and system dialogs belong to the phone, not another app:
         // the session stays with the app FRIDAY is working in.
         val snapshot = if (expected != null && ProtectedApps.isTransient(taken.app.packageName)) {
@@ -95,6 +99,31 @@ internal class PhoneUseContext(
         driver.showActivity(app)
         val moved = if (expected != null && app.packageName != expected.packageName) "The foreground app is now ${app.label}.\n" else ""
         return moved + AppStateText.render(snapshot) to ToolExecutionResult(true, "", images = listOfNotNull(snapshot.screenshot))
+    }
+
+    /** The screen now, simplified. Announcements seen while waiting are kept: toasts don't last. */
+    private suspend fun settled(previous: AppSnapshot?): AppSnapshot {
+        var taken = AppTree.simplify(driver.snapshot(screenshot = screenshots()))
+        if (previous == null || taken.fingerprint() != previous.fingerprint()) return taken
+        val heard = taken.announcements.toMutableList()
+        repeat(SETTLE_POLLS) {
+            kotlinx.coroutines.delay(SETTLE_POLL_MS)
+            val look = AppTree.simplify(driver.snapshot(screenshot = false))
+            heard += look.announcements
+            if (look.fingerprint() != previous.fingerprint()) {
+                taken.screenshot?.path?.let { java.io.File(it).delete() }
+                taken = AppTree.simplify(driver.snapshot(screenshot = screenshots()))
+                return taken.copy(announcements = (heard + taken.announcements).distinct())
+            }
+            // Every look replaces the driver's index map, even when the visible tree is identical.
+            taken = look.copy(screenshot = taken.screenshot, screenshotNote = taken.screenshotNote)
+        }
+        return taken.copy(announcements = heard.distinct())
+    }
+
+    private companion object {
+        const val SETTLE_POLLS = 4
+        const val SETTLE_POLL_MS = 400L
     }
 }
 
@@ -158,13 +187,52 @@ private abstract class ActionTool(
             return ToolExecutionResult(false, "${app.label} is no longer in front (the foreground package is $foreground). Call get_app_state for the app you want to continue in.")
         }
         val snapshot = session.snapshot!!
-        val done = act(args, snapshot, session, app) ?: return ToolExecutionResult(false, "The user declined this action. Don't retry it unless they ask; tell them what still needs doing.")
-        val (state, result) = context.state(session, app)
-        return (result ?: ToolExecutionResult(true, "")).copy(success = true, content = "$done\n\n$state")
+        val key = name + JsonObject(args.toSortedMap()).toString()
+        session.repeatRefusal(key, app)?.let { return ToolExecutionResult(false, it) }
+        changedUnder(points(args, snapshot), snapshot)?.let { change -> return current(session, app, "$change Nothing was done.") }
+        val done = try {
+            act(args, snapshot, session, app) ?: return ToolExecutionResult(false, "The user declined this action. Don't retry it unless they ask; tell them what still needs doing.")
+        } catch (e: ScreenChangedException) {
+            return current(session, app, "${e.message} Nothing was done.")
+        }
+        val (state, result) = context.state(session, app, previous = snapshot)
+        val changed = result == null || session.snapshot?.fingerprint() != snapshot.fingerprint()
+        session.noteAction(key, changed)
+        val note = if (changed) "" else " The app looks the same as before this action."
+        return (result ?: ToolExecutionResult(true, "")).copy(success = true, content = "$done$note\n\n$state")
     }
 
     /** Performs the action; null when the user declined it at review. */
     protected abstract suspend fun act(args: JsonObject, snapshot: AppSnapshot, session: PhoneUseSession, app: PhoneApp): String?
+
+    /** Screen points the action touches without naming an element; checked against the screen before acting. */
+    protected open fun points(args: JsonObject, snapshot: AppSnapshot): List<Pair<Int, Int>> = emptyList()
+
+    /**
+     * Coordinates are only as good as the look they came from. If what is under a point is no longer what
+     * the latest state showed there, the screen moved on: describe the change instead of touching blind.
+     */
+    private suspend fun changedUnder(points: List<Pair<Int, Int>>, before: AppSnapshot): String? {
+        if (points.isEmpty()) return null
+        val now = AppTree.simplify(context.driver.snapshot(screenshot = false))
+        for ((x, y) in points) {
+            val was = before.hit(x, y)
+            val there = now.hit(x, y)
+            if (was?.role != there?.role || was?.label != there?.label || was?.bounds != there?.bounds) {
+                return "The screen changed at ($x,$y) since the latest state: it showed ${describe(was)}, now ${describe(there)}."
+            }
+        }
+        return null
+    }
+
+    private fun describe(element: AppElement?) = element?.let { e -> e.label?.let { "${e.role} “${it.take(60)}”" } ?: e.role } ?: "nothing"
+
+    /** A refused action, with the screen as it is now so the model can carry on. */
+    private suspend fun current(session: PhoneUseSession, app: PhoneApp, why: String): ToolExecutionResult {
+        session.markStale()
+        val (state, result) = context.state(session, app)
+        return (result ?: ToolExecutionResult(false, "")).copy(success = false, content = "$why Here is the current screen.\n\n$state")
+    }
 
     protected fun element(args: JsonObject, snapshot: AppSnapshot, name: String = "element_index"): AppElement {
         val index = Args.int(args, name, 0..100_000)
@@ -195,6 +263,10 @@ private class ClickTool(context: PhoneUseContext) : ActionTool(
     },
     context = context,
 ) {
+    override fun points(args: JsonObject, snapshot: AppSnapshot) =
+        if (args["element_index"] != null && args["element_index"].toString() != "null" || args["x"] == null || args["y"] == null) emptyList()
+        else listOf(point(args, snapshot, "x", "y"))
+
     override suspend fun act(args: JsonObject, snapshot: AppSnapshot, session: PhoneUseSession, app: PhoneApp): String? {
         val count = Args.optionalInt(args, "click_count", 1..3) ?: 1
         val button = Args.choice(args, "mouse_button", MouseButton.entries.associateBy { it.wireName }, MouseButton.LEFT)
@@ -230,10 +302,11 @@ private class SecondaryActionTool(context: PhoneUseContext) : ActionTool(
     override suspend fun act(args: JsonObject, snapshot: AppSnapshot, session: PhoneUseSession, app: PhoneApp): String? {
         val element = element(args, snapshot)
         val action = Args.string(args, "action", maxLength = 100)
-        val named = element.secondaryActions.firstOrNull { it.equals(action, ignoreCase = true) }
+        val available = element.secondaryActions + snapshot.commonActions
+        val named = available.firstOrNull { it.equals(action, ignoreCase = true) }
             ?: throw IllegalArgumentException(
-                if (element.secondaryActions.isEmpty()) "Element ${element.index} has no secondary actions."
-                else "Element ${element.index} has these secondary actions: ${element.secondaryActions.joinToString()}.",
+                if (available.isEmpty()) "Element ${element.index} has no secondary actions."
+                else "Element ${element.index} has these secondary actions: ${available.joinToString()}.",
             )
         val consequential = ConsequentialActions.check(element.copy(label = named)) ?: ConsequentialActions.check(element)
         if (consequential != null && !session.review(app, "FRIDAY wants to use “$named” on “${element.label ?: element.role}” in ${app.label}.")) return null
@@ -273,6 +346,8 @@ private class DragTool(context: PhoneUseContext) : ActionTool(
     },
     context = context,
 ) {
+    override fun points(args: JsonObject, snapshot: AppSnapshot) = listOf(point(args, snapshot, "from_x", "from_y"))
+
     override suspend fun act(args: JsonObject, snapshot: AppSnapshot, session: PhoneUseSession, app: PhoneApp): String {
         val (fromX, fromY) = point(args, snapshot, "from_x", "from_y")
         val (toX, toY) = point(args, snapshot, "to_x", "to_y")
