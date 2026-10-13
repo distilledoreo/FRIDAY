@@ -28,6 +28,21 @@ Also preserve earlier decisions: browser offline storage is not required; web-to
 control remains deferred. Notifications retain Off / Tab open / Tab closed choices.
 Do not mistake these decisions for overlooked parity requirements.
 
+## Active implementation goal — 2026-10-13
+
+Close the in-scope interface, app and execution-harness parity gaps in this register.
+**Model intelligence, reasoning quality, model capability and model benchmarking are
+excluded.** Harness support for files, tools, recovery, permissions and usable workflows
+remains in scope independently of the model selected.
+
+Start with UX001, UX003, UX004, UX006, UX013 and UX014, then complete the remaining
+in-scope entries and the presentation/document/integration workflows. Investigate the
+validation queue and add confirmed findings as needed. Deliver changes through the
+shared Android/browser architecture, relevant verification, commits/pushes and reviewable
+PRs. Record completion evidence per entry; keep device/provider checks pending until
+actually verified. The goal stays active until in-scope acceptance checks are satisfied.
+Deferred and accepted-architecture decisions above remain unchanged.
+
 ## Evidence and priority rules
 
 - **Confirmed source gap:** a specific audited FRIDAY screen/controller lacks the described
@@ -142,7 +157,7 @@ names, screenshots of private data, tokens or installation addresses belong in t
 Suggested first implementation batch: **UX001, UX003, UX004, UX006, UX013 and UX014**.
 They address reading, preserving unsent work, recovering attachments and reusing files.
 F002/F003 then build on the artifact review/editor work; F004 needs provider/device verification.
-This recommendation is not authorization to implement all register entries automatically.
+The active goal now authorizes implementation of in-scope entries; their acceptance checks govern closure.
 
 ## Maintaining the running list
 
@@ -153,6 +168,7 @@ Android, browser, service and manual verification separately. Move candidates to
 only after source evidence or a reproducible observation; close with the acceptance check.
 No recurring automation or notification schedule is implied by this register.
 
+- **2026-10-13:** User activated the implementation goal for interface/app/harness parity, explicitly excluding model intelligence/capability. Earlier deferred and accepted items remain outside the goal.
 - **2026-10-13:** Created the register. Recorded six user scope decisions, 24 source-backed
   UX gaps and 12 validation journeys. ChatGPT web inspection confirmed sidebar pin controls
   and Library search/filters/view modes/folders/favorites/multi-selection. FRIDAY runtime
