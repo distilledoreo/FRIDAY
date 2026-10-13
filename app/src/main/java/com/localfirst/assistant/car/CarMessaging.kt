@@ -43,7 +43,7 @@ object CarMessaging {
             val projecting = type == CarConnection.CONNECTION_TYPE_PROJECTION
             if (projecting == _connected.value) return@observeForever
             _connected.value = projecting
-            if (projecting && enabled()) greet(app) else if (!projecting) clear(app)
+            if (projecting && enabled()) greet(app) else if (!projecting) { clear(app); (app as? com.localfirst.assistant.AssistantApp)?.chat()?.stopCarVoice() }
         }
     }
 
