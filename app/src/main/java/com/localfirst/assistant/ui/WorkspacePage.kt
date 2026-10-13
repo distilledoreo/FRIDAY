@@ -38,6 +38,8 @@ enum class WorkspaceDestination(val title: String) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
+    val sharedActions = rememberNativeWorkspaceActions(vm, state)
+    val sharedState by sharedActions.state.collectAsState()
     val initial = state.workspaceDestination
     var page by rememberSaveable(initial) { mutableStateOf(initial) }
     var parent by rememberSaveable(initial) { mutableStateOf(initial) }
@@ -136,44 +138,17 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                             OutlinedTextField(memory, { memory = it.take(2000) }, label = { Text("What should I remember?") }, minLines = 4, modifier = Modifier.fillMaxWidth())
                             Button(shape = MaterialTheme.shapes.small, onClick = { vm.saveMemory(memory) }, enabled = memory.isNotBlank() && !state.workspaceBusy, modifier = Modifier.fillMaxWidth()) { Text("Save") }
                         }
-                        WorkspaceDestination.PROJECTS -> ScreenList {
-                            if (state.knowledge.projects.isEmpty()) item { EmptyList("Keep related chats together", "Create a project to share instructions and reference material across chats.") }
-                            items(state.knowledge.projects, key = { it.id }) { p ->
-                                SettingsRow(p.name, "${state.conversations.count { it.projectId == p.id }} chats") { projectId = p.id; page = WorkspaceDestination.PROJECT }
+                        WorkspaceDestination.PROJECTS, WorkspaceDestination.PROJECT, WorkspaceDestination.EDIT_PROJECT ->
+                            com.localfirst.assistant.ui.workspace.ProjectsScreen(sharedActions, sharedState,
+                                initialEditingId = if (page == WorkspaceDestination.EDIT_PROJECT) projectId else null,
+                                initiallyAdding = page == WorkspaceDestination.EDIT_PROJECT && projectId == null,
+                                selectedProjectId = if (page == WorkspaceDestination.PROJECT) projectId else null,
+                                useProject = { vm.selectProject(it); vm.dismissWorkspace() },
+                                openChat = vm::dismissWorkspace)
+                        WorkspaceDestination.TASKS -> com.localfirst.assistant.ui.workspace.TasksScreen(sharedActions, sharedState) {
+                            Row {
+                                TextButton(vm::refreshWorkspace, enabled = !sharedState.busy) { Text("Refresh") }
                             }
-                            item { TextButton(shape = MaterialTheme.shapes.small, onClick = { editProject(null) }, modifier = Modifier.padding(12.dp)) { Text("New project") } }
-                        }
-                        WorkspaceDestination.PROJECT -> ScreenList {
-                            item { Row(Modifier.fillMaxWidth().padding(20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(shape = MaterialTheme.shapes.small, onClick = { projectId?.let(vm::newProjectChat) }, enabled = !state.busy && !state.workspaceBusy) { Text("New chat") }
-                                OutlinedButton(shape = MaterialTheme.shapes.small, onClick = { vm.selectProject(projectId); vm.dismissWorkspace() }, enabled = !state.busy && !state.workspaceBusy) { Text("Use in this chat") }
-                            } }
-                            item { SettingsRow("Instructions", project?.instructions?.take(180)?.ifBlank { "Add guidance for this project" }) { editProject(project) } }
-                            item { SettingsRow("Sources", if (project?.context.isNullOrBlank()) "Add reference text or documents from a chat" else "Reference text saved") { editProject(project) } }
-                            item { SectionLabel("Chats") }
-                            val chats = state.conversations.filter { it.projectId == projectId }
-                            if (chats.isEmpty()) item { ScreenHint("Your project chats will appear here.") }
-                            items(chats, key = { it.id }) { c -> ConversationRow(c, c.id == state.conversationId,
-                                onOpen = { vm.dismissWorkspace(); vm.openConversation(c.id) },
-                                onRename = { renamingChat = c }, onDelete = { deletingChat = c }) }
-                        }
-                        WorkspaceDestination.EDIT_PROJECT -> FormScreen {
-                            OutlinedTextField(name, { name = it.take(100) }, label = { Text("Project name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                            OutlinedTextField(instructions, { instructions = it.take(8000) }, label = { Text("Instructions") }, placeholder = { Text("How should the assistant respond in this project?") }, minLines = 3, modifier = Modifier.fillMaxWidth())
-                            OutlinedTextField(reference, { reference = it.take(60000) }, label = { Text("Reference text") }, minLines = 4, modifier = Modifier.fillMaxWidth())
-                            TextButton(shape = MaterialTheme.shapes.small, onClick = {
-                                val source = vm.projectDocumentText()
-                                if (source.isBlank()) projectError = "Attach a readable document to this chat first."
-                                else { reference = (reference + "\n\n" + source).trim().take(60000); projectError = null }
-                            }, enabled = !state.workspaceBusy) { Text("Add documents from current chat") }
-                            projectError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                            Button(shape = MaterialTheme.shapes.small, onClick = { vm.saveProject(projectId, name, instructions, reference) }, enabled = name.isNotBlank() && !state.workspaceBusy, modifier = Modifier.fillMaxWidth()) { Text("Save") }
-                        }
-                        WorkspaceDestination.TASKS -> ScreenList {
-                            item { ScreenHint("Tasks run on your computer, including when this app is closed.") }
-                            item { TextButton(shape = MaterialTheme.shapes.small, onClick = vm::refreshWorkspace, enabled = !state.workspaceBusy, modifier = Modifier.padding(horizontal = 12.dp)) { Text("Refresh") } }
-                            if (state.tasks.isEmpty()) item { EmptyList("No tasks yet", "Schedule research, reminders or file work.") }
-                            items(state.tasks, key = { it.id }) { t -> SettingsRow(t.prompt, taskSummary(t)) { taskId = t.id; page = WorkspaceDestination.TASK } }
                         }
                         WorkspaceDestination.TASK -> FormScreen {
                             if (task == null) Text("This task was removed.") else {
@@ -275,51 +250,5 @@ private fun taskSummary(t: BackgroundTask): String {
         Text("Keeping a version replaces the other copy of this item.", style = MaterialTheme.typography.bodySmall)
         Column { OutlinedButton(shape = MaterialTheme.shapes.small, onClick = { vm.resolveSync(c, true) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Keep this phone’s version") }
             TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.resolveSync(c, false) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Keep computer’s version") } }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable private fun TaskEditor(busy: Boolean, save: (String, Long, Int) -> Unit) {
-    var prompt by rememberSaveable { mutableStateOf("") }
-    var later by rememberSaveable { mutableStateOf(false) }
-    val future = remember { ZonedDateTime.now().plusMinutes(5) }
-    var date by rememberSaveable { mutableStateOf(future.toLocalDate().toString()) }
-    var hour by rememberSaveable { mutableIntStateOf(future.hour) }
-    var minute by rememberSaveable { mutableIntStateOf(future.minute) }
-    var repeat by rememberSaveable { mutableIntStateOf(0) }
-    var showDate by remember { mutableStateOf(false) }
-    var showTime by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    if (showDate) {
-        val picker = rememberDatePickerState(initialSelectedDateMillis = LocalDate.parse(date).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli())
-        DatePickerDialog(onDismissRequest = { showDate = false }, confirmButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = {
-            picker.selectedDateMillis?.let { date = Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate().toString() }; showDate = false
-        }) { Text("Done") } }, dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { showDate = false }) { Text("Cancel") } }) { DatePicker(picker) }
-    }
-    if (showTime) {
-        val picker = rememberTimePickerState(hour, minute)
-        AlertDialog(onDismissRequest = { showTime = false }, title = { FridayDialogWindow(); Text("Start time") }, text = { TimeInput(picker) },
-            confirmButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { hour = picker.hour; minute = picker.minute; showTime = false }) { Text("Done") } }, dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { showTime = false }) { Text("Cancel") } })
-    }
-    FormScreen {
-        OutlinedTextField(prompt, { prompt = it }, label = { Text("What would you like me to do?") }, minLines = 4, modifier = Modifier.fillMaxWidth())
-        Row(verticalAlignment = Alignment.CenterVertically) { Text("Schedule for later", Modifier.weight(1f)); Switch(later, { later = it }) }
-        if (later) {
-            SettingsRow("Date", LocalDate.parse(date).format(DateTimeFormatter.ofPattern("EEE, MMM d"))) { showDate = true }
-            SettingsRow("Time", LocalTime.of(hour, minute).format(DateTimeFormatter.ofPattern("h:mm a"))) { showTime = true }
-        }
-        Text("Repeat", style = MaterialTheme.typography.labelLarge)
-        Column(Modifier.fillMaxWidth()) {
-            listOf("Once" to 0, "Hourly" to 3600, "Daily" to 86400, "Weekly" to 604800).forEach { (label, seconds) -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { repeat = seconds }) { RadioButton(selected = repeat == seconds, onClick = { repeat = seconds }); Text(label) } }
-        }
-        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        Button(shape = MaterialTheme.shapes.small, onClick = {
-            runCatching {
-                val now = System.currentTimeMillis()
-                val runAt = if (later) com.localfirst.assistant.presentation.TaskSchedule.resolve(LocalDate.parse(date), hour, minute, ZoneId.systemDefault(), now) else now
-                error = null; save(prompt, runAt, repeat)
-            }.onFailure { error = it.message }
-        }, enabled = prompt.isNotBlank() && !busy, modifier = Modifier.fillMaxWidth()) { Text(if (later) "Schedule task" else "Start task") }
-        Text("Your computer needs to be online when the task runs.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

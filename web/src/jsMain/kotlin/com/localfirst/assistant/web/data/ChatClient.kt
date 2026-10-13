@@ -1,5 +1,6 @@
 package com.localfirst.assistant.web.data
 
+import com.localfirst.assistant.client.*
 import kotlinx.browser.window
 import kotlinx.browser.document
 import org.w3c.dom.HTMLAnchorElement

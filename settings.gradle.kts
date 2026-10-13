@@ -16,4 +16,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "local-android-assistant"
-include(":app", ":core", ":web")
+include(":app", ":core", ":web", ":shared-ui")

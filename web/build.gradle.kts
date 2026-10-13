@@ -27,6 +27,7 @@ kotlin {
         val commonMain by getting {
             dependencies {
                 implementation(project(":core"))
+                implementation(project(":shared-ui"))
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.kotlinx.serialization.json)
             }
@@ -42,6 +43,7 @@ kotlin {
             // Browser-backed implementations of the JVM-only infra (HTTP, storage) live here.
             dependencies {
                 implementation(project(":core"))
+                implementation(project(":shared-ui"))
                 implementation(compose.runtime)
                 implementation(compose.foundation)
                 implementation(compose.material3)

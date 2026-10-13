@@ -1,9 +1,9 @@
 # FRIDAY
 
-A local-first Android assistant and the PC server it runs on. `app/` and `core/` are the Android app; `server/` and `desktop/` are the PC side (setup: `server/scripts/setup.sh`, see [server/README.md](server/README.md)).
+A local-first Android assistant and the PC server it runs on. `app/` hosts Android, `web/` hosts the browser, and `core/` plus `shared-ui/` contain shared client logic and UI; `server/` and `desktop/` are the PC side (setup: `server/scripts/setup.sh`, see [server/README.md](server/README.md)).
 
 
-Current Android interface: **FRIDAY 0.18.1** uses a minimal adaptive home, sidebar, optional real-data dashboard, inline voice and native rich-response foundation. Dark/light/accent/motion controls live in Appearance. See [redesign contract and validation](desktop/FRIDAY-REDESIGN.md). The existing data, integrations and assistant task controls remain in place.
+Android interface foundation: **FRIDAY 0.18.1** uses a minimal adaptive home, sidebar, optional real-data dashboard, inline voice and native rich-response foundation. Dark/light/accent/motion controls live in Appearance. See [redesign contract and validation](desktop/FRIDAY-REDESIGN.md). The existing data, integrations and assistant task controls remain in place.
 
 Version **0.18.1** fixes stale voice replies and reads comments before tools run. Long quiet waits get up to two brief, interruptible voice cues; real replies and approval questions take priority.
 
@@ -21,13 +21,15 @@ Milestones implemented:
 6. Voice mode and assistant registration: a hands-free voice conversation with barge-in, and the app can be the phone's default digital assistant.
 7. Images and file attachments: photos, camera capture, PDFs, Word documents, and text/code files, with previews and saved attachments.
 
+Android and web share their portable models, transcript presentation, workspace rules and Compose components through `core/` and `shared-ui/`. Change common client screens and behavior once; keep device and browser effects in platform adapters. See [shared client UI](shared-ui/README.md) for the current boundaries.
+
 ## FRIDAY 0.14 public evidence
 
 Phone search/page tools retrieve bounded public static passages with source provenance, dates and explicit snippet/unavailable states. Chat enforces no-search requests and separate exact public-query/URL confirmation after private tool results or recalled memory. Citation status checks link coverage only; factual support still requires checking the supplied passages. Eligible deeper research is proposed in Activity and runs only after approval. Private account-scoped agent tasks cannot use public web tools. See [delivery and verification](desktop/FRIDAY-ROADMAP.md). Sending remains disabled pending real provider/device verification and explicit activation.
 
 ## Compose web client
 
-The Kotlin/JS + Compose app in `web/` connects to the same PC gateway as Android and shares history, projects, memory and portable appearance preferences. Build with `./gradlew :web:stageGateway`, install the gateway, and open `/friday/`. Android **0.23.0** uses the corresponding preference protocol. See [web client build, sync behavior and validation](web/README.md). The older `/workspace-ui` remains available.
+The Kotlin/JS + Compose app in `web/` connects to the same PC gateway as Android and shares history, projects, memory and portable appearance preferences. Build with `./gradlew :web:stageGateway`, install the gateway, and open `/friday/`. Android **0.24.0** uses the shared UI and corresponding preference protocol. See [web client build, sync behavior and validation](web/README.md). The older `/workspace-ui` remains available.
 
 ## Layout
 

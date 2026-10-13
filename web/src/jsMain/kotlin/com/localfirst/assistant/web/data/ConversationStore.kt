@@ -1,5 +1,6 @@
 package com.localfirst.assistant.web.data
 
+import com.localfirst.assistant.client.*
 import kotlinx.browser.localStorage
 import com.localfirst.assistant.platform.PlatformMessageDigest
 

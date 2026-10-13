@@ -16,7 +16,7 @@ Browser-generated assistant/tool groups are stored in the same conversation form
 
 Older browser-local chats can be copied into shared history from Settings. JSON escapes and Unicode are preserved; deterministic IDs make repeated imports idempotent. The original local chats remain available for recovery. Older browser-local appearance values do not silently overwrite the shared preferences; set the desired shared values in Settings.
 
-Shared appearance fields are theme, accent, proactivity, reduced motion, display name and interactive answers. Connection/model routing, network timeouts, phone permissions, Bluetooth/voice hardware, Android Auto and Wake-on-LAN remain local. The web renderer supports Markdown and core layout, text, button, input, checkbox/switch, slider, table and statistic components. It uses the same bounded script runtime, with Markdown fallback for other components. Raw AppBlock execution, AsyncImage, file picking, voice, account management and the remaining Android control surfaces are not fully ported.
+Shared appearance fields are theme, accent, proactivity, reduced motion, display name and interactive answers. Connection/model routing, network timeouts, phone permissions, Bluetooth/voice hardware, Android Auto and Wake-on-LAN remain local. The web app uses the same Compose components as Android for messages, Markdown/tables, appearance, the composer, projects, memory and tasks (including scheduling). Its generated interfaces use the shared layout, input, form, chart, timer and data renderers and bounded script runtime. See [`shared-ui/README.md`](../shared-ui/README.md) for the module boundaries and remaining orchestration differences. Raw AppBlock execution, AsyncImage loading, file picking, voice, account management and the remaining Android control surfaces still need browser adapters or shared screens.
 
 ## Build and serve
 
@@ -35,12 +35,12 @@ Development compilation is available with `./gradlew :web:jsBrowserDevelopmentWe
 ## Verification
 
 ```sh
-./gradlew :core:testDebugUnitTest :core:jsNodeTest :web:jsNodeTest
+./gradlew :core:testDebugUnitTest :core:jsNodeTest :shared-ui:testDebugUnitTest :shared-ui:jsNodeTest
 ./gradlew :app:testDebugUnitTest :app:assembleDebug :web:stageGateway
 python -m unittest desktop.workspace.tests.test_workspace.ApiTests -v
 python -m unittest discover -s desktop/memory/tests -v
 ```
 
-The common interpreter/interface tests run on both Android/JVM and Node. Web state tests cover shared history, draft preservation, deletion, stale writes, per-field preferences, lock/reconnect, paged memory, explicit import, project conflicts and retained task replies. Server tests cover canonical tool transcripts, restart checkpoints, source references, optional renderer instructions and public assets with authenticated data APIs.
+The common interpreter/interface tests run on both Android/JVM and Node. Shared workspace tests cover shared history, draft preservation, deletion, stale writes, per-field preferences, lock/reconnect, paged memory, explicit import, project conflicts and retained task replies. Server tests cover canonical tool transcripts, restart checkpoints, source references, optional renderer instructions and public assets with authenticated data APIs.
 
 Robolectric needs a writable Java user-home/cache directory. Browser smoke checks used the staged app and a local fixture gateway, exercising sign-in, real chat persistence, interactive calculator rendering and memory controls. Real two-device behavior, broad browser/accessibility coverage and live model/provider verification still require device testing. Existing Android lint findings and the environment-dependent bubblewrap analysis test are outside this port.

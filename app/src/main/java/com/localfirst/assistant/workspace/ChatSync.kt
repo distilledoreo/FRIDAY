@@ -22,7 +22,7 @@ class ChatSync(private val context: Context, private val client: WorkspaceClient
     private val lock = Mutex()
     // Only portable preferences are allowed onto the shared server. Never credentials or phone access.
     private val appearance get() = context.getSharedPreferences("friday_appearance", Context.MODE_PRIVATE)
-    private val preferenceKeys = listOf("theme", "accent", "proactivity", "reduced_motion", "display_name", "interactive_answers")
+    private val preferenceKeys = com.localfirst.assistant.settings.portablePreferenceKeys.toList()
     private fun preferenceKey(id: String) = id.removePrefix("preferences-").takeIf { id.startsWith("preferences-") && it in preferenceKeys }
     private val prefs get() = context.getSharedPreferences("workspace-sync-${digest(client.serverIdentity)}", Context.MODE_PRIVATE)
     private val attachments = File(context.filesDir, "attachments")

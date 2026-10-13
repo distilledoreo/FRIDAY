@@ -94,23 +94,3 @@ internal fun GenUiMessage(index: Int, text: String, streaming: Boolean, host: Ge
 }
 
 private val VISIBLE_PROBLEMS = setOf("runtime_error", "watchdog", "unknown_component", "parse_failed", "object_as_child", "render_loop")
-
-@Composable
-private fun EntityDetails(ref: Any?, act: (UiAction) -> Unit, onClose: () -> Unit) {
-    val data = ref as? Map<*, *> ?: emptyMap<String, Any?>()
-    val title = (data["title"] ?: data["name"])?.toString() ?: "Details"
-    val url = data["url"]?.toString()
-    AlertDialog(
-        onDismissRequest = onClose,
-        title = { Text(title) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("subtitle", "domain", "price", "merchant", "address", "snippet", "published").forEach { key ->
-                    data[key]?.toString()?.takeIf { it.isNotBlank() }?.let { Text(it, style = if (key == "snippet") MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodySmall) }
-                }
-            }
-        },
-        confirmButton = { if (url != null) Button(onClick = { act(UiAction.OpenUrl(url)); onClose() }) { Text("Open") } },
-        dismissButton = { TextButton(onClick = onClose) { Text("Close") } },
-    )
-}

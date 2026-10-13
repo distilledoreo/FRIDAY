@@ -3,15 +3,7 @@ package com.localfirst.assistant.tools
 import com.localfirst.assistant.json.JsonCodec
 import kotlinx.serialization.json.*
 
-object CodeToolNames {
-    const val START = "start_code_task"
-    const val GET = "get_code_task"
-    const val LIST = "list_code_projects"
-    const val FOLLOW_UP = "send_code_task_message"
-    const val STOP = "stop_code_task"
-    /** Tools whose successful result is a coding task shown as a card that opens Code. */
-    val CARDS = setOf(START, GET, FOLLOW_UP, STOP)
-}
+
 
 private val REPO = Regex("[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}")
 private val TASK_ID = Regex("[a-f0-9]{12}")
