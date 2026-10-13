@@ -357,10 +357,14 @@ class ChatViewModel(
     private var dashboardGeneration = 0L
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
+    private var carVoiceSession = false
+    val carVoiceActive: Boolean get() = carVoiceSession
+    private var voiceStartJob: Job? = null
+
     private val voice = voiceEngines?.let { engines ->
         VoiceController(
             scope = viewModelScope,
-            selectIo = { engines.select(_state.value.settings) },
+            selectIo = { engines.select(_state.value.settings, forcePhoneMic = carVoiceSession) },
             chat = state,
             view = { s -> com.localfirst.assistant.voice.VoiceTurn(s.messages, s.busy, s.turnMessagesReady,
                 s.pendingApproval?.let { com.localfirst.assistant.voice.VoiceApproval(it.toolName + "\n" + it.title, it.prompt) }) },
@@ -564,28 +568,43 @@ class ChatViewModel(
 
     // ---- voice -----------------------------------------------------------------
 
-    fun startVoice() {
-        if (_state.value.workspaceBusy || !settingsReady()) return
+    fun startCarVoice(fromCar: Boolean = true) {
+        if (!_state.value.settings.androidAuto || voiceStartJob?.isActive == true) return
+        if (!carVoiceSession) voice?.close()
+        carVoiceSession = true
+        voice?.muteMic(false)
+        startVoice(fromCar)
+    }
+
+    fun stopCarVoice() { if (carVoiceSession) closeVoice() }
+
+    fun startVoice(fromCar: Boolean = false) {
+        if (voiceStartJob?.isActive == true || _state.value.workspaceBusy || !settingsReady()) return
         _state.update { it.copy(voiceError=null) }
-        viewModelScope.launch {
+        voiceStartJob = viewModelScope.launch {
             try {
                 if (app != null) {
-                    if (!com.localfirst.assistant.phone.PermissionBroker.ensure(app, android.Manifest.permission.RECORD_AUDIO)) {
+                    val allowed = if (fromCar) com.localfirst.assistant.phone.PermissionBroker.isGranted(app, android.Manifest.permission.RECORD_AUDIO)
+                        else com.localfirst.assistant.phone.PermissionBroker.ensure(app, android.Manifest.permission.RECORD_AUDIO)
+                    if (!allowed) {
                         _state.update { it.copy(voiceError="Microphone permission is needed for voice. Allow it in Android app permissions, then try again.") };return@launch
                     }
                     VoiceForegroundService.start(app, ::closeVoice)
-                    app?.let(VoiceBubbleService::start)
+                    if (!carVoiceSession) app?.let(VoiceBubbleService::start)
                 }
                 voice?.start()
                 holdForeground()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 app?.let(VoiceForegroundService::stop)
-                _state.update { it.copy(voiceError = "Voice could not start. Check microphone permission and the selected voice connection.") }
+                _state.update { it.copy(voiceError = if (carVoiceSession) "Could not start the microphone from the car. While parked, open FRIDAY on your phone and tap Prepare car voice in Voice and server."
+                    else "Voice could not start. Check microphone permission and the selected voice connection.") }
             }
         }
     }
 
-    fun closeVoice() { voice?.close(); app?.let(VoiceForegroundService::stop);app?.let(VoiceBubbleService::stop);_state.update { it.copy(voiceError=null) } }
+    fun closeVoice() { voiceStartJob?.cancel(); voiceStartJob = null; carVoiceSession = false; voice?.close(); app?.let(VoiceForegroundService::stop);app?.let(VoiceBubbleService::stop);_state.update { it.copy(voiceError=null) } }
     fun pauseVoiceFromChat() { voice?.pause("Voice paused. Resume when you're ready.") }
     fun toggleMicMute() { voice?.muteMic(voice?.state?.value?.micMuted == false) }
     fun toggleVoice() { if(voice?.active == true) closeVoice() else startVoice() }
@@ -621,6 +640,7 @@ class ChatViewModel(
     fun pauseVoice() {
         val context = app
         if (VoiceForegroundService.active.value && context != null) {
+            if (carVoiceSession) return
             // A foreground mic session keeps the mic: leave voice running and show the floating
             // bubble — but not over a picker (camera, files) the user just opened from the app.
             if (!attachmentPickerOpen && VoiceBubbleService.start(context)) return

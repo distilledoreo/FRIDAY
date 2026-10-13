@@ -51,9 +51,10 @@ fun computerVoiceIo(
     voiceName: String,
     bargeInEnabled: () -> Boolean,
     phoneMicDevices: () -> Set<String> = { emptySet() },
+    forcePhoneMic: Boolean = false,
 ): VoiceIo {
     val app = context.applicationContext
-    val audio = DuplexAudio(app, bargeInEnabled, phoneMicDevices)
+    val audio = DuplexAudio(app, bargeInEnabled, phoneMicDevices, forcePhoneMic)
     return VoiceIo(
         input = ComputerSpeechInput(audio, client),
         speaker = ComputerSpeaker(audio, client, voiceName),
@@ -145,6 +146,7 @@ class DuplexAudio(
     private val context: Context,
     private val captureWhilePlaying: () -> Boolean,
     private val phoneMicDevices: () -> Set<String> = { emptySet() },
+    private val forcePhoneMic: Boolean = false,
 ) : VoiceAudioFocus {
     private val audio = context.getSystemService(AudioManager::class.java)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -191,7 +193,7 @@ class DuplexAudio(
         if (captureJob?.isActive == true) return
         if (!PermissionBroker.isGranted(context, Manifest.permission.RECORD_AUDIO)) return
         val names = phoneMicDevices()
-        val phoneMic = audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        val phoneMic = forcePhoneMic || audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
             .any { it.type in BLUETOOTH_OUTPUTS && it.productName?.toString()?.trim() in names }
         // Media-style playback goes over Bluetooth media (A2DP) and leaves the device's mic alone.
         usage = if (phoneMic) AudioAttributes.USAGE_ASSISTANT else AudioAttributes.USAGE_VOICE_COMMUNICATION
@@ -211,9 +213,18 @@ class DuplexAudio(
         if (!micMuted) startCapture()
     }
 
+    @Volatile private var captureFailure: String? = null
+
+    fun checkCapture() { captureFailure?.let { throw IllegalStateException(it) } }
+
     private fun startCapture() {
         if (captureJob?.isActive == true) return
-        captureJob = scope.launch { capture(phoneMic) }
+        captureFailure = null
+        captureJob = scope.launch {
+            try { capture(phoneMic) }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { captureFailure = e.message ?: "Microphone capture failed." }
+        }
     }
 
     /** Mic off (muted) while the assistant keeps speaking: stop, and drop what it had. */
@@ -276,7 +287,7 @@ class DuplexAudio(
             while (offset < audioData.pcm.size) {
                 ensureActive()
                 val n = out.write(audioData.pcm, offset, minOf(chunk, audioData.pcm.size - offset))
-                if (n <= 0) break
+                if (n <= 0) error("Voice playback stopped.")
                 offset += n
             }
             // Wait until the written audio has actually come out of the speaker.
@@ -322,7 +333,7 @@ class DuplexAudio(
         val frame = rate / 50 // 20 ms
         val minBuffer = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val recorder = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+            if (forcePhoneMic) MediaRecorder.AudioSource.MIC else MediaRecorder.AudioSource.VOICE_COMMUNICATION,
             rate,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
@@ -330,12 +341,7 @@ class DuplexAudio(
         )
         if (recorder.state != AudioRecord.STATE_INITIALIZED) {
             recorder.release()
-            return
-        }
-        if (phoneMic) {
-            audio.getDevices(AudioManager.GET_DEVICES_INPUTS)
-                .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
-                ?.let(recorder::setPreferredDevice)
+            error("The phone microphone could not be initialized.")
         }
         var probeFrames = 0
         val echo = if (AcousticEchoCanceler.isAvailable()) AcousticEchoCanceler.create(recorder.audioSessionId) else null
@@ -343,14 +349,29 @@ class DuplexAudio(
         echo?.enabled = true
         noise?.enabled = true
         try {
+            if (phoneMic) {
+                val mic = audio.getDevices(AudioManager.GET_DEVICES_INPUTS)
+                    .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+                val accepted = mic != null && recorder.setPreferredDevice(mic)
+                check(!forcePhoneMic || accepted) { "Android could not select the phone microphone." }
+            }
             recorder.startRecording()
+            val routingDeadline = System.currentTimeMillis() + 2_000
             while (currentCoroutineContext().isActive) {
                 val buffer = ShortArray(frame)
                 var filled = 0
                 while (filled < frame) {
                     val n = recorder.read(buffer, filled, frame - filled)
-                    if (n <= 0) break
+                    if (n <= 0) error("Microphone recording stopped.")
                     filled += n
+                }
+                if (forcePhoneMic) {
+                    val routed = recorder.routedDevice
+                    check(routed?.type == AudioDeviceInfo.TYPE_BUILTIN_MIC ||
+                        (routed == null && System.currentTimeMillis() < routingDeadline)) {
+                        "Android did not route recording to the phone microphone. Stop voice and retry on the phone while parked."
+                    }
+                    if (routed == null) continue // Do not transcribe an unverified microphone route.
                 }
                 if (filled < frame) continue
                 if (playing && !captureWhilePlaying()) {
@@ -499,6 +520,7 @@ class ComputerSpeechInput(
     private suspend fun nextUtterance(): Pair<ShortArray, Long>? {
         val asked = System.currentTimeMillis()
         while (true) {
+            audio.checkCapture()
             val next = withTimeoutOrNull(250) { audio.utterances.receive() }
             if (next != null) {
                 if (next.second >= asked - 3_000) return next
