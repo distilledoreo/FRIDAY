@@ -53,7 +53,7 @@ data class WorkspaceState(
     /** The private stream a pending approval belongs to. */
     val privateSession: String? = null,
     /** The chosen model (this device's choice, as on the phone) and the computer's models; null uses its default. */
-    val model: String? = null, val models: List<String> = emptyList(),
+    val model: String? = null, val connection: String? = null, val models: List<String> = emptyList(),
 ) {
     val active get() = if (incognito) privateChat?.let { SharedChat(SyncItem(it.summary.id, 0), it) } else chats.firstOrNull { it.item.id == activeId }
     /** The open chat with the running job's steps so far. */
@@ -106,16 +106,15 @@ class WorkspaceController(
     }
     /** A saved chat's job keeps running on the computer; leaving it only stops following its progress here. */
     private fun canLeave() = !state.value.busy && !(state.value.incognito && state.value.activeJob != null)
-    private fun detach() { generation?.cancel(); generation = null }
+    private fun detach() { generation?.cancel(); generation = null; repository.gateway.privateMode(false) }
     private fun cleared(s: WorkspaceState) = s.copy(error = null, detachedReply = null, incognito = false, privateChat = null, attachments = emptyList(), streamingText = "",
         activeJob = null, liveEntries = emptyList(), approval = null, editingIndex = null, canvas = null, imageMode = false,
         groundingStatus = null, groundingSources = emptyList(), groundingResearch = null, privateSession = null)
     override fun newChat(project: String?) { if (canLeave()) { detach(); mutable.update { cleared(it).copy(activeId = null, draft = "", projectId = project) } } }
     /** A private chat; [freshSlate] leaves saved memories out too. */
-    fun newIncognito(freshSlate: Boolean = false) { if (!canLeave()) return; newChat(); mutable.update { it.copy(incognito = true, freshSlate = freshSlate) } }
+    fun newIncognito(freshSlate: Boolean = false) { if (!canLeave()) return; newChat(); repository.gateway.privateMode(true); mutable.update { it.copy(incognito = true, freshSlate = freshSlate) } }
     fun removeAttachment(id: String) { mutable.update { it.copy(attachments = it.attachments.filterNot { a -> a.id == id }) } }
     fun upload(name: String, mime: String, bytes: ByteArray, attachToDraft: Boolean = true) = action { identity ->
-        require(!state.value.incognito) { "File uploads are disabled in this private chat." }
         require(bytes.size <= 25 * 1024 * 1024) { "File exceeds 25 MB." }
         require(state.value.attachments.size < 8) { "Attach at most eight files." }
         val file = repository.gateway.upload(name, mime, bytes)
@@ -129,6 +128,15 @@ class WorkspaceController(
             note = file["note"]?.jsonPrimitive?.contentOrNull ?: if (!image && text == null) "Use the file tool to inspect this document." else null)
         if (identity == epoch && attachToDraft) mutable.update { it.copy(attachments = it.attachments + attachment) }
     }
+    fun useModelConnection(settings: ModelConnection?) = action { identity ->
+        settings?.validate()?.let { error(it) }
+        val connection = settings?.let { value -> repository.gateway.request("/workspace/model-connections", "POST", buildJsonObject {
+            put("base_url", value.address.trim()); put("model", value.model.trim()); put("api_key", value.apiKey.trim()); put("timeout_seconds", value.timeout.toInt())
+        }).jsonObject.text("id") }
+        val previous = state.value.connection
+        if (identity == epoch) mutable.update { it.copy(connection = connection, notice = if (connection == null) "Using the computer's default connection." else "Using your model connection through the computer. Credentials stay in memory for this session.") }
+        if (previous != null) runCatching { repository.gateway.request("/workspace/model-connections/$previous", "DELETE") }
+    }
     fun reportError(message: String) { mutable.update { it.copy(error = message) } }
     override fun select(id: String) {
         if (!canLeave()) return
@@ -138,6 +146,7 @@ class WorkspaceController(
         adopt(epoch)
     }
     fun lock() {
+        state.value.connection?.let(repository.gateway::closeModelConnection)
         epoch++; memoryQuery = ""; memoryStale = false; operation?.cancel(); generation?.cancel(); watching?.cancel(); repository.gateway.lock(); repository.forget(); mutable.value = WorkspaceState()
     }
     fun close() { lock(); polling?.cancel() }
@@ -301,7 +310,7 @@ class WorkspaceController(
             try {
                 repository.gateway.stream("/workspace/chat/ephemeral", JsonObject(buildJsonObject {
                     put("chat", encodeConversation(next)); put("interface_prompt", if (old.preferences.interactiveAnswers) clientInterfacePrompt() else "")
-                    put("use_memory", !old.freshSlate)
+                    put("use_memory", !old.freshSlate); repository.gateway.privateFileSession()?.let { put("file_session", it) }
                 } + turn.fields())) { event ->
                     if (identity == epoch) {
                         event["error"]?.jsonPrimitive?.contentOrNull?.let { error(it) }
@@ -353,7 +362,7 @@ class WorkspaceController(
         }
         val block = g.blocksWeb(query)
         if (block) note += g.OPT_OUT_NOTE
-        return TurnOptions(note, block, old.model)
+        return TurnOptions(note, block, old.model, old.connection)
     }
     /** After a reply that used public sources, checks which of its links match pages actually read. */
     private fun finishGrounding() {

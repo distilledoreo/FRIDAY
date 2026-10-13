@@ -72,6 +72,30 @@ class BrowserChatTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post('/workspace/chat/ephemeral', json={'chat': json.dumps(self.chat())}, headers={'Authorization': ''})
         self.assertEqual(response.status_code, 401)
         self.assertEqual(self.inputs, [])
+    async def test_private_attachment_uses_only_its_ram_session(self):
+        from types import SimpleNamespace
+        from desktop.workspace.workspace import Workspace
+        import pathlib
+        with tempfile.TemporaryDirectory() as root:
+            private = Workspace(root)
+            file = private.put_file(b'private-image', 'photo.jpg', 'image/jpeg')
+            session_id = 'a' * 32
+            class Sessions:
+                def get(self, ident):
+                    if ident != session_id: raise HTTPException(410)
+                    return SimpleNamespace(store=private)
+            self.workspace.incognito = Sessions()
+            chat = self.chat()
+            chat['messages'][0]['attachments'] = [{'name': 'photo.jpg', 'kind': 'image', 'path': 'remote:' + file['id'], 'remoteFileId': file['id']}]
+            response = await self.client.post('/workspace/chat/ephemeral', json={'chat': json.dumps(chat), 'file_session': session_id})
+            self.assertEqual(response.status_code, 200)
+            self.assertIn('data:image/jpeg;base64,', self.inputs[-1][0][1]['content'][2]['image_url']['url'])
+            self.assertEqual(self.workspace.items(), [])
+            self.assertEqual(self.workspace.jobs(), [])
+            with self.workspace.db() as db: self.assertEqual(db.execute('SELECT COUNT(*) FROM files').fetchone()[0], 0)
+            bad = await self.client.post('/workspace/chat/ephemeral', json={'chat': json.dumps(chat), 'file_session': 'b' * 32})
+            self.assertEqual(bad.status_code, 410)
+
     async def test_saved_job_stream_finishes_with_the_canonical_saved_reply(self):
         response = await self.client.post('/workspace/items/private/continue', json={'revision': 0, 'payload': {'chat': json.dumps(self.chat())}})
         self.assertEqual(response.status_code, 200)

@@ -52,7 +52,7 @@ fun main() = onWasmReady {
         // The same voice loop as the phone: streamed sentences, talking over FRIDAY, and spoken approvals.
         var voiceEngine by remember { mutableStateOf(DeviceChoices.voiceEngine) }
         var bargeIn by remember { mutableStateOf(DeviceChoices.bargeIn) }
-        var notify by remember { mutableStateOf(DeviceChoices.notifications && notificationsSupported) }
+        var notify by remember { mutableStateOf(DeviceChoices.notificationMode) }
         var notifyNote by remember { mutableStateOf<String?>(null) }
         val navigation = remember { kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 4) }
         // The browser's own voice where chosen and supported, as the phone can use its own; otherwise the computer's.
@@ -82,7 +82,7 @@ fun main() = onWasmReady {
         LaunchedEffect(state.model, state.models) { if (state.models.isNotEmpty()) DeviceChoices.model = state.model }
         // Background notices, by the phone's rules; check-ins are refreshed every fifteen minutes.
         LaunchedEffect(state.connected, notify) {
-            if (!state.connected || !notify) return@LaunchedEffect
+            if (!state.connected || notify != "open") return@LaunchedEffect
             val seen = DeviceChoices.seen()
             val planner = NoticePlanner({ path, method, body -> gateway.request(path, method, body) }, seen, PlatformSystem::currentTimeMillis)
             var lastCheckins = 0L
@@ -95,6 +95,23 @@ fun main() = onWasmReady {
                 val away = document.asDynamic().hidden == true || document.asDynamic().hasFocus() != true
                 if (away) notices.forEach { n -> showNotice(n.title, n.text, n.key) { navigation.tryEmit(n.open) } }
                 kotlinx.coroutines.delay(60_000)
+            }
+        }
+        DisposableEffect(vm) {
+            val leave: (Event) -> Unit = { vm.lock() }
+            window.addEventListener("pagehide", leave)
+            onDispose { window.removeEventListener("pagehide", leave) }
+        }
+        DisposableEffect(Unit) {
+            val listener: (Event) -> Unit = { e -> val data = e.asDynamic().data
+                if (data?.kind == "friday-notice" && data.open is String) navigation.tryEmit(data.open as String) }
+            window.navigator.asDynamic().serviceWorker?.addEventListener("message", listener)
+            onDispose { window.navigator.asDynamic().serviceWorker?.removeEventListener("message", listener) }
+        }
+        LaunchedEffect(state.connected) {
+            if (state.connected && window.location.hash.startsWith("#notice=")) {
+                navigation.emit(com.localfirst.assistant.platform.PlatformNet.decodeUrl(window.location.hash.removePrefix("#notice=")))
+                window.history.replaceState(null, "", window.location.pathname)
             }
         }
         val voiceState by voice.state.collectAsState()
@@ -132,20 +149,23 @@ fun main() = onWasmReady {
             onRestoreBackup = { pickBrowserFile(".zip,application/zip") { file ->
                 scope.launch { try { vm.restoreBackup(fileBytes(file)) } catch (e: Exception) { vm.reportError(e.message ?: "Backup could not be read") } } } },
             briefing = briefing, navigation = navigation) {
+            var connection by remember { mutableStateOf(com.localfirst.assistant.client.ModelConnection()) }
+            androidx.compose.material3.Text("Model connection", style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
+            androidx.compose.material3.Text("Use the computer default, or an OpenAI-compatible endpoint reached by the computer. Credentials last for this signed-in session.")
+            com.localfirst.assistant.ui.workspace.ModelConnectionFields(connection, { connection = it }, enabled = state.idle)
+            androidx.compose.material3.OutlinedButton({ vm.useModelConnection(connection) }, enabled = state.idle) { androidx.compose.material3.Text("Use this connection") }
+            androidx.compose.material3.TextButton({ vm.useModelConnection(null) }, enabled = state.idle) { androidx.compose.material3.Text("Use computer default") }
             DeviceSettingsSection(DeviceSettings(voiceEngine, buildList {
                     add("computer" to "Computer voice (recognition and speech on your computer)")
                     add("browser" to if (audio.browserIo != null) "This browser's voice" else "This browser's voice (unavailable here; uses the computer's)")
-                }, bargeIn, notify, notificationsSupported, notifyNote ?: if (!notificationsSupported) "Notifications need HTTPS or localhost and a browser that supports them." else null),
+                }, bargeIn, notify, notificationsSupported, pushSupported, notifyNote ?: if (!notificationsSupported) "Notifications need HTTPS or localhost and a browser that supports them." else null),
                 onVoiceEngine = { voiceEngine = it; DeviceChoices.voiceEngine = it; if (voice.active) { voice.close() } },
                 onBargeIn = { bargeIn = it; DeviceChoices.bargeIn = it },
-                onNotifications = { on ->
-                    if (!on) { notify = false; DeviceChoices.notifications = false }
-                    else scope.launch {
-                        val granted = runCatching { requestNotificationPermission() }.getOrDefault(false)
-                        notify = granted; DeviceChoices.notifications = granted
-                        notifyNote = if (granted) null else "This browser blocked notifications. Allow them for this site, then try again."
-                    }
-                })
+                onNotifications = { mode -> scope.launch {
+                    try { setNotificationMode(gateway, mode); notify = mode; notifyNote = null }
+                    catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                    catch (e: Exception) { notifyNote = e.message ?: "Notification settings could not be changed." }
+                } })
             val legacy = remember { legacyChats() }
             if (legacy.isNotEmpty()) androidx.compose.material3.OutlinedButton({ vm.importLegacy(legacy, ::importId) }, enabled = !state.busy) { androidx.compose.material3.Text("Import ${legacy.size} older browser chats") }
             androidx.compose.material3.Text("Import copies older local chats into shared history. The originals stay in this browser.")

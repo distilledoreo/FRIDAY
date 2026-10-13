@@ -46,3 +46,9 @@ The common interpreter/interface tests run on both Android/JVM and Node. Shared 
 Robolectric needs a writable Java user-home/cache directory. Browser smoke checks used the staged app and a local fixture gateway, exercising sign-in, real chat persistence, interactive calculator rendering and memory controls. Real two-device behavior, broad browser/accessibility coverage and live model/provider verification still require device testing. Existing Android lint findings and the environment-dependent bubblewrap analysis test are outside this port.
 
 Browser OAuth applications must register the gateway’s public `/friday/oauth-callback` URL. Codes are one-use, bound to state and PKCE; provider credentials remain in the desktop vault.
+
+Browser notifications have three per-device modes: off, while the tab is open, or Web Push with the tab
+closed. The latter persists an encrypted push subscription, not the API token, and uses generic notification
+text. Model connection fields and validation are shared with Android; browser custom model calls are proxied
+by the PC with credentials kept in process memory. Incognito attachments and generated artifacts use the
+same RAM-backed session service as Android and are removed when the private chat ends.

@@ -179,6 +179,30 @@ class ChatToolTests(unittest.IsolatedAsyncioTestCase):
         # Recalled memories sit last in the system prompt; project text is not mistaken for them.
         self.assertTrue(self.inputs[0][0][0]['content'].endswith('1420 Oak Hollow Dr.'))
 
+    async def test_custom_model_job_continues_after_its_client_connection_closes(self):
+        from unittest.mock import patch
+        requests = []
+        def respond(request):
+            requests.append(request)
+            delta = {'tool_calls': [{'index': 0, 'id': 'custom-call', 'type': 'function', 'function': {'name': 'web_search', 'arguments': '{"query":"tea"}'}}]} if len(requests) == 1 else {'content': 'Done through custom model.'}
+            return httpx.Response(200, text='data: ' + json.dumps({'choices': [{'delta': delta}]}) + '\n\ndata: [DONE]\n\n')
+        client_type = httpx.AsyncClient
+        def client(**kwargs): return client_type(transport=httpx.MockTransport(respond), **kwargs)
+        created = await self.client.post('/workspace/model-connections', json={'base_url': 'https://model.example/v1', 'model': 'chosen', 'api_key': 'synthetic-model-key'})
+        self.assertEqual(created.status_code, 200)
+        connection = created.json()['id']
+        with patch('desktop.workspace.model_connections.httpx.AsyncClient', client):
+            response = await self.client.post('/workspace/items/' + chat()['summary']['id'] + '/continue', json={
+                'revision': 0, 'payload': {'chat': json.dumps(chat('Hello'))}, 'connection': connection})
+            self.assertEqual(response.status_code, 200)
+            await self.client.delete('/workspace/model-connections/' + connection)
+            job = await self.until(response.json()['id'], 'completed')
+        self.assertEqual(job['result'], 'Done through custom model.')
+        self.assertEqual(len(requests), 2)
+        self.assertTrue(all(r.headers['Authorization'] == 'Bearer synthetic-model-key' for r in requests))
+        self.assertNotIn('synthetic-model-key', json.dumps(job))
+        self.assertNotIn('synthetic-model-key', json.dumps(self.workspace.items()))
+
     async def test_previous_private_results_still_require_web_approval(self):
         prior = chat('Find my contact')
         prior['messages'] += [
@@ -275,6 +299,16 @@ class ToolSpecTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(made, [])
         self.assertTrue(tools.needs_confirmation('read_account_inbox'))
         self.assertFalse(tools.needs_confirmation('list_tasks'))
+
+    async def test_attachment_text_is_private_context_not_user_authored_search_text(self):
+        from desktop.workspace.workspace import _user_message, _for_model
+        from desktop.workspace.private_leak import identifying_details
+        message = _user_message({'content': 'Look up the contact in this document', 'attachments': [
+            {'name': 'contact.txt', 'kind': 'document', 'text': 'Contact: priya.k@example.org'}]}, None)
+        async def judge(messages): raise AssertionError('Contact details need no model judgment')
+        call = {'function': {'name': 'web_search', 'arguments': '{"query":"priya.k@example.org"}'}}
+        self.assertEqual(await identifying_details([message], call, judge), ['priya.k@example.org'])
+        self.assertNotIn('private_context', _for_model([message])[0])
 
     def test_sources_only_keep_public_https_links(self):
         self.assertEqual(sources('web_search', {'evidence': [{'url': 'javascript:alert(1)'}, {'url': 'https://a.example/x', 'title': 'A'}]}),

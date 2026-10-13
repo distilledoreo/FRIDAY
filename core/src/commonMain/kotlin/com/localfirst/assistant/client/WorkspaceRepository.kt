@@ -11,6 +11,9 @@ val wireJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 interface WorkspaceGateway {
     fun connect(baseUrl: String, token: String)
     fun lock()
+    fun privateMode(enabled: Boolean) {}
+    fun closeModelConnection(id: String) {}
+    suspend fun privateFileSession(): String? = null
     suspend fun artifact(id: String) { error("File downloads are unavailable on this client") }
     suspend fun upload(name: String, mime: String, bytes: ByteArray): JsonObject { error("Uploads are unavailable on this client") }
     /** A computer file's bytes, for backups that include attachment images. */
@@ -118,10 +121,11 @@ class WorkspaceRepository(val gateway: WorkspaceGateway) {
 }
 
 /** Per-turn choices sent with a turn: the pre-search evidence note, the user's no-search request, and the chosen model. */
-data class TurnOptions(val note: String = "", val blockWeb: Boolean = false, val model: String? = null) {
+data class TurnOptions(val note: String = "", val blockWeb: Boolean = false, val model: String? = null, val connection: String? = null) {
     fun fields(): Map<String, JsonElement> = buildMap {
         if (note.isNotEmpty()) put("turn_note", JsonPrimitive(note.take(40000)))
         if (blockWeb) put("block_web", JsonPrimitive(true))
+        connection?.let { put("connection", JsonPrimitive(it)) }
         model?.takeIf { it.isNotBlank() }?.let { put("model", JsonPrimitive(it)) }
     }
 }

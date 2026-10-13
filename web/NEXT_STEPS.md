@@ -42,8 +42,14 @@ The remaining non-phone parity features are also implemented:
   image generation; saved-memory search is available only when memories are enabled. Approvals remain usable
   while the private stream waits, and stopping or leaving clears its session.
 - Each browser keeps its own model selection, computer or browser voice choice, and barge-in setting.
-- Opt-in desktop notifications cover completed tasks, approvals, PC questions, morning briefs and check-ins
-  while the tab is in the background. The tab must remain open; no background push service is installed.
+  Model endpoint, model name, API key and timeout use the same shared form and validation on Android and web.
+  Browser custom endpoints are reached by the PC; credentials live only in server memory. Lock revokes the client connection; an existing PC job
+  keeps its connection until it finishes so closing a tab does not interrupt authorized work.
+  A server restart requires reconnecting a custom endpoint before starting new turns.
+- Notifications offer No notifications, With tab open, and With tab closed. The open-tab mode polls while
+  connected; closed-tab mode uses a service worker and encrypted Web Push, with generic lock-screen text.
+  Only the push subscription is persisted, never the gateway token. Notifications depend on browser/OS
+  permissions and background settings; closed-tab mode continues after Lock until explicitly disabled.
 
 ## Service requirements and behavior
 
@@ -55,9 +61,10 @@ Images, PC tasks, Code and accounts depend on their existing PC services. Unavai
 errors on their screen. Browser OAuth applications must register the public gateway's
 `/friday/oauth-callback` URL; native redirects continue to work independently.
 
-Private chats can use public search/page reads and create files or images, but cannot upload attachments,
-run Python or access accounts. They use saved memories when selected, and never recall past chats or project context.
-Artifacts created by explicit tool calls remain in Library even though the conversation is not saved. Model and public-source services
+Private chats can attach images/documents, use public search/page reads, and create files or images,
+but cannot run Python or access accounts. Files and generated images use Android’s RAM-backed incognito
+sessions, are absent from Library/history, and are deleted on exit/Lock (or after the server idle expiry). They use saved memories when selected, and never recall past chats or project context.
+Model and public-source services
 still receive the requests needed to answer. Closing the request cancels private generation; it cannot
 be resumed after a tab or server restart. Ordinary PC jobs continue if a browser disconnects.
 
@@ -89,7 +96,14 @@ errors. Both the Android debug APK and production browser bundle build successfu
 
 Continuation verification: 485 Kotlin tests and 65 relevant server tests pass. A local scripted browser
 fixture verifies private-detail approvals and denial without saving a conversation. Real microphone, provider
-OAuth, GPU generation, native PC task execution and notification delivery still require device/service checks.
+OAuth, GPU generation, native PC task execution and OS notification delivery still require device/service checks.
 
 To publish the verified Android build, run `python3 server/scripts/publish-apk.py app/build/outputs/apk/debug/app-debug.apk`.
 The publisher validates the package and signature, requires a higher version code, and replaces the update manifest atomically.
+
+Notification service-worker checks: `node web/tests/notifications-sw.test.cjs`. Server regressions: `python -m unittest desktop.workspace.tests.test_notifications desktop.workspace.tests.test_model_connections`.
+
+Version 0.25.2 verification: 491 Kotlin tests, 80 relevant server tests, both client builds and the service-worker
+unit checks pass. A browser fixture confirms the three notification options, a private image sent through a
+custom model connection, no persistent workspace records, and RAM file deletion on exit. Real OS push delivery
+is not verified. Closed-tab notifications require HTTPS/localhost, permission and browser push support.

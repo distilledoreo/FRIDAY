@@ -21,6 +21,40 @@ class FetchWorkspaceGateway : WorkspaceGateway {
     private var token = ""
     private var epoch = 0
     private val controllers = mutableListOf<dynamic>()
+    private var privateFiles: String? = null
+    private var privateEnabled = false
+    private val privateMutex = kotlinx.coroutines.sync.Mutex()
+    override fun closeModelConnection(id: String) {
+        if (token.isBlank()) return
+        val headers = Headers(); headers.set("Authorization", "Bearer $token")
+        val init = js("({})"); init.method = "DELETE"; init.headers = headers; init.keepalive = true
+        window.fetch("$base/workspace/model-connections/$id", init.unsafeCast<RequestInit>()).catch { null }
+    }
+    override fun privateMode(enabled: Boolean) {
+        val id = privateFiles
+        privateFiles = null
+        privateEnabled = enabled
+        if (id != null && token.isNotBlank()) {
+            val headers = Headers(); headers.set("Authorization", "Bearer $token")
+            val init = js("({})"); init.method = "DELETE"; init.headers = headers; init.keepalive = true
+            window.fetch("$base/workspace/incognito/$id", init.unsafeCast<RequestInit>()).catch { null }
+        }
+    }
+    override suspend fun privateFileSession(): String? {
+        if (!privateEnabled) return null
+        privateMutex.lock()
+        try {
+            privateFiles?.let { return it }
+            val identity = epoch
+            val id = fetch("/workspace/incognito", "POST", "{}", "application/json") { wireJson.parseToJsonElement(it.text().await()).jsonObject.string("id") }
+            check(privateEnabled && identity == epoch) { "Private session ended." }
+            privateFiles = id
+            return id
+        } finally { privateMutex.unlock() }
+    }
+    private suspend fun filePath(path: String): String = if (privateEnabled &&
+        (path.startsWith("/workspace/files") || path.startsWith("/workspace/images") && path != "/workspace/images/health" || path == "/workspace/create-file"))
+        "/workspace/incognito/${privateFileSession()}" + path.removePrefix("/workspace") else path
     override fun connect(baseUrl: String, token: String) {
         lock()
         val parsed = js("new URL(baseUrl || window.location.origin, window.location.origin)")
@@ -30,7 +64,7 @@ class FetchWorkspaceGateway : WorkspaceGateway {
         require(this.token.isNotBlank()) { "Enter your computer API token." }
     }
     fun origin(): String { val address = base; return js("new URL(address || window.location.origin, window.location.origin).origin") as String }
-    override fun lock() { epoch++; token = ""; controllers.toList().forEach { it.abort() }; controllers.clear() }
+    override fun lock() { privateMode(false); epoch++; token = ""; controllers.toList().forEach { it.abort() }; controllers.clear() }
     private fun valid(path: String) = path.startsWith("/workspace/") || path in setOf("/transcribe", "/speak", "/extract", "/v1/models", "/grounding", "/grounding/page") || path.startsWith("/images?") || path.startsWith("/image?")
     private suspend fun <T> fetch(path: String, method: String, body: dynamic = null, mime: String? = null, extra: Map<String, String> = emptyMap(), timeoutMs: Int = 120000, read: suspend (Response) -> T): T {
         require(valid(path) && !path.substringBefore('?').contains("..")) { "Unknown computer path." }
@@ -59,11 +93,11 @@ class FetchWorkspaceGateway : WorkspaceGateway {
             return result
         } finally { cancellation?.dispose(); window.clearTimeout(timeout); controllers.remove(controller); controller.abort() }
     }
-    override suspend fun request(path: String, method: String, body: JsonObject?): JsonElement = fetch(path, method, body?.toString(), if (body != null) "application/json" else null, timeoutMs = if (path.contains("/changes")) 15000 else 120000) { wireJson.parseToJsonElement(it.text().await()) }
-    suspend fun bytes(path: String, method: String = "GET", data: ByteArray? = null, mime: String? = null): ByteArray = fetch(path, method, data?.buffer(), mime) { response ->
+    override suspend fun request(path: String, method: String, body: JsonObject?): JsonElement = fetch(filePath(path), method, body?.toString(), if (body != null) "application/json" else null, timeoutMs = if (path.contains("/changes")) 15000 else 120000) { wireJson.parseToJsonElement(it.text().await()) }
+    suspend fun bytes(path: String, method: String = "GET", data: ByteArray? = null, mime: String? = null): ByteArray = fetch(filePath(path), method, data?.buffer(), mime) { response ->
         val array = Int8Array(response.arrayBuffer().await()); ByteArray(array.length) { array.asDynamic()[it] as Byte }
     }
-    suspend fun binaryJson(path: String, data: ByteArray, mime: String, headers: Map<String, String> = emptyMap()): JsonObject = fetch(path, "POST", data.buffer(), mime, headers) { wireJson.parseToJsonElement(it.text().await()).jsonObject }
+    suspend fun binaryJson(path: String, data: ByteArray, mime: String, headers: Map<String, String> = emptyMap()): JsonObject = fetch(filePath(path), "POST", data.buffer(), mime, headers) { wireJson.parseToJsonElement(it.text().await()).jsonObject }
     override suspend fun upload(name: String, mime: String, bytes: ByteArray): JsonObject {
         val encoded = com.localfirst.assistant.platform.PlatformNet.encodeUrl(name)
         val file = binaryJson("/workspace/files", bytes, mime, mapOf("X-File-Name" to encoded))
@@ -109,7 +143,7 @@ class FetchWorkspaceGateway : WorkspaceGateway {
         fetch(path, "POST", file, mime, timeoutMs = 600000) { wireJson.parseToJsonElement(it.text().await()) }
     override suspend fun artifact(id: String) {
         require(Regex("[a-f0-9]{32}").matches(id))
-        fetch("/workspace/files/$id", "GET") { response ->
+        fetch(filePath("/workspace/files/$id"), "GET") { response ->
             val url = URL.createObjectURL(response.blob().await())
             val link = document.createElement("a") as HTMLAnchorElement
             link.href = url; link.download = Regex("filename=\"([^\"]+)\"").find(response.headers.get("Content-Disposition").orEmpty())?.groupValues?.get(1) ?: "assistant-file"

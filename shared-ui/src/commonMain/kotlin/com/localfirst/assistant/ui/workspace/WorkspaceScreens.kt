@@ -318,7 +318,7 @@ private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState, code: com
                 imageMode = state.imageMode, imageSummary = state.imageSettings.summary, onImageSettings = { imageOptions = true; features?.open("images") },
                 onExitImageMode = { vm.setImageMode(false) })
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                if (onAttach != null && !state.incognito) DropdownMenuItem(text = { Text("Files") }, onClick = { menu = false; onAttach() })
+                if (onAttach != null) DropdownMenuItem(text = { Text("Files") }, onClick = { menu = false; onAttach() })
                 DropdownMenuItem(text = { Text("Search the web") }, onClick = { menu = false; vm.setDraft("Search the web for: " + state.draft) })
                 if (features != null && !state.incognito) DropdownMenuItem(text = { Text("Research deeply") }, enabled = state.draft.isNotBlank() && !state.busy,
                     onClick = { menu = false; if (vm.proposeResearch(features)) openFriday(null, null) })
@@ -346,10 +346,10 @@ private fun SettingsScreen(vm: WorkspaceController, state: WorkspaceState, extra
     ScreenColumn("Settings") {
         if (state.models.isNotEmpty()) {
             Text("Model", style = MaterialTheme.typography.titleMedium)
-            Text("This client's choice, like the phone's model setting. Chats and voice on this device use it; other clients keep their own.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+            Text(if (state.connection != null) "Your custom connection below is active. Return to the computer default to use these models." else "This client's choice, like the phone's model setting. Chats and voice on this device use it; other clients keep their own.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
             (listOf<String?>(null) + state.models).forEach { id ->
-                Row(Modifier.fillMaxWidth().clickable { vm.setModel(id) }, verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(state.model == id, { vm.setModel(id) }); Text(id ?: "Computer default", style = MaterialTheme.typography.bodyLarge)
+                Row(Modifier.fillMaxWidth().clickable(enabled = state.connection == null) { vm.setModel(id) }, verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(state.model == id && state.connection == null, { vm.setModel(id) }, enabled = state.connection == null); Text(id ?: "Computer default", style = MaterialTheme.typography.bodyLarge)
                 }
             }
             HorizontalDivider()

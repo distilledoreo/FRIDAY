@@ -357,7 +357,11 @@ object DeviceChoices {
     var model: String? get() = read("model"); set(value) = write("model", value)
     var voiceEngine: String get() = read("voice") ?: "computer"; set(value) = write("voice", value)
     var bargeIn: Boolean get() = read("bargeIn") != "false"; set(value) = write("bargeIn", value.toString())
-    var notifications: Boolean get() = read("notifications") == "true"; set(value) = write("notifications", value.toString())
+    var notificationMode: String
+        get() = read("notificationMode")?.takeIf { it in setOf("off", "open", "closed") } ?: if (read("notifications") == "true") "open" else "off"
+        set(value) = write("notificationMode", value)
+    var pushId: String? get() = read("pushId"); set(value) = write("pushId", value)
+    var pushOrigin: String? get() = read("pushOrigin"); set(value) = write("pushOrigin", value)
     /** What notifications already announced on this device. */
     fun seen(): MutableMap<String, String> = runCatching {
         Json.parseToJsonElement(read("notices") ?: "{}").jsonObject.mapValues { it.value.jsonPrimitive.content }.toMutableMap()
@@ -376,4 +380,47 @@ fun showNotice(title: String, body: String, tag: String, open: () -> Unit) {
     val options = js("({})"); options.body = body; options.tag = tag
     val notice = js("new Notification(title, options)")
     notice.onclick = { _: dynamic -> window.focus(); open(); notice.close() }
+}
+
+val pushSupported: Boolean get() = notificationsSupported && (js("'serviceWorker' in navigator && 'PushManager' in window") as Boolean)
+
+suspend fun setNotificationMode(gateway: FetchWorkspaceGateway, mode: String) {
+    require(mode in setOf("off", "open", "closed"))
+    if (mode != "off") check(requestNotificationPermission()) { "Notifications were blocked. Allow them for this site, then try again." }
+    if (mode == "closed") {
+        check(pushSupported) { "This browser does not support notifications with the tab closed." }
+        (kotlinx.browser.window.navigator.asDynamic().serviceWorker.register("/friday/notifications-sw.js", js("({scope:'/friday/'})")) as kotlin.js.Promise<dynamic>).await()
+        val registration = (window.navigator.asDynamic().serviceWorker.ready as kotlin.js.Promise<dynamic>).await()
+        val key = gateway.request("/workspace/notifications/key").jsonObject.string("key")
+        val decoded = window.atob(key.replace('-', '+').replace('_', '/') + "=".repeat((4 - key.length % 4) % 4))
+        val bytes = org.khronos.webgl.Uint8Array(decoded.length)
+        for (i in decoded.indices) bytes.asDynamic()[i] = decoded[i].code
+        var subscription = (registration.pushManager.getSubscription() as kotlin.js.Promise<dynamic>).await()
+        if (subscription != null) {
+            val previous = subscription.options?.applicationServerKey
+            val same = if (previous == null) false else {
+                val stored = js("new Uint8Array(previous)")
+                stored.length == decoded.length && decoded.indices.all { i -> stored[i] == decoded[i].code }
+            }
+            if (!same) { (subscription.unsubscribe() as kotlin.js.Promise<dynamic>).await(); subscription = null }
+        }
+        if (subscription == null) {
+            val options = js("({userVisibleOnly:true})"); options.applicationServerKey = bytes
+            subscription = (registration.pushManager.subscribe(options) as kotlin.js.Promise<dynamic>).await()
+        }
+        val json = js("JSON.stringify(subscription.toJSON())") as String
+        val response = gateway.request("/workspace/notifications/subscriptions", "POST", Json.parseToJsonElement(json).jsonObject).jsonObject
+        DeviceChoices.pushId = response.string("id"); DeviceChoices.pushOrigin = gateway.origin()
+    } else {
+        DeviceChoices.pushId?.takeIf { DeviceChoices.pushOrigin == gateway.origin() }?.let {
+            gateway.request("/workspace/notifications/subscriptions/$it", "DELETE")
+        }
+        if (pushSupported) {
+            val registration = (window.navigator.asDynamic().serviceWorker.getRegistration("/friday/") as kotlin.js.Promise<dynamic>).await()
+            val subscription = if (registration != null) (registration.pushManager.getSubscription() as kotlin.js.Promise<dynamic>).await() else null
+            if (subscription != null) (subscription.unsubscribe() as kotlin.js.Promise<dynamic>).await()
+        }
+        DeviceChoices.pushId = null; DeviceChoices.pushOrigin = null
+    }
+    DeviceChoices.notificationMode = mode
 }

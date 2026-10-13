@@ -80,6 +80,25 @@ def _conversation_entries(messages):
     return entries
 
 
+
+def _user_message(entry, store, structured=False):
+    parts = [{'type': 'text', 'text': entry.get('content', '')}]
+    for attachment in entry.get('attachments', []):
+        if not isinstance(attachment, dict): raise HTTPException(400, 'Invalid attachment')
+        parts.append({'type': 'text', 'text': f"\nFile {attachment.get('name', 'file')}; file_id={attachment.get('remoteFileId', '')}\n" + str(attachment.get('text') or '')[:24000]})
+        paths = [attachment.get('path')] if attachment.get('kind') == 'image' else attachment.get('pageImages', [])
+        for path in paths:
+            if path and isinstance(path, str) and path.startswith('remote:'):
+                info = store.file(path[7:])
+                if info['size'] > 3 * 1024 * 1024: continue
+                data = base64.b64encode((store.files / info['id']).read_bytes()).decode()
+                parts.append({'type': 'image_url', 'image_url': {'url': 'data:' + info['mime'] + ';base64,' + data}})
+    message = {'role': 'user', 'content': parts if structured or entry.get('attachments') else entry.get('content', '')}
+    private_text = '\n'.join(str(a.get('text') or '')[:24000] for a in entry.get('attachments', []))
+    if private_text: message['private_context'] = private_text
+    return message
+
+
 def _for_model(messages):
     """Display-only fields stay out of the model request."""
     return [{k: v for k, v in m.items() if k not in {'sources', 'private_context'}} for m in messages]
@@ -410,6 +429,7 @@ class TurnOptions(BaseModel):
     block_web: bool = False
     # One of the gateway's /v1/models; empty uses its default.
     model: str | None = Field(default=None, pattern=MODEL_ID)
+    connection: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')
 
 
 class ContinueItem(SyncItem, TurnOptions):
@@ -443,6 +463,10 @@ def install(app, auth, root, model, search, fetch):
     router = APIRouter(prefix='/workspace', dependencies=auth)
     running = {}
     phases = {}
+    from .model_connections import enable as enable_connections
+    connections = enable_connections(router)
+    from .notifications import enable as enable_notifications
+    workspace.notifications = enable_notifications(app, router, workspace)
     # Set when a job becomes due now, so the worker starts it without waiting for its next poll.
     wake = asyncio.Event()
     @app.get('/friday/oauth-callback', include_in_schema=False)
@@ -607,6 +631,7 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
             if job['status'] in {'scheduled', 'running'}:
                 raise HTTPException(409, 'Cancel the task before deleting it')
             db.execute('DELETE FROM jobs WHERE id=?', (job_id,))
+        connections.leases.pop(job_id, None)
         return {'deleted': True}
 
     @router.post('/jobs/{job_id}/approval')
@@ -637,6 +662,7 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
             raise HTTPException(404, 'Job not found')
         workspace.update_job(job_id, status={'pause': 'paused', 'resume': 'scheduled', 'cancel': 'cancelled'}[action],
                              run_at=time.time() if action == 'resume' else job['run_at'])
+        if action == 'cancel': connections.leases.pop(job_id, None)
         if action in {'pause', 'cancel'} and phases.get(job_id) == 'model' and job_id in running:
             running[job_id].cancel()
         elif action == 'cancel' and job['status'] == 'waiting':
@@ -651,7 +677,9 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
     # The running job's message list, so its stream can show tool steps as they happen.
     live = {}
 
-    async def generate(messages, available_tools, report, model_id=None):
+    async def generate(messages, available_tools, report, model_id=None, connection=None, job_id=None):
+        if connection:
+            return await connections.generate(connection, messages, available_tools, report, job=job_id)
         chosen = {'model_id': model_id} if model_id else {}
         stream = getattr(model, 'stream', None)
         if stream is not None:
@@ -696,6 +724,7 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
         interface_prompt: str = Field(default='', max_length=40000)
         # Incognito with saved memories (Android's default) rather than a fresh slate. Past chats are never recalled.
         use_memory: bool = False
+        file_session: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
 
     # Tools a private chat may use, as Android's ChatPrivacy allows in incognito; nothing here saves history or memory.
     PRIVATE_TOOLS = {'web_search', 'fetch_page', 'create_file', 'generate_image'}
@@ -717,10 +746,17 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
         try:
             chat = json.loads(body.chat)
             entries = chat['messages']
-            if not isinstance(entries, list) or not entries or len(entries) > 400 or any(not isinstance(e, dict) or e.get('role') not in ('user', 'assistant', 'tool_call', 'tool_result') or not isinstance(e.get('content', ''), str) or e.get('attachments') for e in entries):
+            if not isinstance(entries, list) or not entries or len(entries) > 400 or any(not isinstance(e, dict) or e.get('role') not in ('user', 'assistant', 'tool_call', 'tool_result') or not isinstance(e.get('content', ''), str) or not isinstance(e.get('attachments', []), list) or len(e.get('attachments', [])) > 8 for e in entries):
                 raise ValueError()
         except (KeyError, ValueError, TypeError):
             raise HTTPException(400, 'Invalid private conversation; attachments are unavailable')
+        private_store = None
+        if body.file_session:
+            sessions = getattr(workspace, 'incognito', None)
+            if sessions is None: raise HTTPException(503, 'RAM-backed incognito storage unavailable')
+            private_store = sessions.get(body.file_session).store
+        if any(e.get('attachments') for e in entries) and private_store is None:
+            raise HTTPException(400, 'Private attachments require a RAM-backed file session')
         if private_active >= 4: raise HTTPException(429, 'Too many private conversations')
         context = ''
         if body.use_memory and workspace.memory_store is not None:
@@ -730,7 +766,7 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                                                    include_situations=False, include_history=False))['context']
             except Exception:
                 logging.getLogger(__name__).exception('Recall unavailable; continuing without memory context')
-        toolkit = chat_tools() if workspace.loopback is not None else None
+        toolkit = chat_tools(private_store=private_store or False, file_session=body.file_session) if workspace.loopback is not None else None
         allowed = PRIVATE_TOOLS | ({'search_memory'} if body.use_memory else set())
         available = [d for d in toolkit.definitions() if d['function']['name'] in allowed] if toolkit else tools[:2]
         messages = [{'role': 'system', 'content': 'This is a private conversation. No history is saved. '
@@ -740,7 +776,7 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
             if e['role'] == 'tool_result':
                 messages.append(_earlier_result(e))
             elif e['role'] in ('user', 'assistant'):
-                messages.append({'role': e['role'], 'content': str(e.get('content', ''))})
+                messages.append(_user_message(e, private_store) if e['role'] == 'user' else {'role': 'assistant', 'content': str(e.get('content', ''))})
         if body.turn_note:
             _note(messages, body.turn_note)
         initial = len(messages)
@@ -757,7 +793,7 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
             async def produce():
                 try:
                     for _ in range(20):
-                        answer = await asyncio.wait_for(generate(_for_model(messages), available, report, body.model), 900)
+                        answer = await asyncio.wait_for(generate(_for_model(messages), available, report, body.model, body.connection), 900)
                         messages.append(answer)
                         calls = answer.get('tool_calls') or []
                         if not calls:
@@ -863,19 +899,7 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
         for entry in chat['messages']:
             role = entry['role']
             if role == 'user':
-                parts = [{'type': 'text', 'text': entry.get('content', '')}]
-                for a in entry.get('attachments', []):
-                    text = f"\nFile {a['name']}; file_id={a.get('remoteFileId', '')}\n" + (a.get('text') or '')[:24000]
-                    parts.append({'type': 'text', 'text': text})
-                    paths = [a.get('path')] if a.get('kind') == 'image' else a.get('pageImages', [])
-                    for path in paths:
-                        if path and path.startswith('remote:'):
-                            info = workspace.file(path[7:])
-                            if info['size'] > 3 * 1024 * 1024:
-                                continue
-                            data = base64.b64encode((workspace.files / info['id']).read_bytes()).decode()
-                            parts.append({'type': 'image_url', 'image_url': {'url': 'data:' + info['mime'] + ';base64,' + data}})
-                messages.append({'role': 'user', 'content': parts})
+                messages.append(_user_message(entry, workspace, structured=True))
             elif role == 'assistant':
                 messages.append({'role': 'assistant', 'content': entry['content']})
             # Previous tool transcripts remain in the archive. Plain summaries avoid incomplete tool groups.
@@ -888,9 +912,11 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
         if body.turn_note:
             _note(messages, body.turn_note)
         prompt = next((e.get('content', '') for e in reversed(chat['messages']) if e['role'] == 'user'), 'Continue chat')
+        if body.connection: connections.get(body.connection)
         job_id = workspace.create_job(prompt, time.time())
+        if body.connection: connections.lease(body.connection, job_id)
         image = body.image_settings.model_dump(exclude_none=True) if body.image_settings else None
-        options = {key: value for key, value in {'image': image, 'block_web': body.block_web or None, 'model': body.model}.items() if value}
+        options = {key: value for key, value in {'image': image, 'block_web': body.block_web or None, 'model': body.model, 'connection': body.connection}.items() if value}
         with workspace.db() as db:
             db.execute('UPDATE jobs SET messages=?,item_id=?,base_revision=?,chat=?,initial_count=?,options=? WHERE id=?',
                        (json.dumps(messages), item_id, item['revision'], json.dumps(chat), len(messages),
@@ -946,14 +972,21 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
             return {'error': private_leak.BLOCKED_WEB, 'success': False}
         return await toolkit.run(name, args)
 
-    def chat_tools(options=None):
+    def chat_tools(options=None, private_store=None, file_session=None):
         if workspace.loopback is None:
             return None
         def create_file(name, content):
             if Path(name).suffix.lower() not in {'.txt', '.md', '.csv', '.tsv', '.json', '.svg', '.html'}:
                 raise ToolError('Use execute_python to create binary formats such as XLSX, PDF, DOCX, and PNG')
+            if file_session and private_store: return workspace.incognito.put_file(workspace.incognito.get(file_session), content.encode('utf-8'), name)
+            if private_store is False: raise ToolError('Private artifacts need a RAM-backed file session')
             return workspace.put_file(content.encode('utf-8'), name)
-        return ChatTools(workspace, workspace.loopback, workspace.analyze, create_file, image=(options or {}).get('image'))
+        async def call(method, path, body=None):
+            if private_store is not None and (path.startswith('/workspace/images') or path.startswith('/workspace/files')):
+                if not file_session: raise ToolError('Private artifacts need a RAM-backed file session')
+                path = f'/workspace/incognito/{file_session}' + path.removeprefix('/workspace')
+            return await workspace.loopback(method, path, body)
+        return ChatTools(private_store or workspace, call, workspace.analyze, create_file, image=(options or {}).get('image'))
 
     def save_chat(job, messages, final):
         """Writes the generated groups into the chat it continues; False if another client changed it first."""
@@ -1042,7 +1075,7 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                     phases[job['id']] = 'model'
                     progress[job['id']] = ''
                     async def report(text): progress[job['id']] = text[:64000]
-                    answer = await asyncio.wait_for(generate(_for_model(messages), available, report, options.get('model')), timeout=900)
+                    answer = await asyncio.wait_for(generate(_for_model(messages), available, report, options.get('model'), options.get('connection'), job['id']), timeout=900)
                     if status() != 'running':
                         if status() == 'cancelled':
                             keep_partial(job, messages, answer.get('content') or progress.get(job['id'], ''))
@@ -1092,6 +1125,7 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
         except Exception as exc:
             workspace.update_job(job['id'], status='failed', error=str(exc)[:1000])
         finally:
+            if status() not in {'waiting', 'paused', 'scheduled'}: connections.leases.pop(job['id'], None)
             live.pop(job['id'], None)
 
     async def worker():

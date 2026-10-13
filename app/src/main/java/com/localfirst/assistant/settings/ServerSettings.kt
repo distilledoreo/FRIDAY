@@ -27,15 +27,7 @@ data class ServerSettings(
     val pcMac: String = "",
 ) {
     fun validate(): String? {
-        val url = baseUrl.trim()
-        if (url.isEmpty()) return "Enter the model server address."
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            return "Server address must start with http:// or https://."
-        }
-        if (model.trim().isEmpty()) return "Enter the model name."
-        if (timeoutSeconds !in MIN_TIMEOUT_SECONDS..MAX_TIMEOUT_SECONDS) {
-            return "Timeout must be between $MIN_TIMEOUT_SECONDS and $MAX_TIMEOUT_SECONDS seconds."
-        }
+        com.localfirst.assistant.client.ModelConnection(baseUrl, model, apiKey, timeoutSeconds.toString()).validate()?.let { return it }
         val search = searchBaseUrl.trim()
         if (search.isNotEmpty() && !search.startsWith("http://") && !search.startsWith("https://")) {
             return "Search service address must start with http:// or https://."

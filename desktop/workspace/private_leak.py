@@ -144,7 +144,7 @@ async def identifying_details(messages, call, judge):
             except ValueError: result = None
             if not (isinstance(result, dict) and (result.get('error') or result.get('success') is False)):
                 private.append(m.get('content') or '')
-    own = '\n'.join(text_of(m.get('content')) for m in messages if m.get('role') == 'user')
+    own = '\n'.join(text_of(m.get('content')[:1] if isinstance(m.get('content'), list) else m.get('content')) for m in messages if m.get('role') == 'user')
     outgoing = argument_strings(call['function']['arguments'])
     identifying, other, context = find(outgoing, private, own)
     if not identifying and not other:

@@ -10,11 +10,11 @@ import androidx.compose.ui.Modifier
 /** Choices that stay on this device, as the phone keeps its voice and notification settings. */
 class DeviceSettings(
     val voiceEngine: String, val voiceEngines: List<Pair<String, String>>, val bargeIn: Boolean,
-    val notifications: Boolean, val notificationsAvailable: Boolean, val notificationNote: String?,
+    val notifications: String, val notificationsAvailable: Boolean, val pushAvailable: Boolean, val notificationNote: String?,
 )
 
 @Composable
-fun DeviceSettingsSection(settings: DeviceSettings, onVoiceEngine: (String) -> Unit, onBargeIn: (Boolean) -> Unit, onNotifications: (Boolean) -> Unit) {
+fun DeviceSettingsSection(settings: DeviceSettings, onVoiceEngine: (String) -> Unit, onBargeIn: (Boolean) -> Unit, onNotifications: (String) -> Unit) {
     Text("Voice", style = MaterialTheme.typography.titleMedium)
     settings.voiceEngines.forEach { (id, label) ->
         Row(Modifier.fillMaxWidth().clickable { onVoiceEngine(id) }, verticalAlignment = Alignment.CenterVertically) {
@@ -30,13 +30,15 @@ fun DeviceSettingsSection(settings: DeviceSettings, onVoiceEngine: (String) -> U
     }
     HorizontalDivider()
     Text("Notifications", style = MaterialTheme.typography.titleMedium)
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text("Notify me while this tab is in the background")
-            Text("Finished tasks, approvals FRIDAY waits on, PC questions and check-ins, as on the phone.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+    Text("Finished tasks, approvals, PC questions and check-ins.", style = MaterialTheme.typography.bodySmall)
+    listOf("off" to "No notifications", "open" to "With tab open", "closed" to "With tab closed").forEach { (mode, label) ->
+        val available = mode == "off" || settings.notificationsAvailable && (mode != "closed" || settings.pushAvailable)
+        Row(Modifier.fillMaxWidth().clickable(enabled = available) { onNotifications(mode) }, verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(settings.notifications == mode, { onNotifications(mode) }, enabled = available)
+            Text(label)
         }
-        Switch(settings.notifications, onNotifications, enabled = settings.notificationsAvailable)
     }
+    Text("With tab closed uses your browser's push service. Delivery depends on browser and OS background settings. Locking FRIDAY keeps this choice; select No notifications to unsubscribe.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
     settings.notificationNote?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
     HorizontalDivider()
 }
