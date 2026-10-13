@@ -15,7 +15,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.Role
@@ -25,8 +24,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import com.localfirst.assistant.ui.theme.LocalFridayPalette
 import com.localfirst.assistant.voice.VoicePhase
 import kotlinx.coroutines.delay
@@ -40,7 +37,7 @@ import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.lerp
 
 /** The closed menu icon's proportions, relative to the top line: middle and bottom line lengths, middle height (share of cap height), faint stem. */
-internal data class BrandShape(val middle:Float,val bottom:Float,val middleHeight:Float=.5f,val ghostStem:Float=0f) {
+data class BrandShape(val middle:Float,val bottom:Float,val middleHeight:Float=.5f,val ghostStem:Float=0f) {
     // Chosen from a side-by-side comparison: reads as an F first, while three distinct lines still say "menu".
     companion object { val DEFAULT=BrandShape(.89f,.38f,.507f) }
 }
@@ -52,7 +49,7 @@ internal data class BrandShape(val middle:Float,val bottom:Float,val middleHeigh
  * and hand over to the real glyph at the end, so the open word is simply "FRIDAY" in one typeface.
  */
 @Composable
-internal fun FridayBrand(progress:Float,onClick:()->Unit,modifier:Modifier=Modifier,foreground:Color=MaterialTheme.colorScheme.onBackground,closed:BrandShape=BrandShape.DEFAULT) {
+fun FridayBrand(progress:Float,onClick:()->Unit,modifier:Modifier=Modifier,foreground:Color=MaterialTheme.colorScheme.onBackground,closed:BrandShape=BrandShape.DEFAULT) {
     val p=progress.coerceIn(0f,1f)
     val density=androidx.compose.ui.platform.LocalDensity.current
     val scale=density.fontScale
@@ -108,14 +105,9 @@ internal fun FridayBrand(progress:Float,onClick:()->Unit,modifier:Modifier=Modif
  * motion is reduced.
  */
 @Composable
-internal fun FridayAmbient(voicePhase:VoicePhase?,level:Float,thinking:Boolean,modifier:Modifier=Modifier,fixedTime:Float?=null) {
+fun FridayAmbient(voicePhase:VoicePhase?,level:Float,thinking:Boolean,modifier:Modifier=Modifier,fixedTime:Float?=null) {
     val palette=LocalFridayPalette.current
-    val owner=LocalLifecycleOwner.current
-    var visible by remember { mutableStateOf(owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) }
-    DisposableEffect(owner) {
-        val observer=LifecycleEventObserver { _,_ -> visible=owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) }
-        owner.lifecycle.addObserver(observer);onDispose { owner.lifecycle.removeObserver(observer) }
-    }
+    val visible=rememberAppVisible()
     val active=voicePhase!=null&&voicePhase!=VoicePhase.PAUSED||thinking
     // Animation time in seconds, advanced every frame; faster while listening or thinking. An infinite-animation
     // frame clock, so test harnesses (which pause infinite animations) can still reach idle.

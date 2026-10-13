@@ -240,7 +240,6 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     activeProjectId = state.projectId,
                     onProject = { id -> closeDrawerThen { viewModel.openProject(id) } },
                     onProjects = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.PROJECTS) } },
-                    onTasks = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.TASKS) } },
                     onActivity = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.ACTIVITY) } },
                     onFiles = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.FILES) } },
                     onImages = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.IMAGES) } },
@@ -293,17 +292,14 @@ fun ChatScreen(viewModel: ChatViewModel) {
                         } else {
                             val needsYou = state.agentTasks.any { it.optString("status") in FRIDAY_NEEDS_YOU }
                             val working = state.agentTasks.any { it.optString("status") in FRIDAY_WORKING }
-                            if (state.messages.isNotEmpty() || state.draft.isNotBlank() || state.draftAttachments.isNotEmpty() || state.projectId != null) {
-                                HeaderCircleButton("New chat", { if (!state.busy) viewModel.newChat() }) { Icon(LineIcons.NewChat, contentDescription = null, modifier = Modifier.size(21.dp)) }
-                                Spacer(Modifier.width(6.dp))
-                            }
-                            HeaderCircleButton(
-                                "FRIDAY. " + when { needsYou -> "Needs your attention"; working -> "Working"; else -> "Her computer and activity" },
-                                { viewModel.openFriday() },
-                                dot = when { needsYou -> palette.warning; working -> palette.accent; else -> null },
-                            ) { DotsGridIcon() }
-                            Spacer(Modifier.width(6.dp))
-                            ProfileButton(com.localfirst.assistant.ui.theme.LocalAppearance.current.displayName, null, menu)
+                            HomeHeaderActions(
+                                showNewChat = state.messages.isNotEmpty() || state.draft.isNotBlank() || state.draftAttachments.isNotEmpty() || state.projectId != null,
+                                onNewChat = { if (!state.busy) viewModel.newChat() },
+                                friday = FridayStatus("FRIDAY. " + when { needsYou -> "Needs your attention"; working -> "Working"; else -> "Her computer and activity" }, when { needsYou -> palette.warning; working -> palette.accent; else -> null }),
+                                onFriday = { viewModel.openFriday() },
+                                profileName = com.localfirst.assistant.ui.theme.LocalAppearance.current.displayName,
+                                menu = menu,
+                            )
                         }
                     }
                 },

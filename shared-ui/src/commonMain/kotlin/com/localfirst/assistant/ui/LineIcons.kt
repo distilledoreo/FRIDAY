@@ -30,6 +30,8 @@ object LineIcons {
             }
         }.build()
 
+    val Memory by lazy { icon("Memory", "M7.5,4.5H16.5V19.5L12,16L7.5,19.5Z") }
+
     val Search by lazy { icon("Search", "M10.5,4.5a6,6 0 1,0 0,12a6,6 0 1,0 0,-12z", "M15,15L19.5,19.5") }
 
     val NewChat by lazy {

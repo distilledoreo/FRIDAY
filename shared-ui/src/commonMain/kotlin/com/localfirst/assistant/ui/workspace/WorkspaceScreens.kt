@@ -9,10 +9,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import com.localfirst.assistant.ui.theme.LocalFridayPalette
 import androidx.compose.ui.unit.dp
 import com.localfirst.assistant.conversation.*
 import com.localfirst.assistant.ui.*
@@ -33,24 +39,64 @@ private enum class Page(val label: String) { CHAT("Chat"), PROJECTS("Projects"),
 @Composable
 fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState, settingsExtras: @Composable ColumnScope.() -> Unit = {}) {
     var page by remember { mutableStateOf(Page.CHAT) }
-    var drawerOpen by remember { mutableStateOf(false) }
-    LaunchedEffect(state.connected) { if (!state.connected) { page = Page.CHAT; drawerOpen = false } }
+    val drawer = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(state.connected) { if (!state.connected) { page = Page.CHAT; drawer.snapTo(DrawerValue.Closed) } }
     if (!state.connected) { ConnectScreen(vm, state); return }
     BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         val wide = maxWidth >= 900.dp
-        Row(Modifier.fillMaxSize()) {
-            if (wide) Drawer(vm, state, page, { page = it }, { page = Page.CHAT }, Modifier.width(280.dp))
-            Column(Modifier.weight(1f).fillMaxHeight()) {
-                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (!wide) TextButton({ drawerOpen = true }) { Text("☰", style = MaterialTheme.typography.titleLarge) }
-                    Text("FRIDAY", style = MaterialTheme.typography.titleMedium)
+        val idle = !state.busy && state.activeJob == null
+        fun go(target: Page) { page = target; scope.launch { drawer.close() } }
+        // The same sidebar and header as the phone. Destinations this client lacks are passed as null and left out.
+        val sidebar: @Composable () -> Unit = {
+            ChatDrawer(
+                width = if (wide) 300.dp else 320.dp,
+                conversations = state.filteredChats.map { it.conversation.summary },
+                currentId = state.activeId.takeIf { page == Page.CHAT },
+                onNewChat = { vm.newChat(); go(Page.CHAT) },
+                onIncognito = null,
+                onOpen = { vm.select(it); go(Page.CHAT) },
+                onRename = { id, title -> vm.rename(title, state.chats.firstOrNull { it.item.id == id }) },
+                onDelete = { vm.delete(it) },
+                onOpenSettings = { go(Page.SETTINGS) },
+                query = state.query,
+                onQuery = vm::search,
+                projects = state.knowledge.projects,
+                activeProjectId = state.projectId.takeIf { page == Page.CHAT },
+                onProject = { vm.newChat(it); go(Page.CHAT) },
+                onProjects = { go(Page.PROJECTS) },
+                onActivity = null,
+                onFiles = null,
+                onImages = null,
+                destinations = listOf(
+                    DrawerDestination("Memory", LineIcons.Memory, page == Page.MEMORY) { go(Page.MEMORY) },
+                    DrawerDestination("Tasks", LineIcons.Clock, page == Page.TASKS) { go(Page.TASKS) },
+                ),
+                deleteNote = "will be removed from history on every client. Its recall archive and approved memories stay managed in Memory.",
+            )
+        }
+        val content: @Composable () -> Unit = {
+            Column(Modifier.fillMaxSize()) {
+                Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Spacer(Modifier.weight(1f))
-                    Box(Modifier.size(40.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary).clickable { page = Page.SETTINGS }, contentAlignment = Alignment.Center) {
-                        Text(state.preferences.displayName.firstOrNull()?.uppercase() ?: "F", color = MaterialTheme.colorScheme.onPrimary)
-                    }
+                    val working = state.activeJob != null || state.tasks.any { it["status"]?.jsonPrimitive?.contentOrNull == "running" }
+                    HomeHeaderActions(
+                        showNewChat = page != Page.CHAT || state.active != null || state.draft.isNotBlank() || state.projectId != null,
+                        onNewChat = { if (idle) { vm.newChat(); page = Page.CHAT } },
+                        friday = FridayStatus("Tasks. " + if (working) "Working" else "Work on your computer", if (working) LocalFridayPalette.current.accent else null),
+                        onFriday = { page = Page.TASKS },
+                        profileName = state.preferences.displayName,
+                        menu = buildList {
+                            add((if (state.projectId == null) "Choose project" else "Projects") to { page = Page.PROJECTS })
+                            if (state.projectId != null && page == Page.CHAT && idle) add("Remove from project" to { vm.selectProject(null) })
+                            add("Memory" to { page = Page.MEMORY })
+                            add("Settings" to { page = Page.SETTINGS })
+                            add("Lock" to { vm.lock() })
+                        },
+                    )
                 }
                 state.error?.let { error ->
-                    Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                    Surface(color = MaterialTheme.colorScheme.errorContainer, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
                         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(error, Modifier.weight(1f), color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall)
                             TextButton({ vm.dismissError() }) { Text("Dismiss") }
@@ -60,18 +106,18 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState, settingsExtras:
                 Box(Modifier.weight(1f).fillMaxWidth()) {
                     when(page) { Page.CHAT -> ChatScreen(vm, state); Page.PROJECTS -> ProjectsScreen(vm, state) { page = Page.CHAT }; Page.MEMORY -> MemoryScreen(vm, state); Page.TASKS -> TasksScreen(vm, state); Page.SETTINGS -> SettingsScreen(vm, state, settingsExtras) }
                 }
-                Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (state.busy) { CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)) }
-                    Text(state.status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary, modifier = Modifier.weight(1f))
-                    TextButton({ vm.refresh() }, enabled = !state.busy) { Text("Sync") }
-                }
             }
         }
-        if (!wide && drawerOpen) {
-            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .4f)).clickable { drawerOpen = false }) {
-                Drawer(vm, state, page, { page = it; drawerOpen = false }, { page = Page.CHAT; drawerOpen = false }, Modifier.width(280.dp).clickable {})
-            }
+        if (wide) Row(Modifier.fillMaxSize()) { sidebar(); content() }
+        else ModalNavigationDrawer(drawerState = drawer, drawerContent = { sidebar() }) { content() }
+        // The F is the menu button, and the open sidebar's wordmark; on a wide screen the sidebar is always open.
+        val drawerPixels = with(LocalDensity.current) { 320.dp.toPx() }
+        val opened = when {
+            wide -> 1f
+            drawer.currentOffset.isNaN() -> if (drawer.isOpen) 1f else 0f
+            else -> (1f + drawer.currentOffset / drawerPixels).coerceIn(0f, 1f)
         }
+        FridayBrand(opened, { if (!wide) scope.launch { if (drawer.isOpen) drawer.close() else drawer.open() } }, Modifier.align(Alignment.TopStart).padding(start = 16.dp, top = 4.dp))
     }
 }
 
@@ -93,55 +139,28 @@ private fun ConnectScreen(vm: WorkspaceController, state: WorkspaceState) {
 }
 
 @Composable
-private fun Drawer(vm: WorkspaceController, state: WorkspaceState, page: Page, navigate: (Page) -> Unit, chat: () -> Unit, modifier: Modifier) {
-    Surface(modifier.fillMaxHeight(), color = MaterialTheme.colorScheme.surfaceContainerLow) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilledTonalButton({ vm.newChat(); chat() }, Modifier.fillMaxWidth(), enabled = !state.busy && state.activeJob == null) { Text("New chat") }
-            OutlinedTextField(state.query, vm::search, label = { Text("Search history") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-            Row { TextButton({ navigate(Page.PROJECTS) }) { Text("Projects") }; TextButton({ navigate(Page.MEMORY) }) { Text("Memory") }; TextButton({ navigate(Page.TASKS) }) { Text("Tasks") } }
-            LazyColumn(Modifier.weight(1f)) {
-                items(state.filteredChats, key = { it.item.id }) { c ->
-                    Surface(Modifier.fillMaxWidth().padding(vertical = 2.dp).clip(RoundedCornerShape(8.dp)).clickable(enabled = !state.busy && state.activeJob == null) { vm.select(c.item.id); chat() }, color = if (c.item.id == state.activeId && page == Page.CHAT) MaterialTheme.colorScheme.surfaceContainerHigh else Color.Transparent) {
-                        Text(c.conversation.summary.title, Modifier.padding(12.dp), style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    }
-                }
-                if (state.chats.isEmpty()) item { Text("Your synced conversations appear here.", Modifier.padding(12.dp), color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.bodySmall) }
-            }
-            TextButton({ navigate(Page.SETTINGS) }, Modifier.fillMaxWidth()) { Text("Settings") }
-            TextButton(vm::lock, Modifier.fillMaxWidth()) { Text("Lock") }
-        }
-    }
-}
-
-@Composable
 private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState) {
-    var rename by remember { mutableStateOf(false) }; var delete by remember { mutableStateOf(false) }; var projects by remember { mutableStateOf(false) }
     val scroll = rememberLazyListState()
     val messages = state.active?.conversation?.messages.orEmpty()
     val transcript = remember(messages, state.activeJob) { Transcript.items(messages, state.activeJob != null) }
     val clipboard = LocalClipboardManager.current
     val copy: (String) -> Unit = { clipboard.setText(AnnotatedString(it)) }
     LaunchedEffect(state.activeId, transcript.size) { if (transcript.isNotEmpty()) scroll.animateScrollToItem(transcript.lastIndex) }
-    Column(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(state.active?.conversation?.summary?.title ?: "New chat", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Box {
-                TextButton({ projects = true }, enabled = !state.busy && state.activeJob == null) { Text(state.knowledge.projects.firstOrNull { it.id == state.projectId }?.name ?: "General") }
-                DropdownMenu(projects, { projects = false }) {
-                    DropdownMenuItem({ Text("General chat") }, { vm.selectProject(null); projects = false })
-                    for (p in state.knowledge.projects) DropdownMenuItem({ Text(p.name) }, { vm.selectProject(p.id); projects = false })
-                }
-            }
-            if (state.active != null) {
-                TextButton({ rename = true }, enabled = !state.busy && state.activeJob == null) { Text("Rename") }
-                TextButton({ delete = true }, enabled = !state.busy && state.activeJob == null) { Text("Delete") }
-            }
+    val palette = LocalFridayPalette.current
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+    // As on the phone: FRIDAY's light fills an empty chat and dims behind a conversation, and the composer
+    // rests a third of the way up until there is something to read.
+    val conversation = transcript.isNotEmpty() || state.detachedReply != null
+    val homeOffset by animateDpAsState(if (conversation) 0.dp else maxHeight * .34f, tween(palette.transitionMillis), label = "composer position")
+    FridayAmbient(null, 0f, state.activeJob != null, Modifier.fillMaxSize().alpha(if (conversation) .14f else 1f))
+    Column(Modifier.align(Alignment.TopCenter).fillMaxHeight().widthIn(max = 820.dp).fillMaxWidth().padding(horizontal = 16.dp)) {
+        // A quiet label for where you are, with rename and delete kept on the chat's row in the sidebar.
+        val project = state.knowledge.projects.firstOrNull { it.id == state.projectId }?.name
+        (project ?: state.active?.conversation?.summary?.title)?.let { label ->
+            Text(label, Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            if (messages.isEmpty()) Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("What can I help with?", style = MaterialTheme.typography.headlineMedium)
-                Text("Your history and memory travel with you.", color = MaterialTheme.colorScheme.secondary)
-            }
             LazyColumn(state = scroll, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
                 items(transcript, key = { it.key }) { item -> when(item) {
                     is TranscriptItem.User -> SharedUserMessage(item, actionsEnabled = false, onCopy = copy)
@@ -156,13 +175,9 @@ private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState) {
         SharedComposer(state.draft, busy = state.activeJob != null, editing = false,
             onDraftChange = vm::setDraft, onSend = { vm.send() }, onStop = { vm.stop() },
             onCancelEdit = {}, onVoice = null, sendEnabled = state.canSend)
-
+        Spacer(Modifier.height(16.dp + homeOffset))
     }
-    if (rename) {
-        val baseline = remember { state.active }
-        EditTextDialog("Rename chat", state.active?.conversation?.summary?.title.orEmpty(), { rename = false }) { text -> vm.rename(text, baseline)?.invokeOnCompletion { if (vm.state.value.error == null) rename = false } }
     }
-    if (delete) ConfirmDialog("Delete synced chat?", "This removes it from history on every client. Its separate recall archive and approved memories remain managed in Memory.", { delete = false }) { vm.delete(); delete = false }
 }
 
 @Composable

@@ -112,6 +112,13 @@ class SharedWorkspaceTest {
         assertEquals("Changed on the phone", vm.state.value.chats.single().conversation.summary.title)
         vm.close()
     }
+    @Test fun sidebarDeletesTheChosenChatNotTheOpenOne() = runTest {
+        val pc = Pc().apply { chat("a"); chat("b", "Second") }; val vm = WorkspaceController(WorkspaceRepository(pc), this, { "new" }, { 5 })
+        vm.connect("", "token")!!.join(); vm.select("a")
+        vm.delete("b")!!.join()
+        assertEquals(listOf("a"), vm.state.value.chats.map { it.item.id }); assertEquals("a", vm.state.value.activeId)
+        assertTrue(pc.items.getValue("b").deleted)
+    }
     @Test fun refreshAndRemoteDeletionPreserveUnsentDraft() = runTest {
         val pc = Pc().apply { chat() }; val vm = WorkspaceController(WorkspaceRepository(pc), this, { "new" }, { 5 })
         vm.connect("", "token")!!.join(); vm.select("a"); vm.setDraft("Keep this")

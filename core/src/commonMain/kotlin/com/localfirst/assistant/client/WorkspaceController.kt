@@ -160,8 +160,8 @@ class WorkspaceController(
         repository.save(chat.conversation.copy(summary = chat.conversation.summary.copy(title = title.trim().take(200), updatedAt = clock())), chat.item.revision)
         refreshSnapshot(identity)
     }
-    fun delete() = action { identity ->
-        val chat = state.value.active ?: return@action
+    fun delete(id: String? = state.value.activeId) = action { identity ->
+        val chat = state.value.chats.firstOrNull { it.item.id == id } ?: return@action
         repository.delete(chat); refreshSnapshot(identity)
     }
     fun preference(key: String, value: JsonPrimitive, expectedRevision: Int? = null) = action { identity -> repository.preference(key, value, state.value.items, expectedRevision); refreshSnapshot(identity) }

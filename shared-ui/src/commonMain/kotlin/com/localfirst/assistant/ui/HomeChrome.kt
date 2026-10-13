@@ -4,6 +4,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -83,6 +85,33 @@ fun WaveformIcon(size: Dp = 20.dp, color: Color) {
             drawLine(color, Offset(x, center.y - half), Offset(x, center.y + half), strokeWidth = gap * .38f, cap = StrokeCap.Round)
         }
     }
+}
+
+/** What the FRIDAY header button announces, and the dot it shows while she is working or waiting on you. */
+class FridayStatus(val description: String, val dot: Color?)
+
+/**
+ * The header's actions, in the same order on every client: new chat once there is something to leave, FRIDAY,
+ * then the profile menu. Call it inside the header row.
+ */
+@Composable
+fun HomeHeaderActions(
+    showNewChat: Boolean,
+    onNewChat: () -> Unit,
+    friday: FridayStatus?,
+    onFriday: () -> Unit,
+    profileName: String,
+    menu: List<Pair<String, () -> Unit>>,
+) {
+    if (showNewChat) {
+        HeaderCircleButton("New chat", onNewChat) { Icon(LineIcons.NewChat, contentDescription = null, modifier = Modifier.size(21.dp)) }
+        Spacer(Modifier.width(6.dp))
+    }
+    if (friday != null) {
+        HeaderCircleButton(friday.description, onFriday, dot = friday.dot) { DotsGridIcon() }
+        Spacer(Modifier.width(6.dp))
+    }
+    ProfileButton(profileName, null, menu)
 }
 
 /** The profile circle: your initial (or a person glyph) and the app menu. */

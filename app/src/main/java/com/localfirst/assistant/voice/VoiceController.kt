@@ -20,8 +20,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-enum class VoicePhase { STARTING, LISTENING, THINKING, SPEAKING, CONFIRMING, PAUSED }
-
 data class VoiceUiState(
     val phase: VoicePhase = VoicePhase.STARTING,
     /** What the user is saying (live) or last said. */
