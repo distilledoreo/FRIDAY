@@ -14,6 +14,25 @@ edit here, commit, push. Nothing else on the PC is source code.
 | `web/` | Thin Kotlin/JS browser host: startup, HTTP/auth, downloads, legacy import; uses `core` workspace logic and `shared-ui` screens; see `web/README.md` |
 | `server/` | PC server core (`api/app.py`, `api/prompt_cache.py`), Docker compose, llama launcher, systemd units (`systemd/strata/` for the Strata backend), `scripts/setup.sh` |
 
+## Adding features across Android and browser
+
+Build portable features once: put models, validation and service orchestration in
+`core/src/commonMain`, and screens/components in `shared-ui/src/commonMain`. Have both clients use
+those shared implementations so future changes reach Android and the browser together.
+
+- Add platform adapters for capabilities such as microphone/audio, file picking, permissions,
+  notifications and embedded app hosting. Keep portable behavior in the shared implementation.
+- Wire new screens into navigation in both clients. Shared code does not automatically expose a new
+  destination or connect a platform adapter.
+- Account for both execution paths when a feature affects conversations: Android retains its local
+  engine and offline synchronization; the browser uses PC jobs. Share contracts and portable logic,
+  and integrate each host's orchestration where necessary.
+- Verify the feature on both clients with relevant common tests on Android/JVM and JavaScript,
+  platform checks for new adapters, and both client builds when affected. Report any device or service
+  checks that could not be run.
+
+See [shared-ui/README.md](shared-ui/README.md) for module boundaries and platform effects.
+
 ## The running server is a separate copy
 
 The live server runs from `~/assistant-server` (a link to the Storage drive), not from this repo. It holds

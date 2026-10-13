@@ -36,7 +36,7 @@ import kotlin.math.sin
 
 /** Voice mode inside the conversation: a live waveform, what was heard, and round controls. */
 @Composable
-internal fun InlineVoice(
+fun InlineVoice(
     voice: VoiceUiState,
     onPause: () -> Unit,
     onResume: () -> Unit,

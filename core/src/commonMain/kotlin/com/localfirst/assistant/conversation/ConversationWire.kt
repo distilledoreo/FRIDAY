@@ -23,6 +23,10 @@ fun encodeConversation(value: StoredConversation): String =
 fun decodeConversation(value: String): StoredConversation =
     JsonCodec.json.decodeFromString(ConversationDto.serializer(), value).toModel()
 
+/** Transcript entries in the same format, such as the steps a PC job has taken so far; unknown roles are skipped. */
+fun decodeMessages(value: String): List<Message> =
+    JsonCodec.json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(MessageDto.serializer()), value).mapNotNull { it.toModel() }
+
 /** Saved chats on the device. System messages are not stored; the app adds its prompt per request. */
 interface ConversationStore {
     /** Newest first. */

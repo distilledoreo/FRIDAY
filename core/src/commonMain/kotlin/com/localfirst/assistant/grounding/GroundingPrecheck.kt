@@ -16,6 +16,11 @@ object GroundingPrecheck {
     private val current = platformRegex("(?i)\\b(latest|current|currently|today|tonight|tomorrow|yesterday|recent|news|forecast|weather|price|prices|costs?|availability|in stock|opening hours|schedule|score|standings|release|version|recommend|recommendation|best|cheapest|laws?|regulations?|tax|visa|president|prime minister|ceo|exchange rate|stock market|interest rate|symptoms?|dosage|medication|recall|research|verify|sources|citations|evidence|studies)\\b")
     private val dated = platformRegex("\\b20(2[5-9]|[3-9][0-9])\\b")
     private val research = platformRegex("(?i)\\b(research|investigate|comprehensive|in[- ]depth|compare|fact[- ]?check)\\b")
+    /** Told to the model when the user asked not to search; web tools also refuse for that turn. */
+    const val OPT_OUT_NOTE = "\nPublic web access is disabled for this turn by the user's request. State when current facts cannot be verified; do not invent citations."
+    const val PRIVATE_STATUS = "Private question: public web lookups require separate approval"
+    const val CHECKING_STATUS = "Checking current sources…"
+    fun retrievedStatus(success: Boolean) = if (success) "Evidence retrieved; checking claim support and citations" else "Current sources could not be verified"
     fun blocksWeb(query: String) = optOut.containsMatchIn(query)
     fun privateRequest(query: String) = privateData.containsMatchIn(query)
     fun largerResearch(query: String) = research.containsMatchIn(query) && !blocksWeb(query) && !privateRequest(query)

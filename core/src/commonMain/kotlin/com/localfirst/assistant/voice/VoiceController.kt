@@ -1,7 +1,6 @@
 package com.localfirst.assistant.voice
 
-import com.localfirst.assistant.ui.ChatUiState
-import com.localfirst.assistant.ui.PendingApproval
+import com.localfirst.assistant.conversation.Message
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -20,8 +19,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-enum class VoicePhase { STARTING, LISTENING, THINKING, SPEAKING, CONFIRMING, PAUSED }
-
 data class VoiceUiState(
     val phase: VoicePhase = VoicePhase.STARTING,
     /** What the user is saying (live) or last said. */
@@ -39,6 +36,20 @@ data class VoiceUiState(
 /** The audio setup for one voice session, and a note to show (for example, why it fell back). */
 class VoiceSelection(val io: VoiceIo, val note: String? = null)
 
+/** An approval card the conversation is waiting on, as voice reads it aloud. */
+data class VoiceApproval(val id: String, val prompt: String)
+
+/**
+ * What voice mode needs from a host's conversation: the transcript so far (a streaming reply as its last
+ * assistant message), whether a turn is running, whether [messages] already include this turn, and any approval.
+ */
+data class VoiceTurn(
+    val messages: List<Message>,
+    val busy: Boolean,
+    val ready: Boolean = true,
+    val approval: VoiceApproval? = null,
+)
+
 /**
  * Hands-free conversation: listen → send → speak the streamed reply sentence
  * by sentence → listen again. While the assistant thinks or speaks, the
@@ -46,10 +57,12 @@ class VoiceSelection(val io: VoiceIo, val note: String? = null)
  * the reply is cancelled (keeping what arrived), and it listens. Calls and
  * texts are approved by voice ("yes" / "no") or by tapping the card.
  */
-class VoiceController(
+class VoiceController<S>(
     private val scope: CoroutineScope,
     private val selectIo: suspend () -> VoiceSelection,
-    private val chat: StateFlow<ChatUiState>,
+    /** The host's state, read through [view] so a turn is seen the moment the host starts it. */
+    private val chat: StateFlow<S>,
+    private val view: (S) -> VoiceTurn,
     private val submit: (String) -> Boolean,
     /** Replaces the last user message with [String] and asks again; false if that isn't safe. */
     private val resubmit: (String) -> Boolean,
@@ -58,7 +71,10 @@ class VoiceController(
     private val bargeInEnabled: () -> Boolean,
     private val feedbackQuietMillis: Long = 6_000,
     private val feedbackIntervalMillis: Long = 30_000,
+    private val clock: () -> Long = com.localfirst.assistant.platform.PlatformSystem::currentTimeMillis,
 ) {
+    private val turn get() = view(chat.value)
+
     private val _state = MutableStateFlow<VoiceUiState?>(null)
 
     /** Null when voice mode is closed. */
@@ -130,9 +146,9 @@ class VoiceController(
             io.focus.acquire()
             var quiet = 0
             while (true) {
-                chat.value.pendingApproval?.let { confirm(it) }
+                turn.approval?.let { confirm(it) }
                 // A cancelled reply may still be wrapping up.
-                withTimeoutOrNull(5_000) { chat.first { !it.busy } }
+                withTimeoutOrNull(5_000) { chat.first { !view(it).busy } }
                 set(VoicePhase.LISTENING, heard = "")
                 if (_state.value?.micMuted == true) {
                     // Muted: leave the mic closed and wait, instead of the two used-up
@@ -159,14 +175,14 @@ class VoiceController(
                     else -> return pauseWith("Couldn't send that. Check the server settings.")
                 }
                 lastSent = sent
-                lastSentAt = System.currentTimeMillis()
+                lastSentAt = clock()
                 _state.update { it?.copy(heard = sent, level = 0f) }
                 speakReply()
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            pauseWith("Voice stopped: ${e.message ?: e.javaClass.simpleName}")
+            pauseWith("Voice stopped: ${e.message ?: e::class.simpleName}")
         }
     }
 
@@ -189,7 +205,7 @@ class VoiceController(
         val speaking = launch {
             listenForBargeIn()
             val audioLock = Mutex()
-            fun nowMillis() = System.nanoTime() / 1_000_000
+            fun nowMillis() = clock()
             val feedback = VoiceWaitFeedback(nowMillis(), feedbackQuietMillis, feedbackIntervalMillis)
             var audioPending = false
             var fillerPlaying = false
@@ -205,7 +221,7 @@ class VoiceController(
                             audioPending = false
                             fillerPlaying = false
                             feedback.audioFinished(nowMillis())
-                            if (chat.value.busy && chat.value.pendingApproval == null) set(VoicePhase.THINKING, speaking = "")
+                            if (turn.busy && turn.approval == null) set(VoicePhase.THINKING, speaking = "")
                         }
                     }
                 }
@@ -214,7 +230,7 @@ class VoiceController(
                 while (true) {
                     delay(minOf(500, feedbackQuietMillis.coerceAtLeast(1)))
                     audioLock.withLock {
-                        if (chat.value.busy && chat.value.pendingApproval == null && !audioPending) {
+                        if (turn.busy && turn.approval == null && !audioPending) {
                             feedback.next(nowMillis())?.let { line ->
                                 audioPending = true
                                 fillerPlaying = true
@@ -227,8 +243,9 @@ class VoiceController(
                 }
             }
             try {
-                chat.first { s ->
-                    val chunks = if (s.turnMessagesReady) reply.update(s.messages, s.busy) else emptyList()
+                chat.first { state ->
+                    val s = view(state)
+                    val chunks = if (s.ready) reply.update(s.messages, s.busy) else emptyList()
                     if (chunks.isNotEmpty()) audioLock.withLock {
                         // Real speech always takes priority over a waiting acknowledgement.
                         if (fillerPlaying) io.speaker.stop()
@@ -239,7 +256,7 @@ class VoiceController(
                         set(VoicePhase.SPEAKING, speaking = chunks.last())
                         watchAudio()
                     }
-                    val approval = s.pendingApproval
+                    val approval = s.approval
                     if (approval != null) {
                         audioLock.withLock {
                             audioGeneration++
@@ -257,7 +274,7 @@ class VoiceController(
                         audioLock.withLock { audioPending = false; feedback.audioFinished(nowMillis()) }
                         listenForBargeIn()
                     }
-                    !s.busy && s.pendingApproval == null
+                    !s.busy && s.approval == null
                 }
                 io.speaker.awaitIdle()
             } finally {
@@ -275,23 +292,23 @@ class VoiceController(
         if (userInterrupted) {
             speaking.cancelAndJoin()
             io.speaker.stop()
-            if (chat.value.busy) stopTurn()
+            if (turn.busy) stopTurn()
             // Talking again before the assistant said anything, soon after sending, means "I wasn't done".
             // Interrupting once it's speaking is a new instruction.
-            continueLast = !spoke && System.currentTimeMillis() - lastSentAt < CONTINUE_WINDOW_MS
+            continueLast = !spoke && clock() - lastSentAt < CONTINUE_WINDOW_MS
         }
     }
 
     /** Reads the approval aloud and listens for yes or no; the card stays tappable throughout. */
-    private suspend fun confirm(approval: PendingApproval) {
+    private suspend fun confirm(approval: VoiceApproval) {
         set(VoicePhase.CONFIRMING, speaking = approval.prompt)
         io.speaker.enqueue(SpeechText.fromMarkdown(approval.prompt) + ". Should I go ahead?")
         io.speaker.awaitIdle()
         repeat(2) {
-            if (chat.value.pendingApproval != approval) return
+            if (turn.approval != approval) return
             set(VoicePhase.CONFIRMING, heard = "")
             val result = io.input.listen(::onPartial, ::onLevel)
-            if (chat.value.pendingApproval != approval) return
+            if (turn.approval != approval) return
             val answer = (result as? ListenResult.Heard)?.let { VoiceReplies.approval(it.text) }
             if (answer != null) {
                 answerApproval(answer)
@@ -301,7 +318,7 @@ class VoiceController(
             io.speaker.awaitIdle()
         }
         _state.update { it?.copy(note = "Tap Approve or Deny.") }
-        chat.first { it.pendingApproval != approval }
+        chat.first { view(it).approval != approval }
     }
 
     private fun onPartial(text: String) = _state.update { it?.copy(heard = text) }

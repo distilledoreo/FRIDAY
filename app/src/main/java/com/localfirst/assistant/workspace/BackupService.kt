@@ -104,18 +104,7 @@ class BackupService(private val context: Context, private val chats: Conversatio
             }
             val kFile = File(scratch, "knowledge.json")
             val incoming = if (kFile.isFile) JsonCodec.json.decodeFromString(Knowledge.serializer(), kFile.readText()) else Knowledge()
-            val current = knowledge.load()
-            val projectIds = mutableMapOf<String, String>()
-            val projects = incoming.projects.map { p ->
-                if (current.projects.any { it.id == p.id && it != p }) {
-                    val replacement = UUID.randomUUID().toString(); projectIds[p.id] = replacement; p.copy(id = replacement)
-                } else p
-            }
-            val memories = incoming.memories.map { m ->
-                if (current.memories.any { it.id == m.id && it.text != m.text }) m.copy(id = UUID.randomUUID().toString()) else m
-            }
-            val merged = Knowledge((current.memories + memories).distinctBy { it.text },
-                (current.projects + projects).distinctBy { it.id })
+            val (merged, projectIds) = com.localfirst.assistant.backup.ChatBackup.merge(knowledge.load(), incoming) { UUID.randomUUID().toString() }
             knowledge.save(merged)
             imported.map { c -> c.copy(summary = c.summary.copy(projectId = projectIds[c.summary.projectId] ?: c.summary.projectId)) }.forEach(chats::save)
             return imported.size

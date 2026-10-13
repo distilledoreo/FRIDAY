@@ -17,16 +17,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Create
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.DateRange
-import androidx.compose.material.icons.automirrored.filled.List
 import com.localfirst.assistant.conversation.AssistantProject
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -50,18 +43,27 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.localfirst.assistant.conversation.ConversationSummary
 import com.localfirst.assistant.presentation.ConversationGroups
-import java.util.Calendar
+import com.localfirst.assistant.platform.PlatformTime
 
+/** A sidebar destination only some clients have. */
+class DrawerDestination(val label: String, val icon: ImageVector, val selected: Boolean = false, val onClick: () -> Unit)
+
+/**
+ * The sidebar every client shows: search, destinations, projects and chats grouped by day. A destination whose
+ * callback is null is one this client does not have, and is left out rather than shown disabled.
+ */
 @Composable
-internal fun ChatDrawer(
-    width: androidx.compose.ui.unit.Dp = 320.dp,
+fun ChatDrawer(
+    width: Dp = 320.dp,
     conversations: List<ConversationSummary>,
     currentId: String?,
     onNewChat: () -> Unit,
-    onIncognito: () -> Unit,
+    onIncognito: (() -> Unit)?,
     onOpen: (String) -> Unit,
     onRename: (String, String) -> Unit,
     onDelete: (String) -> Unit,
@@ -72,11 +74,13 @@ internal fun ChatDrawer(
     activeProjectId: String? = null,
     onProject: (String) -> Unit,
     onProjects: () -> Unit,
-    onTasks: () -> Unit,
-    onActivity: () -> Unit,
-    onFiles: () -> Unit,
-    onImages: () -> Unit,
-    onCode: () -> Unit = {},
+    onActivity: (() -> Unit)?,
+    onFiles: (() -> Unit)?,
+    onImages: (() -> Unit)?,
+    onCode: (() -> Unit)? = null,
+    destinations: List<DrawerDestination> = emptyList(),
+    topInset: Dp = 64.dp,
+    deleteNote: String = "will be deleted from this phone. This can't be undone.",
 ) {
     var renaming by remember { mutableStateOf<ConversationSummary?>(null) }
     var deleting by remember { mutableStateOf<ConversationSummary?>(null) }
@@ -90,7 +94,7 @@ internal fun ChatDrawer(
 
     ModalDrawerSheet(modifier = Modifier.fillMaxHeight().width(width)) {
         Column(modifier = Modifier.fillMaxHeight()) {
-            Spacer(Modifier.height(64.dp))
+            Spacer(Modifier.height(topInset))
             OutlinedTextField(value = query, onValueChange = onQuery, placeholder = { Text("Search chats") },
                 leadingIcon = { Icon(LineIcons.Search, null, Modifier.size(22.dp)) }, singleLine = true,
                 shape = MaterialTheme.shapes.small,
@@ -98,11 +102,12 @@ internal fun ChatDrawer(
             LazyColumn(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
                 if (query.isBlank()) {
                     item { DrawerRow("New chat", LineIcons.NewChat, onNewChat) }
-                    item { DrawerRow("Incognito chat", LineIcons.Incognito, onIncognito) }
-                    item { DrawerRow("FRIDAY", LineIcons.Friday, onActivity) }
-                    item { DrawerRow("Library", LineIcons.Library, onFiles) }
-                    item { DrawerRow("Images", LineIcons.Images, onImages) }
-                    item { DrawerRow("Code", LineIcons.Code, onCode) }
+                    if (onIncognito != null) item { DrawerRow("Incognito chat", LineIcons.Incognito, onIncognito) }
+                    if (onActivity != null) item { DrawerRow("FRIDAY", LineIcons.Friday, onActivity) }
+                    if (onFiles != null) item { DrawerRow("Library", LineIcons.Library, onFiles) }
+                    if (onImages != null) item { DrawerRow("Images", LineIcons.Images, onImages) }
+                    if (onCode != null) item { DrawerRow("Code", LineIcons.Code, onCode) }
+                    items(destinations, key = { "destination:${it.label}" }) { DrawerRow(it.label, it.icon, it.onClick, selected = it.selected) }
                     item {
                         Text("Projects", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 6.dp))
@@ -172,7 +177,7 @@ internal fun ChatDrawer(
         AlertDialog(
             onDismissRequest = { deleting = null },
             title = { FridayDialogWindow(); Text("Delete chat?") },
-            text = { Text("“${summary.title}” will be deleted from this phone. This can't be undone.") },
+            text = { Text("“${summary.title}” $deleteNote") },
             confirmButton = {
                 TextButton(shape = MaterialTheme.shapes.small,
                     onClick = {
@@ -188,7 +193,7 @@ internal fun ChatDrawer(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun ConversationRow(
+private fun ConversationRow(
     summary: ConversationSummary,
     selected: Boolean,
     onOpen: () -> Unit,
@@ -241,16 +246,15 @@ internal fun ConversationRow(
     }
 }
 
-private fun startOfToday(): Long = Calendar.getInstance().apply {
-    set(Calendar.HOUR_OF_DAY, 0)
-    set(Calendar.MINUTE, 0)
-    set(Calendar.SECOND, 0)
-    set(Calendar.MILLISECOND, 0)
-}.timeInMillis
+/** Local midnight, in the same time zone the rest of the app uses for dates. */
+private fun startOfToday(): Long {
+    val now = PlatformTime.nowMillis().toDouble()
+    return PlatformTime.fromParts(listOf("FullYear", "Month", "Date").map { PlatformTime.field(now, false, it).toDouble() }, false).toLong()
+}
 
 /** One sidebar destination: a thin line icon and a label, in the drawer's quiet style. */
 @Composable
-private fun DrawerRow(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit, selected: Boolean = false, quiet: Boolean = false) {
+private fun DrawerRow(label: String, icon: ImageVector, onClick: () -> Unit, selected: Boolean = false, quiet: Boolean = false) {
     NavigationDrawerItem(
         shape = MaterialTheme.shapes.small,
         label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (quiet) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface) },

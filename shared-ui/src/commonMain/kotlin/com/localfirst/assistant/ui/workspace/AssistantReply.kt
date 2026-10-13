@@ -10,6 +10,8 @@ import com.localfirst.assistant.genui.*
 import com.localfirst.assistant.conversation.Message
 import com.localfirst.assistant.ui.NativeResponseContent
 import com.localfirst.assistant.ui.genui.*
+val LocalReplyImages = staticCompositionLocalOf<GenUiImages?> { null }
+val LocalReplyApps = staticCompositionLocalOf<AppBlockStore?> { null }
 @Composable
 fun AssistantReply(content: String, interactive: Boolean, suggest: (String) -> Unit, messages: List<Message> = emptyList()) {
     if (!UiCompiler.isInterface(content)) { NativeResponseContent(content); return }
@@ -31,7 +33,7 @@ fun AssistantReply(content: String, interactive: Boolean, suggest: (String) -> U
     } }
     val context = GenUiContext(
         dispatch = { callback, args -> rendered = runtime.dispatch(callback, args); rendered.actions.forEach(act) },
-        act = act, images = null, bindings = bindings, animate = false,
+        act = act, images = LocalReplyImages.current, bindings = bindings, animate = false, appBlocks = LocalReplyApps.current,
     )
     Column {
         GenUiContent(rendered.nodes, context)

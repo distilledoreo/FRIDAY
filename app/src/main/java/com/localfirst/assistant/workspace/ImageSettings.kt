@@ -4,19 +4,8 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class ImageSettings(
-    val automatic: Boolean = true, val width: Int = 768, val height: Int = 768,
-    val steps: Int = 8, val seed: Int? = null, val transparent: Boolean = false,
-    val references: List<String> = emptyList(),
-) {
-    fun validate(): String? = when {
-        !automatic && (width !in 256..2000 || height !in 256..2000 || width % 16 != 0 || height % 16 != 0) -> "Use dimensions from 256 to 2000 in multiples of 16."
-        !automatic && (steps !in 4..12 || width.toLong() * height * steps > 2000L * 2000 * 8) -> "Use 4–12 steps; at 2000×2000 the maximum is 8."
-        !automatic && seed != null && seed < 0 -> "Seed must be a non-negative integer."
-        references.size > 2 -> "Select at most two reference images."
-        else -> null
-    }
-}
+/** Shared with the browser; Android keeps them in its preferences. */
+typealias ImageSettings = com.localfirst.assistant.client.ImageSettings
 
 class ImageSettingsStore(context: Context) {
     private val prefs = context.getSharedPreferences("image-settings", Context.MODE_PRIVATE)

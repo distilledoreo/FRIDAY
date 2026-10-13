@@ -94,39 +94,9 @@ internal fun SettingsPage(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                OutlinedTextField(
-                    value = baseUrl,
-                    onValueChange = { baseUrl = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Server address") },
-                    placeholder = { Text(ServerSettings.DEFAULT_BASE_URL) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                )
-                OutlinedTextField(
-                    value = model,
-                    onValueChange = { model = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Model name") },
-                    placeholder = { Text("llama3.2") },
-                    singleLine = true,
-                )
-                OutlinedTextField(
-                    value = apiKey,
-                    onValueChange = { apiKey = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("API key (optional)") },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                )
-                OutlinedTextField(
-                    value = timeout,
-                    onValueChange = { timeout = it.filter { ch -> ch.isDigit() } },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Timeout seconds") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                )
+                com.localfirst.assistant.ui.workspace.ModelConnectionFields(
+                    com.localfirst.assistant.client.ModelConnection(baseUrl, model, apiKey, timeout),
+                    { connection -> baseUrl = connection.address; model = connection.model; apiKey = connection.apiKey; timeout = connection.timeout })
                 Text("Search", style = MaterialTheme.typography.titleMedium)
                 Text(
                     text = "Separate from the model. The phone POSTs /search to this address. Leave blank to keep chat and volume without web search.",

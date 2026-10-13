@@ -3,7 +3,7 @@ import com.localfirst.assistant.client.clientUiCatalog
 import kotlin.test.*
 class SharedRendererContractTest {
     @Test fun everyAdvertisedComponentHasTheSameRendererOnBothClients() {
-        val missing = clientUiCatalog().components.map { it.name }.filterNot { it in GenUiRegistry.renderers }
+        val missing = clientUiCatalog().components.map { it.name }.filterNot { it in GenUiRegistry.renderers || it in GenUiRegistry.rawRenderers }
         assertEquals(emptyList(), missing)
     }
     @Test fun calendarDatePickerUsesUtcAndRejectsImpossibleDates() {

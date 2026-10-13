@@ -21,10 +21,10 @@ import kotlinx.coroutines.launch
 /** Native draggable sheet, with an instant two-position dialog when the user reduces motion. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun FridaySheet(onDismiss:()->Unit,content:@Composable ColumnScope.(expanded:Boolean,toggle:(()->Unit)?,close:()->Unit)->Unit) {
+fun FridaySheet(onDismiss:()->Unit,content:@Composable ColumnScope.(expanded:Boolean,toggle:(()->Unit)?,close:()->Unit)->Unit) {
     if(LocalFridayPalette.current.reducedMotion) {
         var expanded by remember { mutableStateOf(false) }
-        Dialog(onDismissRequest=onDismiss,properties=DialogProperties(usePlatformDefaultWidth=false,decorFitsSystemWindows=false)) {
+        Dialog(onDismissRequest=onDismiss,properties=DialogProperties(usePlatformDefaultWidth=false)) {
         FridayDialogWindow()
             Box(Modifier.fillMaxSize()) {
                 Box(Modifier.fillMaxWidth().fillMaxHeight(if(expanded).1f else .45f).align(Alignment.TopCenter).clickable(onClick=onDismiss))

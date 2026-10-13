@@ -43,75 +43,10 @@ internal fun GeneratedImage(result: String, loader: suspend (String) -> File, op
 
 @Composable
 internal fun ImageJobs(state: ChatUiState, vm: ChatViewModel) {
-    FridayVisibleEffect(Unit) {
-        while (true) { vm.refreshImages(); delay(2000) }
-    }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
-        item { Text("Your generated images and their status appear here.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        if (state.imageJobs.isEmpty()) item { Text("No generated images yet.") }
-        items(state.imageJobs, key = { it.optString("id") }) { job ->
-            FridayCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp),verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(job.optString("prompt"), style=MaterialTheme.typography.titleSmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                Text(job.optString("phase").replace('_', ' '), style = MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                if (job.optString("status") == "completed") GeneratedImage(job.toString(), vm::loadImage, vm::openArtifact)
-                job.optString("error").takeIf { it.isNotBlank() && it != "null" }?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                if (job.optString("status") !in listOf("completed", "failed", "cancelled")) TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.cancelImage(job.optString("id")) }) { Text("Cancel") }
-                else TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.removeImageJob(job.optString("id")) }) { Text("Remove from image history") }
-                HorizontalDivider()
-            }
-            }
-        }
-    }
+    com.localfirst.assistant.ui.workspace.ImagesScreen(vm.features) { vm.openArtifact("assistant://artifact/$it") }
 }
 
 @Composable
-internal fun ImageOptions(state: ChatUiState, vm: ChatViewModel, onDone: () -> Unit) {
-    val saved = state.imageSettings
-    var automatic by rememberSaveable { mutableStateOf(saved.automatic) }
-    var width by rememberSaveable { mutableStateOf(saved.width.toString()) }
-    var height by rememberSaveable { mutableStateOf(saved.height.toString()) }
-    var steps by rememberSaveable { mutableIntStateOf(saved.steps) }
-    var seed by rememberSaveable { mutableStateOf(saved.seed?.toString().orEmpty()) }
-    var transparent by rememberSaveable { mutableStateOf(saved.transparent) }
-    var refs by rememberSaveable { mutableStateOf(saved.references) }
-    var error by remember { mutableStateOf<String?>(null) }
-    fun options(): ImageSettings? {
-        val s = ImageSettings(automatic, width.toIntOrNull() ?: 0, height.toIntOrNull() ?: 0, steps, seed.takeIf { it.isNotBlank() }?.toIntOrNull(), transparent, refs)
-        error = if (!automatic && seed.isNotBlank() && seed.toIntOrNull() == null) "Enter a valid integer seed, or leave it blank." else s.validate()
-        return s.takeIf { error == null }
-    }
-    Column(Modifier.fillMaxWidth().heightIn(max = 640.dp).imePadding().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Image settings", style = MaterialTheme.typography.titleLarge)
-        Text("Describe your image in the message box. These choices apply when you send it.", style = MaterialTheme.typography.bodyMedium)
-        Row(verticalAlignment = Alignment.CenterVertically) { Text("Let the assistant choose settings", Modifier.weight(1f)); Switch(automatic, { automatic = it }) }
-        Text(if (automatic) "The assistant chooses size, aspect ratio, steps and references from your request. Selected references below are always used." else "These settings override the assistant’s choices.", style = MaterialTheme.typography.bodySmall)
-        Text("Aspect ratio", style = MaterialTheme.typography.labelLarge)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("1:1" to (768 to 768), "16:9" to (1024 to 576), "9:16" to (576 to 1024)).forEach { (label, size) ->
-                FilterChip(shape = MaterialTheme.shapes.small, selected = !automatic && width == size.first.toString() && height == size.second.toString(), onClick = { automatic = false; width = size.first.toString(); height = size.second.toString() }, label = { Text(label) })
-            }
-        }
-        if (!automatic) {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(width, { width = it.take(4) }, label = { Text("Width") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
-                OutlinedTextField(height, { height = it.take(4) }, label = { Text("Height") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
-            }
-            Text("Maximum 2000×2000. Dimensions use multiples of 16. Larger images can hit the time limit.", style = MaterialTheme.typography.bodySmall)
-            Text("Steps: $steps", style = MaterialTheme.typography.labelLarge)
-            Slider(steps.toFloat(), { steps = it.toInt() }, valueRange = 4f..12f, steps = 7)
-            OutlinedTextField(seed, { seed = it.take(10) }, label = { Text("Seed (blank for random)") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
-            Row(verticalAlignment = Alignment.CenterVertically) { Text("Transparent background", Modifier.weight(1f)); Switch(transparent, { transparent = it }) }
-        }
-        Text("Reference images · ${refs.size}/2", style = MaterialTheme.typography.labelLarge)
-        Text("Choose uploaded images, or attach a photo in chat and ask the assistant to use it. References are resized to at most 512 pixels.", style = MaterialTheme.typography.bodySmall)
-        state.workspaceFiles.filter { it.mime.startsWith("image/") }.forEach { file ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(file.id in refs, { checked -> refs = if (checked) refs + file.id else refs - file.id }, enabled = file.id in refs || refs.size < 2)
-                Text(file.name, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
-            }
-        }
-        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        Button(shape = MaterialTheme.shapes.small, onClick = { options()?.let { vm.saveImageSettings(it); onDone() } }, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) { Text("Done") }
-        Text("Default: 768×768, 8 steps. Rendering stops after 15 minutes and the chat model reloads. No image request can exceed the server limits.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
+internal fun ImageOptions(state: ChatUiState, vm: ChatViewModel, onDone: () -> Unit) =
+    com.localfirst.assistant.ui.ImageOptions(state.imageSettings, state.workspaceFiles.filter { it.mime.startsWith("image/") }.map { it.id to it.name }, state.busy,
+        { vm.saveImageSettings(it); onDone() }, Modifier.imePadding())

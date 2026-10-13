@@ -7,8 +7,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import org.json.JSONArray
-import org.json.JSONObject
+import com.localfirst.assistant.ui.wire.JSONArray
+import com.localfirst.assistant.ui.wire.JSONObject
 
 data class CodeState(
     val open: Boolean = false,
@@ -39,7 +39,7 @@ data class CodeState(
  * Kept apart from the chat view model so the main chat stays as it is; it shares only the PC connection.
  */
 class CodeWorkspace(
-    private val scope: CoroutineScope,
+    parentScope: CoroutineScope,
     private val request: suspend (path: String, method: String, body: JSONObject?) -> String,
     private val remembered: Remembered = Remembered.None,
 ) {
@@ -49,6 +49,7 @@ class CodeWorkspace(
         object None : Remembered { override var project: String? = null }
     }
 
+    private val scope = CoroutineScope(parentScope.coroutineContext + kotlinx.coroutines.SupervisorJob(parentScope.coroutineContext[Job]))
     private val _state = MutableStateFlow(CodeState(projectId = remembered.project))
     val state: StateFlow<CodeState> = _state
 
@@ -60,6 +61,8 @@ class CodeWorkspace(
         refresh()
         taskId?.let { openTask(it) }
     }
+
+    fun reset() { scope.coroutineContext[Job]?.children?.forEach { it.cancel() }; refreshJob?.cancel(); taskJob?.cancel(); _state.value = CodeState() }
 
     fun close() { _state.update { it.copy(open = false, taskId = null, view = null, diff = null, repos = null) } }
 

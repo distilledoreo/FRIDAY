@@ -1,5 +1,8 @@
 package com.localfirst.assistant.ui
 
+import androidx.compose.ui.graphics.asImageBitmap
+import kotlinx.serialization.json.jsonPrimitive
+
 import android.app.Application
 import android.content.Context
 import com.localfirst.assistant.conversation.KnowledgeStore
@@ -204,7 +207,7 @@ data class PendingApproval(
 enum class ApprovalAnswer { DENY, ALLOW, ALWAYS }
 
 /** A document drafted from an answer: edited on the phone, saved to files. */
-data class CanvasDoc(val title: String, val body: String)
+typealias CanvasDoc = com.localfirst.assistant.client.CanvasDoc
 
 class ChatViewModel(
     private val settingsStore: ServerSettingsStore,
@@ -232,9 +235,24 @@ class ChatViewModel(
 
     private fun sharedWorkspace() = com.localfirst.assistant.client.WorkspaceRepository(
         com.localfirst.assistant.workspace.ClientGateway(workspace ?: error("Computer unavailable.")))
+    internal val features = com.localfirst.assistant.client.FeatureController(object : com.localfirst.assistant.client.WorkspaceGateway {
+        override fun connect(baseUrl: String, token: String) { error("Use native connection settings") }
+        override fun lock() {}
+        override suspend fun request(path: String, method: String, body: kotlinx.serialization.json.JsonObject?) =
+            com.localfirst.assistant.client.wireJson.parseToJsonElement((workspace ?: error("Computer unavailable")).request(path, method, body?.let { JSONObject(it.toString()) }))
+    }, viewModelScope)
+    internal suspend fun loadFeatureImage(path: String): androidx.compose.ui.graphics.ImageBitmap? = withContext(Dispatchers.IO) {
+        val file = when {
+            path.startsWith("/workspace/files/") -> loadImage(path.substringAfterLast('/'))
+            path == "/workspace/pc/screenshot" -> (workspace ?: error("Computer unavailable")).downloadPcScreenshot(File(app?.cacheDir ?: error("Preview unavailable"), "pc-preview.png"))
+            path.startsWith("/workspace/agent/tasks/") -> loadAgentScreenshot(path.split('/')[4], path.substringAfterLast('/'))
+            else -> return@withContext null
+        }
+        android.graphics.BitmapFactory.decodeFile(file.absolutePath)?.let { it.asImageBitmap() }
+    }
     /** The Code workspace: GitHub repositories on the PC, kept apart from chat state. */
     val code = com.localfirst.assistant.ui.code.CodeWorkspace(viewModelScope,
-        request = { path, method, body -> (workspace ?: error("Computer unavailable")).request(path, method, body) },
+        request = { path, method, body -> (workspace ?: error("Computer unavailable")).request(path, method, body?.let { JSONObject(it.toString()) }) },
         remembered = app?.let { context ->
             object : com.localfirst.assistant.ui.code.CodeWorkspace.Remembered {
                 private val prefs = context.getSharedPreferences("code", Context.MODE_PRIVATE)
@@ -344,6 +362,8 @@ class ChatViewModel(
             scope = viewModelScope,
             selectIo = { engines.select(_state.value.settings) },
             chat = state,
+            view = { s -> com.localfirst.assistant.voice.VoiceTurn(s.messages, s.busy, s.turnMessagesReady,
+                s.pendingApproval?.let { com.localfirst.assistant.voice.VoiceApproval(it.toolName + "\n" + it.title, it.prompt) }) },
             submit = ::submitSpoken,
             resubmit = ::resubmitSpoken,
             stopTurn = ::stop,
@@ -744,14 +764,14 @@ class ChatViewModel(
                 val searchTool = session.toolRegistry.getAvailableTools().firstOrNull { it.name == "web_search" }
                 if (searchTool != null && com.localfirst.assistant.grounding.GroundingPrecheck.needsSearch(pendingRecallQuery)) {
                     groundingAttempted = true
-                    _state.update { it.copy(groundingStatus = "Checking current sources…", groundingSources = emptyList()) }
+                    _state.update { it.copy(groundingStatus = grounding.CHECKING_STATUS, groundingSources = emptyList()) }
                     val result = com.localfirst.assistant.grounding.GroundingPrecheck.run(pendingRecallQuery, searchTool)
                     if (result != null) {
                         session.latestUserNote = session.latestUserNote.orEmpty() + com.localfirst.assistant.grounding.GroundingPrecheck.note(result)
-                        _state.update { it.copy(groundingStatus = if (result.success) "Evidence retrieved; checking claim support and citations" else "Current sources could not be verified", groundingSources = result.sources) }
+                        _state.update { it.copy(groundingStatus = grounding.retrievedStatus(result.success), groundingSources = result.sources) }
                     }
-                } else _state.update { it.copy(groundingStatus = if (grounding.privateRequest(pendingRecallQuery)) "Private question: public web lookups require separate approval" else null, groundingSources = emptyList()) }
-                if (grounding.blocksWeb(pendingRecallQuery)) session.latestUserNote = session.latestUserNote.orEmpty() + "\nPublic web access is disabled for this turn by the user's request. State when current facts cannot be verified; do not invent citations."
+                } else _state.update { it.copy(groundingStatus = if (grounding.privateRequest(pendingRecallQuery)) grounding.PRIVATE_STATUS else null, groundingSources = emptyList()) }
+                if (grounding.blocksWeb(pendingRecallQuery)) session.latestUserNote = session.latestUserNote.orEmpty() + grounding.OPT_OUT_NOTE
                 outcome = block { messages ->
                     _state.update { it.copy(messages = messages, turnMessagesReady = true) }
                 }
@@ -1187,16 +1207,10 @@ class ChatViewModel(
 
     /** Starts a deep-research task from the draft: a fixed multi-step plan, approved in Activity, reported back for discussion. */
     fun proposeDeepResearch() {
-        val query = _state.value.draft.trim()
-        val grounding = com.localfirst.assistant.grounding.GroundingPrecheck
-        if (query.isEmpty() || _state.value.busy || _state.value.workspaceBusy || _state.value.privacy.incognito) return
-        if (grounding.blocksWeb(query) || grounding.privateRequest(query)) {
-            _state.update { it.copy(error = "This looks private: public deep research needs a version without personal details.") }; return
-        }
-        if (query.length > 7900) { _state.update { it.copy(error = "This research prompt exceeds the task limit. Use a focused public question.") }; return }
-        proposeAgentTask("Research this thoroughly: $query",
-            listOf("Find primary authoritative sources", "Read the relevant passages and dates",
-                "Check material claims, conflicting evidence and limits", "Write a structured report with citations and uncertainty"))
+        if (_state.value.busy || _state.value.workspaceBusy || _state.value.privacy.incognito) return
+        val (prompt, plan) = com.localfirst.assistant.client.DeepResearch.proposal(_state.value.draft)
+            .getOrElse { e -> if (_state.value.draft.isNotBlank()) _state.update { it.copy(error = e.message) }; return }
+        proposeAgentTask(prompt, plan)
         _state.update { it.copy(showWorkspace = true, workspaceDestination = WorkspaceDestination.ACTIVITY) }
     }
 
@@ -1358,6 +1372,13 @@ class ChatViewModel(
     }
     fun handleAccountCallback(uri: Uri?) {
         if (uri?.scheme != "msauth" || uri.host != "com.localfirst.assistant" || uri.path != "/k+71zY1PlQ+a2Hd9Wur3tSmBEcI=") return
+        val sharedFlow = features.state.value.oauth
+        if (sharedFlow?.get("provider")?.jsonPrimitive?.content == "microsoft") {
+            val code = uri.getQueryParameter("code"); val returned = uri.getQueryParameter("state")
+            if (code.isNullOrBlank() || returned.isNullOrBlank() || _state.value.privacy.incognito) features.cancelOAuth()
+            else features.finishOAuth(code, returned, sharedFlow["flow_id"]?.jsonPrimitive?.content)
+            openWorkspace(WorkspaceDestination.ACCOUNTS); return
+        }
         if (_state.value.oauthFlow?.optString("provider") != "microsoft") { failAccountSignIn("No active Microsoft sign-in; start again."); return }
         val code = uri.getQueryParameter("code")
         val state = uri.getQueryParameter("state")
@@ -1788,9 +1809,9 @@ class ChatViewModel(
     }
     fun discardChatGptImport() = workspaceAction { _state.value.importPreview?.optString("id")?.let { workspace?.request("/workspace/memory/imports/$it", "DELETE") }; _state.update { it.copy(importPreview = null) }; "Import preview discarded." }
     fun reviewMemory(id: String, accept: Boolean, text: String? = null) = workspaceAction { workspace?.request("/workspace/memory/suggestions/$id", "POST", JSONObject().put("accept", accept).apply { text?.let { put("text", it) } }); refreshMemory(); if (accept) "Memory approved." else "Suggestion dismissed." }
-    fun refreshArchive(query: String = _state.value.archiveQuery, offset: Int = 0) {
+    fun refreshArchive(query: String = _state.value.archiveQuery, offset: Int = 0): Job {
         _state.update { it.copy(archiveQuery = query, archiveOffset = offset) }
-        viewModelScope.launch {
+        return viewModelScope.launch {
             try {
                 val rows = JSONArray(workspace?.request("/workspace/memory/sources?q=" + java.net.URLEncoder.encode(query, "UTF-8") + "&offset=$offset") ?: return@launch)
                 if (_state.value.archiveQuery == query && _state.value.archiveOffset == offset) _state.update { it.copy(archiveSources = jsonRows(rows)) }

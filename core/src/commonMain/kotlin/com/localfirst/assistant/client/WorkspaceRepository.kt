@@ -11,7 +11,14 @@ val wireJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 interface WorkspaceGateway {
     fun connect(baseUrl: String, token: String)
     fun lock()
+    fun privateMode(enabled: Boolean) {}
+    fun closeModelConnection(id: String) {}
+    suspend fun privateFileSession(): String? = null
     suspend fun artifact(id: String) { error("File downloads are unavailable on this client") }
+    suspend fun upload(name: String, mime: String, bytes: ByteArray): JsonObject { error("Uploads are unavailable on this client") }
+    /** A computer file's bytes, for backups that include attachment images. */
+    suspend fun fileBytes(id: String): ByteArray { error("File downloads are unavailable on this client") }
+    suspend fun stream(path: String, body: JsonObject?, event: suspend (JsonObject) -> Unit) { event(request(path, if (body == null) "GET" else "POST", body).jsonObject) }
     suspend fun request(path: String, method: String = "GET", body: JsonObject? = null): JsonElement
 }
 class WorkspaceException(val status: Int, message: String) : Exception(message)
@@ -71,8 +78,10 @@ class WorkspaceRepository(val gateway: WorkspaceGateway) {
     suspend fun save(chat: StoredConversation, revision: Int): SyncItem = wireJson.decodeFromJsonElement(gateway.request(
         "/workspace/items/${chat.summary.id}", "PUT", body(revision, buildJsonObject { put("chat", encodeConversation(chat)) })))
     suspend fun delete(chat: SharedChat) { gateway.request("/workspace/items/${chat.item.id}", "PUT", body(chat.item.revision, JsonObject(emptyMap()), true)) }
-    suspend fun continueChat(chat: StoredConversation, revision: Int, interfacePrompt: String = ""): JsonObject = gateway.request(
-        "/workspace/items/${chat.summary.id}/continue", "POST", JsonObject(body(revision, buildJsonObject { put("chat", encodeConversation(chat)) }) + ("interface_prompt" to JsonPrimitive(interfacePrompt)))).jsonObject
+    /** [imageSettings] are manual image choices that override the model's on any image this turn creates. */
+    suspend fun continueChat(chat: StoredConversation, revision: Int, interfacePrompt: String = "", imageSettings: JsonObject? = null, turn: TurnOptions = TurnOptions()): JsonObject = gateway.request(
+        "/workspace/items/${chat.summary.id}/continue", "POST", JsonObject(body(revision, buildJsonObject { put("chat", encodeConversation(chat)) }) + ("interface_prompt" to JsonPrimitive(interfacePrompt)) +
+            (imageSettings?.let { mapOf("image_settings" to it) } ?: emptyMap()) + turn.fields())).jsonObject
     suspend fun preference(key: String, value: JsonPrimitive, items: List<SyncItem>, expectedRevision: Int? = null) {
         require(key in com.localfirst.assistant.settings.portablePreferenceKeys)
         val revision = expectedRevision ?: (items.firstOrNull { it.id == "preferences-$key" }?.revision ?: 0)
@@ -108,6 +117,16 @@ class WorkspaceRepository(val gateway: WorkspaceGateway) {
     }
     suspend fun knowledge(value: Knowledge, revision: Int) {
         gateway.request("/workspace/items/knowledge", "PUT", body(revision, buildJsonObject { put("knowledge", wireJson.encodeToString(Knowledge.serializer(), value)) }))
+    }
+}
+
+/** Per-turn choices sent with a turn: the pre-search evidence note, the user's no-search request, and the chosen model. */
+data class TurnOptions(val note: String = "", val blockWeb: Boolean = false, val model: String? = null, val connection: String? = null) {
+    fun fields(): Map<String, JsonElement> = buildMap {
+        if (note.isNotEmpty()) put("turn_note", JsonPrimitive(note.take(40000)))
+        if (blockWeb) put("block_web", JsonPrimitive(true))
+        connection?.let { put("connection", JsonPrimitive(it)) }
+        model?.takeIf { it.isNotBlank() }?.let { put("model", JsonPrimitive(it)) }
     }
 }
 

@@ -171,8 +171,11 @@ actual object PlatformNet {
     actual fun decodeUrl(s: String): String = js("decodeURIComponent(s)").unsafeCast<String>()
 }
 
+// js() can read a function's parameters, but not a constructor parameter inside a property initializer.
+private fun parseUrl(text: String): dynamic = js("new URL(text)")
+
 actual class PlatformUri actual constructor(url: String) {
-    private val u: dynamic = js("new URL(url)")
+    private val u: dynamic = parseUrl(url)
     actual val scheme: String? get() = runCatching { u.protocol.unsafeCast<String>().removeSuffix(":") }.getOrNull()
     actual val host: String? get() = runCatching { u.hostname.unsafeCast<String>() }.getOrNull()
     actual val port: Int get() = runCatching { val p = u.port.unsafeCast<String>(); if (p.isEmpty()) -1 else p.toInt() }.getOrDefault(-1)

@@ -1,7 +1,7 @@
 package com.localfirst.assistant.ui.code
 
-import org.json.JSONArray
-import org.json.JSONObject
+import com.localfirst.assistant.ui.wire.JSONArray
+import com.localfirst.assistant.ui.wire.JSONObject
 
 /** A GitHub repository FRIDAY has cloned on the PC for coding tasks. */
 data class CodeProject(val id: String, val repo: String, val defaultBranch: String, val trusted: Boolean, val openTasks: Int) {
@@ -105,7 +105,7 @@ data class CodeTaskView(
     }
 }
 
-internal fun rows(array: JSONArray?): List<JSONObject> = array?.let { a -> (0 until a.length()).mapNotNull(a::optJSONObject) }.orEmpty()
+fun rows(array: JSONArray?): List<JSONObject> = array?.let { a -> (0 until a.length()).mapNotNull(a::optJSONObject) }.orEmpty()
 
 /** How a task's state reads in lists and headers. */
 fun codeStateLabel(task: CodeTask): String = when {

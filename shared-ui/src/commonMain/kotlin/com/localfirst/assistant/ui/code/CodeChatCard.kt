@@ -10,11 +10,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.localfirst.assistant.ui.FridayCard
 import com.localfirst.assistant.ui.LineIcons
-import org.json.JSONObject
+import com.localfirst.assistant.ui.wire.JSONObject
 
 /** A coding task started from chat: its live state, and the way into Code where the work happens. */
 @Composable
-internal fun CodeChatCard(json: String, code: CodeWorkspace, open: (String) -> Unit) {
+fun CodeChatCard(json: String, code: CodeWorkspace, open: (String) -> Unit) {
     val stored = remember(json) { runCatching { JSONObject(json) }.getOrNull() } ?: return
     val id = stored.optString("id").takeIf { it.matches(Regex("[a-f0-9]{12}")) } ?: return
     val state by code.state.collectAsState()

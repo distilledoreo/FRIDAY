@@ -7,7 +7,7 @@ import asyncio
 import contextlib
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -103,6 +103,7 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
     class OAuthStart(BaseModel):
         model_config = ConfigDict(extra='forbid')
         provider: str
+        browser: bool = False
         features: list[str] = Field(default_factory=lambda: ['mail_read','calendar_read'], max_length=4)
 
     class OAuthFinish(BaseModel):
@@ -144,7 +145,11 @@ def install(app, auth, root, engine=None, unavailable_detail=None, poll_seconds=
         return {'provider':provider,'configured':True}
 
     @router.post('/accounts/oauth/start')
-    async def start_sign_in(body: OAuthStart):
+    async def start_sign_in(body: OAuthStart, request: Request):
+        if body.browser:
+            # The redirect is fixed to this gateway. Clients cannot provide an arbitrary destination.
+            redirect = str(request.base_url).rstrip('/') + '/friday/oauth-callback'
+            return await account_call(accounts.begin if accounts else None, body.provider, body.features, redirect)
         return await account_call(accounts.begin if accounts else None, body.provider, body.features)
 
     @router.post('/accounts/imap')

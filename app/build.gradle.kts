@@ -12,8 +12,8 @@ android {
         applicationId = "com.localfirst.assistant"
         minSdk = 26
         targetSdk = 35
-        versionCode = 60
-        versionName = "0.24.0"
+        versionCode = 63
+        versionName = "0.25.2"
     }
 
     buildTypes {

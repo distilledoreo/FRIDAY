@@ -542,6 +542,9 @@ memory_store = enable_memory(app, auth,
     WorkspacePath(__file__).resolve().parent.parent / 'workspace-data' / 'memory',
     llm, gpu_gate)
 workspace_store.memory_store = memory_store
+# Saved browser chats use the same tools as the phone, through the gateway's own authenticated routes.
+from workspace.integration import loopback as workspace_loopback
+workspace_store.loopback = workspace_loopback(app, API_TOKEN)
 
 
 # ---- FRIDAY isolated cloud agent ----

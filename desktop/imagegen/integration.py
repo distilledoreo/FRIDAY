@@ -71,4 +71,5 @@ def enable(app, auth, workspace, raw_llm, gate, config_path):
     enable_foreground(app, auth, gate, workspace.root)
     from .incognito import enable as enable_incognito
     manager.incognito = enable_incognito(app, auth, workspace, manager, ImageRequest)
+    workspace.incognito = manager.incognito
     return manager

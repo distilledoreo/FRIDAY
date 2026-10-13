@@ -6,7 +6,7 @@ import kotlinx.coroutines.test.*
 import kotlinx.serialization.json.*
 import kotlin.test.*
 
-private class Pc : WorkspaceGateway {
+internal class Pc : WorkspaceGateway {
     val items = linkedMapOf<String, SyncItem>()
     val calls = mutableListOf<Pair<String, JsonObject?>>()
     val facts = mutableListOf<JsonObject>()
@@ -14,19 +14,43 @@ private class Pc : WorkspaceGateway {
     var jobError = ""
     var jobStatus = "completed"
     var legacy = false
+    var privateEvents: (suspend (suspend (JsonObject) -> Unit) -> Unit)? = null
+    var privateWait: CompletableDeferred<Unit>? = null
+    var privateChat: StoredConversation? = null
+    /** Extra routes by "METHOD path", answered before the built-in ones. */
+    val routes = mutableMapOf<String, (JsonObject?) -> JsonElement>()
+    /** Events a job's progress stream sends; null keeps job streams unavailable, as on a gateway without them. */
+    var jobEvents: (suspend (String, suspend (JsonObject) -> Unit) -> Unit)? = null
+    /** Fields added to the fixture's single job, such as item_id and pending. */
+    var jobFields: JsonObject = JsonObject(emptyMap())
+    val files = mutableMapOf<String, ByteArray>()
+    override suspend fun fileBytes(id: String) = files[id] ?: throw WorkspaceException(404, "File not found")
+    var uploads = 0
+    override suspend fun upload(name: String, mime: String, bytes: ByteArray) = buildJsonObject { put("id", if (uploads++ == 0) "attachment" else "upload$uploads"); put("name", name); put("mime", mime) }
+    override suspend fun stream(path: String, body: JsonObject?, event: suspend (JsonObject) -> Unit) {
+        if (path.startsWith("/workspace/jobs/")) { calls += path to body; jobEvents?.invoke(path, event) ?: error("Stream unavailable in this fixture"); return }
+        check(path == "/workspace/chat/ephemeral") { "Stream unavailable in this fixture" }
+        calls += path to body
+        privateChat = decodeConversation(body!!.getValue("chat").jsonPrimitive.content)
+        privateEvents?.let { it(event); return }
+        event(buildJsonObject { put("text", "Private partial") })
+        privateWait?.await()
+        event(buildJsonObject { put("text", "Private reply"); put("done", true) })
+    }
     /** Record ids returned by each change-cursor reply. */
     val sent = mutableListOf<List<String>>()
-    private fun jobs() = buildJsonArray { add(buildJsonObject { put("id", "job"); put("status", jobStatus); put("result", "Done"); put("error", jobError) }) }
+    private fun jobs() = buildJsonArray { add(JsonObject(buildJsonObject { put("id", "job"); put("status", jobStatus); put("result", "Done"); put("error", jobError) } + jobFields)) }
     override fun connect(baseUrl: String, token: String) {}
     override fun lock() {}
     override suspend fun request(path: String, method: String, body: JsonObject?): JsonElement {
         calls += path to body
+        routes["$method ${path.substringBefore('?')}"]?.let { return it(body) }
         if (path.startsWith("/workspace/changes?")) {
             if (legacy) throw WorkspaceException(404, "Not found")
             wait?.await()
             val since = com.localfirst.assistant.platform.PlatformNet.decodeUrl(path.substringAfter("since=").substringBefore('&')).split('|')
             val seen = since[0].split(',').filter { it.isNotEmpty() }.associate { it.substringBefore(':') to it.substringAfter(':').toInt() }
-            val jobMark = "$jobStatus/$jobError"; val memoryMark = facts.hashCode().toString()
+            val jobMark = "$jobStatus/$jobError/$jobFields"; val memoryMark = facts.hashCode().toString()
             val moved = items.values.filter { seen[it.id] != it.revision }
             sent += moved.map { it.id }
             return buildJsonObject {
@@ -69,6 +93,48 @@ private class Pc : WorkspaceGateway {
 }
 @OptIn(ExperimentalCoroutinesApi::class)
 class SharedWorkspaceTest {
+    @Test fun incognitoKeepsConversationOnlyInSessionAndLockClearsIt() = runTest {
+        val pc = Pc(); val vm = WorkspaceController(WorkspaceRepository(pc), this, { "private" }, { 5 })
+        vm.connect("", "token")!!.join(); vm.newIncognito(); vm.setDraft("Sensitive question"); vm.send()!!.join()
+        assertTrue(vm.state.value.incognito)
+        assertEquals("Private reply", (vm.state.value.active!!.conversation.messages.last() as Message.Assistant).content)
+        assertTrue(pc.items.isEmpty())
+        assertFalse(pc.calls.any { it.first.endsWith("/continue") })
+        vm.refresh()!!.join()
+        assertEquals("Sensitive question", (vm.state.value.active!!.conversation.messages.first() as Message.User).content)
+        vm.lock()
+        assertNull(vm.state.value.active)
+        assertFalse(vm.state.value.incognito)
+    }
+    @Test fun lockingDuringPrivateStreamDiscardsLateReply() = runTest {
+        val pc = Pc().apply { privateWait = CompletableDeferred() }; val vm = WorkspaceController(WorkspaceRepository(pc), this, { "private" }, { 5 })
+        vm.connect("", "token")!!.join(); vm.newIncognito(); vm.setDraft("Question")
+        val send = vm.send()!!; runCurrent()
+        assertEquals("Private partial", vm.state.value.streamingText)
+        vm.lock(); pc.privateWait!!.complete(Unit); send.join()
+        assertEquals(WorkspaceState(), vm.state.value)
+        assertTrue(pc.items.isEmpty())
+    }
+    @Test fun attachmentDraftSurvivesRefreshAndConflictingSend() = runTest {
+        val pc = Pc().apply { chat() }; val vm = WorkspaceController(WorkspaceRepository(pc), this, { "new" }, { 5 })
+        vm.connect("", "token")!!.join(); vm.select("a"); vm.upload("notes.txt", "text/plain", "Hello".encodeToByteArray())!!.join(); vm.setDraft("Read this")
+        vm.refresh()!!.join()
+        assertEquals("Hello", vm.state.value.attachments.single().text)
+        pc.chat(revision = 2)
+        vm.send()!!.join()
+        assertEquals("Read this", vm.state.value.draft)
+        assertEquals("attachment", vm.state.value.attachments.single().remoteFileId)
+        assertNotNull(vm.state.value.error)
+    }
+    @Test fun successfulSendUsesAttachmentsAndClearsOnlyTheSentStrip() = runTest {
+        val pc = Pc(); val vm = WorkspaceController(WorkspaceRepository(pc), this, { "new" }, { 5 })
+        vm.connect("", "token")!!.join(); vm.upload("photo.png", "image/png", byteArrayOf(1))!!.join()
+        assertTrue(vm.state.value.canSend)
+        vm.send()!!.join()
+        val chat = decodeConversation(pc.items.getValue("new").payload.getValue("chat").jsonPrimitive.content)
+        assertEquals("remote:attachment", (chat.messages.single() as Message.User).attachments.single().path)
+        assertTrue(vm.state.value.attachments.isEmpty())
+    }
     @Test fun canonicalWirePreservesToolsAttachmentsAndUnicode() {
         val c = StoredConversation(ConversationSummary("id", "Quote \" and é", 1, 2, "project"), listOf(
             Message.User("line 1\nline 2", listOf(Attachment("asset", AttachmentKind.IMAGE, "image.jpg", "image/jpeg", path = "remote:abc"))),
@@ -111,6 +177,13 @@ class SharedWorkspaceTest {
         pc.chat(title = "Changed on the phone", revision = 3); advanceTimeBy(3000); runCurrent()
         assertEquals("Changed on the phone", vm.state.value.chats.single().conversation.summary.title)
         vm.close()
+    }
+    @Test fun sidebarDeletesTheChosenChatNotTheOpenOne() = runTest {
+        val pc = Pc().apply { chat("a"); chat("b", "Second") }; val vm = WorkspaceController(WorkspaceRepository(pc), this, { "new" }, { 5 })
+        vm.connect("", "token")!!.join(); vm.select("a")
+        vm.delete("b")!!.join()
+        assertEquals(listOf("a"), vm.state.value.chats.map { it.item.id }); assertEquals("a", vm.state.value.activeId)
+        assertTrue(pc.items.getValue("b").deleted)
     }
     @Test fun refreshAndRemoteDeletionPreserveUnsentDraft() = runTest {
         val pc = Pc().apply { chat() }; val vm = WorkspaceController(WorkspaceRepository(pc), this, { "new" }, { 5 })
