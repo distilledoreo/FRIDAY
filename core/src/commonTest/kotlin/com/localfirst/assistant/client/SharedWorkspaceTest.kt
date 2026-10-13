@@ -13,11 +13,31 @@ private class Pc : WorkspaceGateway {
     var wait: CompletableDeferred<Unit>? = null
     var jobError = ""
     var jobStatus = "completed"
+    var legacy = false
+    /** Record ids returned by each change-cursor reply. */
+    val sent = mutableListOf<List<String>>()
+    private fun jobs() = buildJsonArray { add(buildJsonObject { put("id", "job"); put("status", jobStatus); put("result", "Done"); put("error", jobError) }) }
     override fun connect(baseUrl: String, token: String) {}
     override fun lock() {}
     override suspend fun request(path: String, method: String, body: JsonObject?): JsonElement {
         calls += path to body
+        if (path.startsWith("/workspace/changes?")) {
+            if (legacy) throw WorkspaceException(404, "Not found")
+            wait?.await()
+            val since = com.localfirst.assistant.platform.PlatformNet.decodeUrl(path.substringAfter("since=").substringBefore('&')).split('|')
+            val seen = since[0].split(',').filter { it.isNotEmpty() }.associate { it.substringBefore(':') to it.substringAfter(':').toInt() }
+            val jobMark = "$jobStatus/$jobError"; val memoryMark = facts.hashCode().toString()
+            val moved = items.values.filter { seen[it.id] != it.revision }
+            sent += moved.map { it.id }
+            return buildJsonObject {
+                put("cursor", items.values.joinToString(",") { "${it.id}:${it.revision}" } + "|$jobMark|$memoryMark")
+                put("reset", since.size < 3); put("items", wireJson.encodeToJsonElement(moved))
+                put("jobs", if (since.getOrNull(1) != jobMark) jobs() else JsonNull); put("memory", since.getOrNull(2) != memoryMark)
+            }
+        }
         if (path == "/workspace/items") { wait?.await(); return wireJson.encodeToJsonElement(items.values.toList()) }
+        if (path == "/workspace/items?revisions=1") return buildJsonArray { items.values.forEach { add(buildJsonObject { put("id", it.id); put("revision", it.revision); put("deleted", it.deleted) }) } }
+        if (path.startsWith("/workspace/items?ids=")) return wireJson.encodeToJsonElement(path.substringAfter('=').split(',').mapNotNull { items[it] })
         if (path == "/workspace/memory") return buildJsonObject { put("memories", facts.size); put("settings", buildJsonObject { put("use_memories", true); put("use_history", true) }) }
         if (path.startsWith("/workspace/memory/memories?")) {
             val args = path.substringAfter('?').split('&').associate { it.substringBefore('=') to it.substringAfter('=') }
@@ -27,7 +47,7 @@ private class Pc : WorkspaceGateway {
         if (path.startsWith("/workspace/memory/sources?")) return JsonArray(emptyList())
         if (path == "/workspace/memory/memories" && method == "POST") { facts += body!!; return body }
         if (path == "/workspace/memory/settings") return body!!
-        if (path == "/workspace/jobs") return buildJsonArray { add(buildJsonObject { put("id", "job"); put("status", jobStatus); put("result", "Done"); put("error", jobError) }) }
+        if (path == "/workspace/jobs") return jobs()
         if (path.startsWith("/workspace/jobs/") && method == "POST") {
             jobStatus = when(path.substringAfterLast('/')) { "resume" -> "scheduled"; "pause" -> "paused"; else -> "cancelled" }
             return buildJsonObject { put("status", jobStatus) }
@@ -54,6 +74,43 @@ class SharedWorkspaceTest {
             Message.User("line 1\nline 2", listOf(Attachment("asset", AttachmentKind.IMAGE, "image.jpg", "image/jpeg", path = "remote:abc"))),
             Message.ToolCall("call", "web_search", "{}"), Message.ToolResult("call", "web_search", "result", true), Message.Assistant("Answer")))
         assertEquals(c, decodeConversation(encodeConversation(c)))
+    }
+    @Test fun refreshDownloadsOnlyChangedRecords() = runTest {
+        val pc = Pc().apply { chat("a"); chat("b", "Second") }; val vm = WorkspaceController(WorkspaceRepository(pc), this, { "new" }, { 5 })
+        vm.connect("", "token")!!.join()
+        assertEquals(listOf("a", "b"), pc.sent.last())
+        pc.calls.clear(); vm.refresh()!!.join()
+        // Nothing moved: one small request, and no task or memory downloads.
+        assertEquals(emptyList(), pc.sent.last()); assertTrue(pc.calls.single().first.startsWith("/workspace/changes?"))
+        pc.chat("b", "Renamed elsewhere", 2); pc.chat("c", "Third"); pc.items["a"] = SyncItem("a", 2, deleted = true)
+        vm.refresh()!!.join()
+        assertEquals(listOf("a", "b", "c"), pc.sent.last())
+        assertEquals(setOf("Renamed elsewhere", "Third"), vm.state.value.chats.map { it.conversation.summary.title }.toSet())
+        pc.facts += buildJsonObject { put("id", "m"); put("text", "Saved elsewhere") }
+        pc.calls.clear(); vm.refresh()!!.join()
+        assertEquals(emptyList(), pc.sent.last()); assertTrue(pc.calls.any { it.first.startsWith("/workspace/memory/memories?") })
+        assertEquals("Saved elsewhere", vm.state.value.memories.single()["text"]!!.jsonPrimitive.content)
+    }
+    @Test fun gatewayWithoutChangeCursorsStillRefreshesIncrementally() = runTest {
+        val pc = Pc().apply { legacy = true; chat("a"); chat("b", "Second") }; val vm = WorkspaceController(WorkspaceRepository(pc), this, { "new" }, { 5 })
+        vm.connect("", "token")!!.join()
+        fun itemCalls() = pc.calls.map { it.first }.filter { it.startsWith("/workspace/items") }
+        assertEquals(listOf("/workspace/items"), itemCalls())
+        pc.chat("b", "Renamed elsewhere", 2); pc.calls.clear(); vm.refresh()!!.join()
+        assertEquals(listOf("/workspace/items?revisions=1", "/workspace/items?ids=b"), itemCalls())
+        assertTrue(vm.state.value.chats.any { it.conversation.summary.title == "Renamed elsewhere" })
+    }
+    @Test fun heldRefreshNeitherBlocksNorDropsActions() = runTest {
+        val pc = Pc().apply { chat() }; val vm = WorkspaceController(WorkspaceRepository(pc), this, { "new" }, { 5 })
+        vm.connect("", "token")!!.join(); vm.select("a"); vm.setDraft("Sent while refresh is held")
+        pc.wait = CompletableDeferred(); vm.startPolling { true }; advanceTimeBy(2000); runCurrent()
+        assertFalse(vm.state.value.busy); assertTrue(vm.state.value.canSend)
+        pc.wait = null
+        assertNotNull(vm.send()).join()
+        assertTrue(pc.calls.any { it.first == "/workspace/items/a/continue" }); assertEquals("", vm.state.value.draft)
+        pc.chat(title = "Changed on the phone", revision = 3); advanceTimeBy(3000); runCurrent()
+        assertEquals("Changed on the phone", vm.state.value.chats.single().conversation.summary.title)
+        vm.close()
     }
     @Test fun refreshAndRemoteDeletionPreserveUnsentDraft() = runTest {
         val pc = Pc().apply { chat() }; val vm = WorkspaceController(WorkspaceRepository(pc), this, { "new" }, { 5 })

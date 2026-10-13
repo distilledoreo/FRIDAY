@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import time
 import unittest
 import uuid
 
@@ -162,6 +163,71 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             messages = json.loads(db.execute('SELECT messages FROM jobs WHERE id=?', (r.json()['id'],)).fetchone()[0])
         self.assertNotIn('Prefer concise answers', messages[0]['content'])
 
+    async def test_clients_can_poll_revisions_and_fetch_only_changed_items(self):
+        self.workspace.sync('chat-1', 0, {'text': 'one'})
+        self.workspace.sync('chat-2', 0, {'text': 'two'})
+        self.workspace.sync('chat-2', 1, {}, True)
+        r = await self.client.get('/workspace/items?revisions=1')
+        self.assertEqual(r.json(), [{'id': 'chat-1', 'revision': 1, 'deleted': False},
+                                    {'id': 'chat-2', 'revision': 2, 'deleted': True}])
+        r = await self.client.get('/workspace/items?ids=chat-1,missing')
+        self.assertEqual(r.json(), [{'id': 'chat-1', 'revision': 1, 'payload': {'text': 'one'}, 'deleted': False}])
+        self.assertEqual(len((await self.client.get('/workspace/items')).json()), 2)
+        r = await self.client.get('/workspace/items?ids=' + ','.join('x' * 101))
+        self.assertEqual(r.status_code, 400)
+    async def test_change_cursor_returns_only_what_moved_and_holds_when_idle(self):
+        self.workspace.sync('chat-1', 0, {'text': 'one'})
+        self.workspace.sync('chat-2', 0, {'text': 'two'})
+        first = (await self.client.get('/workspace/changes')).json()
+        self.assertTrue(first['reset'])
+        self.assertEqual([i['id'] for i in first['items']], ['chat-1', 'chat-2'])
+        self.assertEqual(first['jobs'], [])
+        idle = (await self.client.get('/workspace/changes', params={'since': first['cursor']})).json()
+        self.assertEqual((idle['items'], idle['jobs'], idle['memory'], idle['reset'], idle['cursor']), ([], None, False, False, first['cursor']))
+        self.workspace.sync('chat-2', 1, {}, True)
+        moved = (await self.client.get('/workspace/changes', params={'since': first['cursor']})).json()
+        self.assertEqual(moved['items'], [{'id': 'chat-2', 'revision': 2, 'payload': {}, 'deleted': True}])
+        self.assertIsNone(moved['jobs'])
+        job = self.workspace.create_job('Later', time.time() + 3600)
+        tasks = (await self.client.get('/workspace/changes', params={'since': moved['cursor']})).json()
+        self.assertEqual((tasks['items'], [j['id'] for j in tasks['jobs']]), ([], [job]))
+        # A held request answers as soon as another client writes.
+        held = asyncio.create_task(self.client.get('/workspace/changes', params={'since': tasks['cursor'], 'wait': 10}))
+        await asyncio.sleep(.2)
+        self.assertFalse(held.done())
+        started = time.monotonic()
+        self.workspace.sync('chat-3', 0, {'text': 'three'})
+        reply = (await held).json()
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual([i['id'] for i in reply['items']], ['chat-3'])
+        # A cursor from before a restore, or one that cannot be read, starts over.
+        restored = (await self.client.get('/workspace/changes', params={'since': '999.x.y'})).json()
+        self.assertTrue(restored['reset'])
+        self.assertEqual(len(restored['items']), 3)
+        self.assertTrue((await self.client.get('/workspace/changes', params={'since': 'nonsense'})).json()['reset'])
+    async def test_change_cursor_reports_shared_memory_changes(self):
+        from desktop.memory.store import MemoryStore
+        self.workspace.memory_store = MemoryStore(Path(self.temp.name) / 'memory')
+        async def changes(cursor): return (await self.client.get('/workspace/changes', params={'since': cursor})).json()
+        cursor = (await changes(''))['cursor']
+        self.assertFalse((await changes(cursor))['memory'])
+        self.workspace.memory_store.remember('Prefer concise answers', category='preference')
+        saved = await changes(cursor)
+        self.assertTrue(saved['memory'])
+        self.assertFalse((await changes(saved['cursor']))['memory'])
+        self.workspace.memory_store.set_settings({'use_history': False})
+        self.assertTrue((await changes(saved['cursor']))['memory'])
+    async def test_existing_history_gains_change_order_on_upgrade(self):
+        with self.workspace.db() as db:
+            db.execute('DROP TABLE items')
+            db.execute('CREATE TABLE items(id TEXT PRIMARY KEY, revision INTEGER, payload TEXT, deleted INTEGER)')
+            db.execute("INSERT INTO items VALUES('old-1',3,'{}',0)")
+            db.execute("INSERT INTO items VALUES('old-2',1,'{}',0)")
+        upgraded = module.Workspace(self.temp.name)
+        seq, _, _ = upgraded.marks()
+        self.assertEqual(seq, 2)
+        upgraded.sync('old-1', 3, {'text': 'edited'})
+        self.assertEqual([i['id'] for i in upgraded.items(after=seq)], ['old-1'])
     async def test_recall_failure_still_starts_the_reply(self):
         class Broken:
             def native(self, source): return False

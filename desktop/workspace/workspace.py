@@ -85,11 +85,15 @@ class Workspace:
         self.files.mkdir(exist_ok=True)
         with self.db() as db:
             db.executescript('''
-                CREATE TABLE IF NOT EXISTS items(id TEXT PRIMARY KEY, revision INTEGER, payload TEXT, deleted INTEGER);
+                CREATE TABLE IF NOT EXISTS items(id TEXT PRIMARY KEY, revision INTEGER, payload TEXT, deleted INTEGER, seq INTEGER);
                 CREATE TABLE IF NOT EXISTS files(id TEXT PRIMARY KEY, name TEXT, mime TEXT, size INTEGER, created REAL);
                 CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, prompt TEXT, status TEXT, run_at REAL,
                     interval_seconds INTEGER, messages TEXT, result TEXT, error TEXT, updated REAL);
             ''')
+            # seq orders every item write, so a client can ask for what changed after the last one it saw.
+            if 'seq' not in {r['name'] for r in db.execute('PRAGMA table_info(items)')}:
+                db.execute('ALTER TABLE items ADD COLUMN seq INTEGER')
+                db.execute('UPDATE items SET seq=rowid')
             columns = {r['name'] for r in db.execute('PRAGMA table_info(jobs)')}
             for name, kind in [('item_id', 'TEXT'), ('base_revision', 'INTEGER'), ('chat', 'TEXT'), ('initial_count', 'INTEGER')]:
                 if name not in columns:
@@ -128,7 +132,8 @@ class Workspace:
             if revision != actual:
                 raise HTTPException(409, {'revision': actual, 'payload': json.loads(old['payload']) if old else None,
                                            'deleted': bool(old['deleted']) if old else False})
-            db.execute('INSERT OR REPLACE INTO items VALUES(?,?,?,?)', (item_id, actual + 1, encoded, int(deleted)))
+            db.execute('INSERT OR REPLACE INTO items(id,revision,payload,deleted,seq) VALUES(?,?,?,?,'
+                       '(SELECT COALESCE(MAX(seq),0)+1 FROM items))', (item_id, actual + 1, encoded, int(deleted)))
         # The workspace commit remains successful if secondary recall indexing is unavailable.
         if self.memory_store is not None and not deleted and 'chat' in payload:
             try:
@@ -148,10 +153,30 @@ class Workspace:
                 logging.getLogger(__name__).exception('Recall indexing unavailable; chat is saved')
         return {'id': item_id, 'revision': actual + 1, 'payload': payload, 'deleted': deleted}
 
-    def items(self):
+    def items(self, ids=None, after=None):
         with self.db() as db:
+            if after is not None: rows = db.execute('SELECT * FROM items WHERE seq>? ORDER BY id', (after,))
+            else: rows = db.execute('SELECT * FROM items ORDER BY id') if ids is None else db.execute(
+                'SELECT * FROM items WHERE id IN (%s) ORDER BY id' % ','.join('?' * len(ids)), ids)
             return [dict(id=r['id'], revision=r['revision'], payload=json.loads(r['payload']), deleted=bool(r['deleted']))
-                    for r in db.execute('SELECT * FROM items ORDER BY id')]
+                    for r in rows]
+
+    def marks(self):
+        """Cheap markers that move whenever items, the task list or shared memory change."""
+        with self.db() as db:
+            seq = db.execute('SELECT COALESCE(MAX(seq),0) FROM items').fetchone()[0]
+            jobs = [tuple(r) for r in db.execute('SELECT id,status,updated,run_at FROM jobs ORDER BY updated DESC LIMIT 100')]
+        memory = ''
+        if self.memory_store is not None:
+            try: memory = self.memory_store.mark()
+            except Exception: memory = 'unavailable'
+        return seq, hashlib.sha1(repr(jobs).encode()).hexdigest()[:12], memory
+
+    def revisions(self):
+        """Every item without its payload, so a polling client downloads only what changed."""
+        with self.db() as db:
+            return [dict(id=r['id'], revision=r['revision'], deleted=bool(r['deleted']))
+                    for r in db.execute('SELECT id,revision,deleted FROM items ORDER BY id')]
 
     def put_file(self, data, name, mime=None):
         if len(data) > MAX_FILE:
@@ -386,8 +411,38 @@ def install(app, auth, root, model, search, fetch):
         return FileResponse(target, media_type='application/vnd.android.package-archive', filename=value['filename'])
 
     @router.get('/items')
-    async def items():
+    async def items(revisions: bool = False, ids: str = ''):
+        if revisions:
+            return workspace.revisions()
+        if ids:
+            wanted = ids.split(',')
+            if len(wanted) > 100:
+                raise HTTPException(400, 'Too many item ids')
+            return workspace.items(wanted)
         return workspace.items()
+
+    @router.get('/changes')
+    async def changes(request: Request, since: str = '', wait: float = 0):
+        """What changed after the cursor from the client's last reply. With wait, the reply is held until something changes."""
+        try:
+            seen, jobs_seen, memory_seen = since.split('.')
+            seen = int(seen)
+        except ValueError:
+            seen, jobs_seen, memory_seen = -1, '', ''
+        deadline = time.monotonic() + max(0.0, min(wait, 20.0))
+        while True:
+            seq, jobs_mark, memory_mark = workspace.marks()
+            if (seq, jobs_mark, memory_mark) != (seen, jobs_seen, memory_seen) or time.monotonic() >= deadline:
+                break
+            if await request.is_disconnected():
+                break
+            await asyncio.sleep(.5)
+        # A cursor ahead of the database means the data was restored; the client then replaces what it holds.
+        reset = seen < 0 or seq < seen
+        return {'cursor': f'{seq}.{jobs_mark}.{memory_mark}', 'reset': reset,
+                'items': workspace.items() if reset else workspace.items(after=seen),
+                'jobs': workspace.jobs() if reset or jobs_mark != jobs_seen else None,
+                'memory': reset or memory_mark != memory_seen}
 
     @router.put('/items/{item_id}')
     async def put_item(item_id: str, body: SyncItem):

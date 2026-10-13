@@ -35,6 +35,8 @@ class WorkspaceController(
     private var epoch = 0
     private var operation: Job? = null
     private var polling: Job? = null
+    private var watching: Job? = null
+    private var memoryStale = false
     private var memoryQuery = ""
     override fun setDraft(text: String) { mutable.update { it.copy(draft = text) } }
     fun search(text: String) { mutable.update { it.copy(query = text) } }
@@ -47,11 +49,13 @@ class WorkspaceController(
         mutable.update { it.copy(activeId = id, projectId = chat.conversation.summary.projectId, error = null, detachedReply = null) }
     }
     fun lock() {
-        epoch++; memoryQuery = ""; operation?.cancel(); repository.gateway.lock(); mutable.value = WorkspaceState()
+        epoch++; memoryQuery = ""; memoryStale = false; operation?.cancel(); watching?.cancel(); repository.gateway.lock(); repository.forget(); mutable.value = WorkspaceState()
     }
     fun close() { lock(); polling?.cancel() }
     private fun action(quiet: Boolean = false, body: suspend (Int) -> Unit): Job? {
         if (state.value.busy) return null
+        // The held background refresh gives way, so it never blocks or interleaves with something the user asked for.
+        watching?.cancel()
         val identity = epoch
         mutable.update { it.copy(busy = true, error = if (quiet) it.error else null) }
         return scope.launch {
@@ -62,22 +66,35 @@ class WorkspaceController(
         }.also { operation = it }
     }
     fun connect(baseUrl: String, token: String) = action { identity ->
-        repository.gateway.connect(baseUrl, token)
+        repository.gateway.connect(baseUrl, token); repository.forget()
         refreshSnapshot(identity)
         if (identity == epoch) mutable.update { it.copy(connected = true) }
     }
+    /** Keeps one held request open while visible and idle; the gateway answers it when another client changes something. */
     fun startPolling(visible: () -> Boolean) {
         polling?.cancel()
         polling = scope.launch {
-            while (isActive) { delay(5000); if (state.value.connected && !state.value.busy && visible()) refresh(true)?.join() }
+            while (isActive) {
+                if (!state.value.connected || state.value.busy || !visible()) { delay(250); continue }
+                val identity = epoch; val started = clock(); var failed = false
+                val call = launch {
+                    try { refreshSnapshot(identity, 10) }
+                    catch (e: CancellationException) { throw e }
+                    catch (e: Exception) { failed = true; if (identity == epoch) mutable.update { it.copy(status = "Sync paused; retry when the computer is available") } }
+                }
+                watching = call; call.join(); watching = null
+                // An answer that comes straight back (an error, or a gateway that cannot hold requests) must not become a tight loop.
+                if (failed) delay(5000) else if (clock() - started < 1000) delay(1000)
+            }
         }
     }
     fun refresh(quiet: Boolean = false) = action(quiet) { refreshSnapshot(it) }
-    private suspend fun refreshSnapshot(identity: Int) {
-        val snapshot = repository.snapshot()
-        val jobs = repository.gateway.request("/workspace/jobs").jsonArray.map { it.jsonObject }
+    private suspend fun refreshSnapshot(identity: Int, waitSeconds: Int = 0) {
+        val changes = repository.changes(waitSeconds)
         if (identity != epoch) return
+        val snapshot = changes.snapshot
         mutable.update { old ->
+            val jobs = changes.jobs ?: old.tasks
             val current = snapshot.chats.firstOrNull { it.item.id == old.activeId }
             val job = jobs.firstOrNull { it.text("id") == old.activeJob }
             val working = old.activeJob != null && job?.text("status") in listOf("running", "scheduled")
@@ -89,7 +106,9 @@ class WorkspaceController(
                 error = job?.text("error")?.takeIf { it.isNotBlank() } ?: old.error,
                 status = if (working) "FRIDAY is working on the computer…" else "History and preferences synced")
         }
-        refreshMemory(identity)
+        // Stays set if the memory fetch is interrupted or fails, so the next refresh tries again.
+        if (changes.memory) memoryStale = true
+        if (memoryStale) refreshMemory(identity)
     }
     private suspend fun refreshMemory(identity: Int, limit: Int = maxOf(100, state.value.memories.size)) {
         try {
@@ -111,6 +130,7 @@ class WorkspaceController(
             } while (sources.size < sourceLimit)
             if (identity == epoch) mutable.update { it.copy(memories = facts, archiveSources = sources, archiveTotal = summary["sources"]?.jsonPrimitive?.intOrNull ?: sources.size, memoryTotal = summary["memories"]?.jsonPrimitive?.intOrNull ?: facts.size, memoryHasMore = hasMore,
                 memorySettings = summary["settings"]?.jsonObject ?: JsonObject(emptyMap()), memoryError = null) }
+            if (identity == epoch) memoryStale = false
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) { if (identity == epoch) mutable.update { it.copy(memoryError = "Shared memory is unavailable: ${e.message}") } }
     }

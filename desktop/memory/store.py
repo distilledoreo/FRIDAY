@@ -64,6 +64,11 @@ class MemoryStore:
         with self.db() as db:
             for key,value in values.items():db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',(key,json.dumps(value)))
         return self.settings()
+    def mark(self):
+        """Moves whenever the facts, sources or settings a client lists may have changed."""
+        with self.db() as db:
+            rows=[tuple(db.execute(f'SELECT COUNT(*),MAX(updated),{extra} FROM {table}').fetchone()) for table,extra in (('memories','SUM(pinned),SUM(LENGTH(text))'),('sources','SUM(excluded)'))]
+        return hashlib.sha1(repr((rows,sorted(self.settings().items()))).encode()).hexdigest()[:12]
     def summary(self):
         with self.db() as db:
             return {'settings':self.settings(),'memories':db.execute('SELECT COUNT(*) FROM memories').fetchone()[0], 'sources':db.execute('SELECT COUNT(*) FROM sources').fetchone()[0],

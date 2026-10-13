@@ -379,8 +379,15 @@ class ChatViewModel(
         automaticSync = viewModelScope.launch {
             while (true) {
                 val current = _state.value
-                if (!current.busy && !current.workspaceBusy && !current.privacy.incognito && current.settings.searchBaseUrl.isNotBlank() && current.settings.searchApiKey.isNotBlank()) runChatSync(automatic = true)
-                delay(15000)
+                val reachable = !current.privacy.incognito && current.settings.searchBaseUrl.isNotBlank() && current.settings.searchApiKey.isNotBlank()
+                if (reachable && !current.busy && !current.workspaceBusy) runChatSync(automatic = true)?.join()
+                val started = System.currentTimeMillis()
+                // Returns as soon as the computer reports a change, so another client's edit arrives without waiting out
+                // the timer. This phone's own edits are still sent at least every 15 seconds.
+                if (!reachable) delay(15000)
+                else try { chatSync.awaitRemoteChange(15) } catch (e: CancellationException) { throw e } catch (e: Exception) { delay(15000) }
+                // A change that cannot be synced yet (a chat is streaming) must not turn this into a tight loop.
+                delay((3000 - (System.currentTimeMillis() - started)).coerceAtLeast(0))
             }
         }
     }

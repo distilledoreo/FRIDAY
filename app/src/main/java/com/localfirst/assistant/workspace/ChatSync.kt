@@ -1,6 +1,12 @@
 package com.localfirst.assistant.workspace
 
 import android.content.Context
+import com.localfirst.assistant.client.ChangeFeed
+import com.localfirst.assistant.client.ItemChanges
+import com.localfirst.assistant.client.SyncItem
+import com.localfirst.assistant.client.WorkspaceException
+import com.localfirst.assistant.client.WorkspaceGateway
+import com.localfirst.assistant.client.wireJson
 import com.localfirst.assistant.conversation.*
 import com.localfirst.assistant.json.JsonCodec
 import java.io.File
@@ -122,9 +128,55 @@ class ChatSync(private val context: Context, private val client: WorkspaceClient
         }
     }
 
+    // The shared feed asks the computer what changed; this class decides what the phone does about it.
+    private val feed = ChangeFeed(object : WorkspaceGateway {
+        override fun connect(baseUrl: String, token: String) { error("Use native connection settings") }
+        override fun lock() {}
+        override suspend fun request(path: String, method: String, body: JsonObject?): JsonElement = try {
+            // A held request needs longer than its wait. An unheld one keeps the short limit, so an unreachable computer fails fast.
+            val wait = path.substringAfter("wait=", "0").substringBefore('&').toIntOrNull() ?: 0
+            val listing = path.startsWith("/workspace/changes") || path.endsWith("?revisions=1")
+            wireJson.parseToJsonElement(exchange(path, method, body?.let { JSONObject(it.toString()) }, if (!listing) 120000 else if (wait > 0) (wait + 10) * 1000 else 3000))
+        } catch (e: java.io.IOException) {
+            if (e.message?.startsWith("Computer returned HTTP 404") == true) throw WorkspaceException(404, e.message!!) else throw e
+        }
+    }, timerSeconds = 15)
+    private var early: Pair<String, ItemChanges>? = null
+    /** Saved revisions by record id: "revision:" is what this phone last reconciled, "remote:" what the computer last reported. */
+    private fun revisions(prefix: String) = prefs.all.filterKeys { it.startsWith(prefix) }.map { it.key.removePrefix(prefix) to it.value as Int }.toMap()
+
+    /** Returns when the computer reports a change, or after [seconds]. The answer is kept for the next [sync]. */
+    suspend fun awaitRemoteChange(seconds: Int) {
+        val cursor = prefs.getString("cursor", "")!!
+        // An answer the phone has not been able to sync yet (a chat is streaming) is not asked for again.
+        if (early?.takeIf { it.first == cursor }?.second?.items?.isNotEmpty() == true) return kotlinx.coroutines.delay(seconds * 1000L)
+        early = cursor to feed.changes(cursor, seconds, revisions("revision:"))
+    }
+
+    /** Records what the computer now holds and returns the complete records this phone still has to reconcile. */
+    private suspend fun pull(): Map<String, JSONObject> {
+        val cursor = prefs.getString("cursor", "")!!
+        val changes = early?.takeIf { it.first == cursor }?.second ?: feed.changes(cursor, 0, revisions("revision:"))
+        early = null
+        val edit = prefs.edit()
+        changes.all?.let { all ->
+            revisions("remote:").keys.filter { it !in all }.forEach { edit.remove("remote:$it") }
+            all.forEach { (id, revision) -> edit.putInt("remote:$id", revision) }
+        }
+        changes.items.forEach { edit.putInt("remote:${it.id}", it.revision) }
+        edit.putString("cursor", changes.cursor).commit()
+        val delivered = changes.items.associateBy { it.id }
+        // Changes reported in an earlier sync and not reconciled then: an open conflict, or a sync that was interrupted.
+        val owed = revisions("remote:").filter { (id, revision) -> revision != prefs.getInt("revision:$id", 0) && id !in delivered }.keys
+        val fetched = feed.items(owed).associateBy { it.id }
+        val gone = owed - fetched.keys
+        if (gone.isNotEmpty()) prefs.edit().apply { gone.forEach { remove("remote:$it") } }.commit()
+        return (delivered + fetched).mapValues { JSONObject(wireJson.encodeToString(SyncItem.serializer(), it.value)) }
+    }
+
     suspend fun sync(): List<SyncConflict> = lock.withLock {
-        val list = JSONArray(request("/workspace/items", timeoutMs = 3000))
-        val remote = (0 until list.length()).map { list.getJSONObject(it) }.associateBy { it.getString("id") }
+        val remote = pull()
+        val heard = revisions("remote:")
         val known = prefs.all.keys.filter { it.startsWith("hash:") }.map { it.removePrefix("hash:") }
         val supported = remote.values.filter { it.getString("id") == "knowledge" || preferenceKey(it.getString("id")) != null || it.getJSONObject("payload").has("chat") || it.optBoolean("deleted") }.map { it.getString("id") }
         val ids = (chats.list().map { it.id } + "knowledge" + preferenceKeys.map { "preferences-$it" } + supported + known).distinct()
@@ -135,7 +187,7 @@ class ChatSync(private val context: Context, private val client: WorkspaceClient
             val last = prefs.getString("hash:$id", null)
             val expected = prefs.getInt("revision:$id", 0)
             val server = remote[id]
-            val actual = server?.getInt("revision") ?: 0
+            val actual = heard[id] ?: 0
             if (text == null && last == null && actual == 0) continue
             if (preferenceKey(id) != null && text != null && server != null && !server.optBoolean("deleted") &&
                 JSONObject(text).get("value") == JSONObject(server.getJSONObject("payload").getString("preferences")).get("value")) {
@@ -156,11 +208,14 @@ class ChatSync(private val context: Context, private val client: WorkspaceClient
                     .put("payload", if (text == null) JSONObject() else portable(id, text))
                 val saved = JSONObject(request("/workspace/items/$id", "PUT", body))
                 // An edit during upload remains dirty and is sent next time.
-                prefs.edit().putInt("revision:$id", saved.getInt("revision")).putString("hash:$id", hash).commit()
+                prefs.edit().putInt("revision:$id", saved.getInt("revision")).putInt("remote:$id", saved.getInt("revision")).putString("hash:$id", hash).commit()
                 continue
             } else hash
             prefs.edit().putInt("revision:$id", actual).putString("hash:$id", syncedHash).commit()
         }
+        // Records this app does not handle are noted as seen, so they are not fetched again.
+        val other = remote.keys.filter { it !in ids }
+        if (other.isNotEmpty()) prefs.edit().apply { other.forEach { putInt("revision:$it", heard[it] ?: 0) } }.commit()
         conflicts
     }
 
@@ -171,7 +226,7 @@ class ChatSync(private val context: Context, private val client: WorkspaceClient
             val saved = JSONObject(request("/workspace/items/${conflict.id}", "PUT", JSONObject()
                 .put("revision", conflict.remote.getInt("revision")).put("deleted", text == null)
                 .put("payload", if (text == null) JSONObject() else portable(conflict.id, text))))
-            prefs.edit().putInt("revision:${conflict.id}", saved.getInt("revision"))
+            prefs.edit().putInt("revision:${conflict.id}", saved.getInt("revision")).putInt("remote:${conflict.id}", saved.getInt("revision"))
                 .putString("hash:${conflict.id}", digest(text)).commit()
         } else {
             val hash = apply(conflict.id, conflict.remote)

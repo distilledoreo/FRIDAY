@@ -19,16 +19,44 @@ class WorkspaceException(val status: Int, message: String) : Exception(message)
 @Serializable
 data class SyncItem(val id: String, val revision: Int, val payload: JsonObject = JsonObject(emptyMap()), val deleted: Boolean = false)
 data class SharedChat(val item: SyncItem, val conversation: StoredConversation)
+/** One refresh: the current records, the task list when it moved (null otherwise), and whether shared memory moved. */
+data class WorkspaceChanges(val snapshot: WorkspaceSnapshot, val jobs: List<JsonObject>?, val memory: Boolean)
 data class WorkspaceSnapshot(val items: List<SyncItem>, val chats: List<SharedChat>, val knowledge: Knowledge, val knowledgeRevision: Int, val preferences: AppearanceSettings)
 
 class WorkspaceRepository(val gateway: WorkspaceGateway) {
-    suspend fun snapshot(): WorkspaceSnapshot {
-        val items = wireJson.decodeFromJsonElement<List<SyncItem>>(gateway.request("/workspace/items"))
+    // Records already downloaded from this gateway, and the gateway's cursor for what changed after them.
+    private var feed = ChangeFeed(gateway)
+    private var cache = emptyMap<String, SyncItem>()
+    private var decoded = emptyMap<String, SharedChat>()
+    private var cursor = ""
+    /** Call when the gateway or its credentials change. */
+    fun forget() { feed = ChangeFeed(gateway); cache = emptyMap(); decoded = emptyMap(); cursor = "" }
+    /**
+     * Fetches what changed since the last call. With [waitSeconds], the gateway holds the request until something
+     * changes, so an idle client costs one small request per wait rather than a download per poll.
+     */
+    suspend fun changes(waitSeconds: Int = 0): WorkspaceChanges {
+        val known = cache
+        val reply = feed.changes(cursor, waitSeconds, known.mapValues { it.value.revision })
+        val all = reply.all
+        // Answers can arrive out of order; outside a complete listing a record never goes back to an older revision.
+        val moved = reply.items.filter { all != null || (known[it.id]?.revision ?: -1) < it.revision }.associateBy { it.id }
+        cache = if (all == null) known + moved else all.keys.mapNotNull { id -> (moved[id] ?: known[id])?.let { id to it } }.toMap()
+        cursor = reply.cursor
+        val jobs = reply.jobs ?: if (feed.cursors) null else gateway.request("/workspace/jobs").jsonArray.map { it.jsonObject }
+        return WorkspaceChanges(current(), jobs, reply.memory)
+    }
+    suspend fun snapshot(): WorkspaceSnapshot = changes().snapshot
+    private fun current(): WorkspaceSnapshot {
+        val items = cache.values.toList()
         val chats = items.filter { !it.deleted && it.payload["chat"] != null }.map { item ->
-            val chat = decodeConversation(item.payload.getValue("chat").jsonPrimitive.content)
-            require(chat.summary.id == item.id) { "Saved conversation ID does not match its record." }
-            SharedChat(item, chat)
+            decoded[item.id]?.takeIf { it.item === item } ?: run {
+                val chat = decodeConversation(item.payload.getValue("chat").jsonPrimitive.content)
+                require(chat.summary.id == item.id) { "Saved conversation ID does not match its record." }
+                SharedChat(item, chat)
+            }
         }.sortedByDescending { it.conversation.summary.updatedAt }
+        decoded = chats.associateBy { it.item.id }
         val knowledgeItem = items.firstOrNull { it.id == "knowledge" && !it.deleted }
         val knowledge = knowledgeItem?.payload?.get("knowledge")?.jsonPrimitive?.content?.let { wireJson.decodeFromString<Knowledge>(it) } ?: Knowledge()
         fun value(key: String) = items.firstOrNull { it.id == "preferences-$key" && !it.deleted }?.payload?.get("preferences")?.jsonPrimitive?.content
