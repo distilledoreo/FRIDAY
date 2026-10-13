@@ -103,7 +103,7 @@ The publisher validates the package and signature, requires a higher version cod
 
 Notification service-worker checks: `node web/tests/notifications-sw.test.cjs`. Server regressions: `python -m unittest desktop.workspace.tests.test_notifications desktop.workspace.tests.test_model_connections`.
 
-Version 0.25.2 verification: 491 Kotlin tests, 80 relevant server tests, both client builds and the service-worker
+Version 0.25.2 verification: 491 Kotlin tests, 81 relevant server tests, both client builds and the service-worker
 unit checks pass. A browser fixture confirms the three notification options, a private image sent through a
 custom model connection, no persistent workspace records, and RAM file deletion on exit. Real OS push delivery
 is not verified. Closed-tab notifications require HTTPS/localhost, permission and browser push support.

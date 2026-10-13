@@ -133,9 +133,15 @@ class PushNotifications:
 
     def send(self, subscription, notice):
         from pywebpush import webpush
+        from py_vapid import Vapid02
+        from cryptography.hazmat.primitives import serialization
+        key = serialization.load_pem_private_key((self.root / 'vapid.pem').read_bytes(), None)
+        # RFC 8292 allows HTTPS contact URIs with paths. py_vapid's subject-only regex rejects them.
+        # The contact is a fixed, valid URI below; audience validation and ES256 signing still apply.
+        vapid = Vapid02(private_key=key, conf={"no-strict": True})
         # A stable public project contact, not a personal email or private machine address.
         return webpush(subscription_info=subscription, data=json.dumps({k: v for k, v in notice.items() if k != 'signature'}),
-                       vapid_private_key=str(self.root / 'vapid.pem'), vapid_claims={'sub': 'https://github.com/distilledoreo/FRIDAY'},
+                       vapid_private_key=vapid, vapid_claims={'sub': 'https://github.com/distilledoreo/FRIDAY'},
                        ttl=3600, timeout=15)
 
     async def poll(self):

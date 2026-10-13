@@ -80,6 +80,28 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
         for endpoint in ('http://fcm.googleapis.com/x', 'https://localhost/x', 'https://fcm.googleapis.com.evil.test/x', 'https://fcm.googleapis.com:444/x', 'https://user@fcm.googleapis.com/x'):
             with self.assertRaises(ValidationError): Subscription(**dict(subscription(), endpoint=endpoint))
         with self.assertRaises(ValidationError): Subscription(endpoint=subscription()['endpoint'], keys={'auth':'bad','p256dh':'bad'})
+    def test_real_push_signing_and_encryption_without_network_access(self):
+        import requests
+        from unittest.mock import patch
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+        self.push.public_key()
+        response = requests.Response(); response.status_code = 201; response._content = b''
+        with patch('requests.sessions.Session.send', return_value=response) as send:
+            self.push.send(self.subscription, {'title': 'FRIDAY', 'body': 'Synthetic test', 'open': 'tasks', 'tag': 'test'})
+            prepared = send.call_args.args[0]
+        self.assertNotIn(b'Synthetic test', prepared.body)
+        self.assertGreater(len(prepared.body), 100)
+        token = prepared.headers['Authorization'].removeprefix('vapid t=').split(',')[0]
+        header, payload, signature = token.split('.')
+        decode = lambda value: base64.urlsafe_b64decode(value + '===')
+        claims = json.loads(decode(payload))
+        self.assertEqual(claims['sub'], 'https://github.com/distilledoreo/FRIDAY')
+        self.assertEqual(claims['aud'], 'https://fcm.googleapis.com')
+        raw = decode(signature)
+        key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), decode(self.push.public_key()))
+        key.verify(encode_dss_signature(int.from_bytes(raw[:32], 'big'), int.from_bytes(raw[32:], 'big')), (header + '.' + payload).encode(), ec.ECDSA(hashes.SHA256()))
+
     def test_vapid_key_survives_restart_and_is_private(self):
         first = self.push.public_key()
         self.assertEqual(first, PushNotifications(self.temp.name, self.request).public_key())
