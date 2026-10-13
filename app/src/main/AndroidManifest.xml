@@ -31,6 +31,7 @@
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
         <package android:name="com.spotify.music" />
+        <package android:name="com.google.android.projection.gearhead" />
         <package android:name="com.google.android.apps.maps" />
         <!-- Speech recognition and text-to-speech engines for voice mode. -->
         <intent>
@@ -100,11 +101,16 @@
         <service android:name=".workspace.TaskPollService" android:exported="false" android:permission="android.permission.BIND_JOB_SERVICE" />
         <!-- Android Auto: the assistant appears as a messaging conversation. -->
         <meta-data android:name="com.google.android.gms.car.application" android:resource="@xml/automotive_app_desc" />
-        <meta-data android:name="androidx.car.app.minCarApiLevel" android:value="7" />
-        <service android:name=".car.FridayCarService" android:exported="true">
+        <!-- Retained for trusted-source testing; sideloaded APKs use the media service. -->
+        <service android:name=".car.FridayCarService" android:exported="true" android:enabled="false">
             <intent-filter>
                 <action android:name="androidx.car.app.CarAppService" />
                 <category android:name="androidx.car.app.category.MESSAGING" />
+            </intent-filter>
+        </service>
+        <service android:name=".car.CarMediaService" android:exported="true" android:label="FRIDAY voice">
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
         <receiver android:name=".car.CarReplyReceiver" android:exported="false" />

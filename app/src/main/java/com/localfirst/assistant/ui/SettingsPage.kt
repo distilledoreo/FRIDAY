@@ -395,8 +395,8 @@ private fun CarSection(
         Column(modifier = Modifier.weight(1f)) {
             Text("Android Auto", style = MaterialTheme.typography.bodyLarge)
             Text(
-                text = "Open FRIDAY in Android Auto and use Talk for the phone microphone, with Pause and Stop controls. " +
-                    "This needs the computer voice service and a recent Android Auto host (Car API 7). " +
+                text = "Experimental: open FRIDAY voice in Android Auto’s media apps. Select the voice item or Play to start/resume; use the microphone action to talk and interrupt a reply. Pause and Stop control the voice session. " +
+                    "This needs the computer voice service. " +
                     "If Android blocks microphone startup, prepare car voice on the phone while parked. " +
                     "The notification Reply button still uses the car microphone. Enable Unknown sources in Android Auto's developer settings for this sideloaded app.",
                 style = MaterialTheme.typography.bodySmall,
