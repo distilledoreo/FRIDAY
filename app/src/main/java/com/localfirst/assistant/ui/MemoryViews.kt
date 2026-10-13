@@ -17,120 +17,59 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import org.json.JSONObject
+import kotlinx.serialization.json.jsonObject
 
+/** Android's memory pages: the shared screens with the phone's file picker and navigation. */
 @Composable
-internal fun MemoryHub(state: ChatUiState, vm: ChatViewModel, onImport: () -> Unit, onReview: () -> Unit, onArchive: () -> Unit, onEdit: (JSONObject) -> Unit, onContext: () -> Unit) {
+internal fun MemoryHub(state: ChatUiState, vm: ChatViewModel, onImport: () -> Unit, onReview: () -> Unit, onArchive: () -> Unit, onEdit: (JSONObject) -> Unit, onContext: () -> Unit, onSource: () -> Unit = onArchive) {
     val actions = rememberNativeWorkspaceActions(vm, state)
     val shared by actions.state.collectAsState()
     FridayVisibleEffect(Unit) {
         vm.refreshArchive()
         while (true) { vm.refreshMemory(); delay(10000) }
     }
-    com.localfirst.assistant.ui.workspace.MemoryScreen(actions, shared) {
-        Button(onImport) { Text("Import ChatGPT export") }
-        OutlinedButton(onReview) { Text("Review suggestions · ${state.memorySummary?.optInt("suggestions") ?: 0}") }
-        Row { TextButton(onArchive) { Text("Browse archive") }; TextButton(onContext) { Text("What influenced the last reply?") } }
+    com.localfirst.assistant.ui.workspace.MemoryScreen(actions, shared, onSource = onSource) {
+        com.localfirst.assistant.ui.workspace.MemoryTools(actions, shared, onImport, onReview, onArchive, onContext)
         TextButton(vm::indexExistingChats, enabled = !shared.busy) { Text("Index existing phone chats on PC") }
-        if (state.memorySituations.isNotEmpty()) {
-            Text("Recent situations", style = MaterialTheme.typography.titleMedium)
-            for (situation in state.memorySituations) {
-                Text(situation.getString("topic"), style = MaterialTheme.typography.titleSmall)
-                Text(situation.getString("summary"))
-                Row {
-                    if (situation.optString("status") == "open") TextButton({ vm.resolveSituation(situation.getString("id")) }, enabled = !shared.busy) { Text("Mark resolved") }
-                    TextButton({ vm.forgetSituation(situation.getString("id")) }, enabled = !shared.busy) { Text("Forget") }
-                }
-            }
-        }
     }
 }
 
 @Composable
 internal fun ChatGptImport(state: ChatUiState, vm: ChatViewModel) {
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(vm::stageChatGptImport) }
-    var extract by rememberSaveable { mutableStateOf(true) }
-    val preview = state.importPreview
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("Bring your history with you", style = MaterialTheme.typography.titleLarge)
-        Text("Choose your ChatGPT export ZIP or conversations.json. It streams straight to your PC, with no export copy saved on the phone.")
-        Text("Full chat text stays in the PC archive. The assistant can recall relevant excerpts and propose lasting memories with supporting user quotes.")
-        if (preview == null) Button(shape = MaterialTheme.shapes.small, onClick = { picker.launch(arrayOf("application/zip", "application/json", "application/octet-stream")) }, enabled = !state.workspaceBusy && !state.busy) { Text("Choose ChatGPT export") }
-        else {
-            Text("${preview.optInt("conversations")} readable chats · ${preview.optInt("new")} new · ${preview.optInt("duplicates")} existing · ${preview.optInt("skipped")} skipped", style = MaterialTheme.typography.titleMedium)
-            preview.optJSONArray("titles")?.let { titles -> for (n in 0 until titles.length()) Text("• ${titles.getString(n)}") }
-            preview.optJSONArray("warnings")?.let { warnings -> for (n in 0 until warnings.length()) Text(warnings.getString(n), style = MaterialTheme.typography.bodySmall) }
-            Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(extract, { extract = it }); Text("Build memory suggestions for review", Modifier.weight(1f)) }
-            Text("Nothing is a saved fact until you approve it. Existing imported chats are kept; re-import does not overwrite them.", style = MaterialTheme.typography.bodySmall)
-            Button(shape = MaterialTheme.shapes.small, onClick = { vm.commitChatGptImport(extract) }, enabled = !state.workspaceBusy && !state.busy, modifier = Modifier.fillMaxWidth()) { Text("Import on PC") }
-            TextButton(shape = MaterialTheme.shapes.small, onClick = vm::discardChatGptImport, enabled = !state.workspaceBusy && !state.busy) { Text("Discard preview") }
-        }
-        Text("Upload limit: 256 MB; readable conversation JSON: 512 MB. Photos, files, system prompts and tool execution are excluded. If export structure differs, the app reports that before importing.", style = MaterialTheme.typography.bodySmall)
-    }
+    val actions = rememberNativeWorkspaceActions(vm, state)
+    val shared by actions.state.collectAsState()
+    com.localfirst.assistant.ui.workspace.ChatGptImportScreen(actions, shared, onChoose = { picker.launch(arrayOf("application/zip", "application/json", "application/octet-stream")) },
+        platformNote = "Choose your ChatGPT export ZIP or conversations.json. It streams straight to your PC, with no export copy saved on the phone.")
 }
 
 @Composable
 internal fun MemoryReview(state: ChatUiState, vm: ChatViewModel) {
-    LaunchedEffect(Unit) { while (true) { vm.refreshMemory(); delay(8000) } }
-    var editing by remember { mutableStateOf<JSONObject?>(null) }
-    var text by rememberSaveable { mutableStateOf("") }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        item { Text("Review before remembering", style = MaterialTheme.typography.titleLarge); Text("The assistant proposes stable facts from user messages. Check each one against its original quote.") }
-        state.memorySummary?.let { summary ->
-            item { Text("${summary.optInt("extracting")} chats waiting or processing · ${summary.optInt("extraction_errors")} need retry", style = MaterialTheme.typography.bodySmall) }
-        }
-        if (state.memorySuggestions.isEmpty()) item { Text("No pending suggestions. Imported chats are processed in the background; you can also request suggestions from an archived chat.") }
-        items(state.memorySuggestions, key = { it.getString("id") }) { suggestion ->
-            Column(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).background(MaterialTheme.colorScheme.surface).padding(16.dp),verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(suggestion.getString("text"), style = MaterialTheme.typography.bodyLarge)
-                Text(suggestion.optString("source_title"), style = MaterialTheme.typography.labelLarge)
-                Text("“${suggestion.getString("quote")}”", style = MaterialTheme.typography.bodyMedium)
-                Row {
-                    TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.reviewMemory(suggestion.getString("id"), true) }, enabled = !state.workspaceBusy && !state.busy) { Text("Remember") }
-                    TextButton(shape = MaterialTheme.shapes.small, onClick = { editing = suggestion; text = suggestion.getString("text") }, enabled = !state.workspaceBusy && !state.busy) { Text("Edit") }
-                    TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.reviewMemory(suggestion.getString("id"), false) }, enabled = !state.workspaceBusy && !state.busy) { Text("Dismiss") }
-                }
-                HorizontalDivider()
-            }
-        }
-    }
-    editing?.let { suggestion -> AlertDialog(onDismissRequest = { editing = null }, title = { FridayDialogWindow(); Text("Correct this memory") }, text = { OutlinedTextField(text, { text = it.take(2000) }, minLines = 3) }, confirmButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.reviewMemory(suggestion.getString("id"), true, text); editing = null }, enabled = text.isNotBlank()) { Text("Remember") } }, dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { editing = null }) { Text("Cancel") } }) }
+    val actions = rememberNativeWorkspaceActions(vm, state)
+    val shared by actions.state.collectAsState()
+    com.localfirst.assistant.ui.workspace.MemoryReviewScreen(actions, shared)
 }
 
 @Composable
 internal fun MemoryArchive(state: ChatUiState, vm: ChatViewModel, onSource: () -> Unit) {
-    var query by rememberSaveable { mutableStateOf(state.archiveQuery) }
-    LaunchedEffect(query) { delay(350); vm.refreshArchive(query) }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Text("Conversation archive on PC", style = MaterialTheme.typography.titleMedium); OutlinedTextField(query, { query = it.take(2000) }, label = { Text("Search past chats") }, modifier = Modifier.fillMaxWidth()) }
-        items(state.archiveSources, key = { it.getString("id") }) { source ->
-            TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.openMemorySource(source.getString("id")); onSource() }, enabled = !state.workspaceBusy && !state.busy) { Column(Modifier.fillMaxWidth()) { Text(source.getString("title")); Text(source.optString("origin") + if (source.optBoolean("excluded")) " · excluded from recall" else "", style = MaterialTheme.typography.bodySmall) } }
-        }
-        item { Row { TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.refreshArchive(query, (state.archiveOffset - 50).coerceAtLeast(0)) }, enabled = state.archiveOffset > 0) { Text("Previous") }; TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.refreshArchive(query, state.archiveOffset + 50) }, enabled = state.archiveSources.size == 50) { Text("Next") } } }
-    }
+    val actions = rememberNativeWorkspaceActions(vm, state)
+    val shared by actions.state.collectAsState()
+    com.localfirst.assistant.ui.workspace.MemoryArchiveScreen(actions, shared, onSource)
 }
 
 @Composable
-internal fun MemorySource(state: ChatUiState, vm: ChatViewModel) {
-    val source = state.archiveSource
-    var deleting by remember { mutableStateOf(false) }
-    if (source == null) { Text("Loading source…", Modifier.padding(20.dp)); return }
-    val id = source.getString("id")
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item { Text(source.getString("title"), style = MaterialTheme.typography.titleLarge); Text("Full chat stays on PC. This preview and continuation use up to 20 recent messages, 2,000 characters each.", style = MaterialTheme.typography.bodySmall) }
-        item { Row(verticalAlignment = Alignment.CenterVertically) { Text("Include in future recall", Modifier.weight(1f)); Switch(!source.optBoolean("excluded"), { vm.excludeMemorySource(id, !it) }, enabled = !state.workspaceBusy && !state.busy) } }
-        item { Button(shape = MaterialTheme.shapes.small, onClick = vm::continueMemorySource, enabled = !state.workspaceBusy && !state.busy) { Text("Continue with recent messages") } }
-        item { TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.extractMemorySource(id) }, enabled = !state.workspaceBusy && !state.busy) { Text("Build memory suggestions") } }
-        val messages = source.optJSONArray("messages")
-        if (messages != null) items(messages.length()) { n -> val message = messages.getJSONObject(n); Text(message.getString("role"), style = MaterialTheme.typography.labelLarge); Text(message.getString("content")); HorizontalDivider() }
-        item { TextButton(shape = MaterialTheme.shapes.small, onClick = { deleting = true }, enabled = !state.workspaceBusy && !state.busy) { Text("Delete from PC archive") } }
-    }
-    if (deleting) AlertDialog(onDismissRequest = { deleting = false }, title = { FridayDialogWindow(); Text("Delete archived chat?") }, text = { Text("Deletes this PC archive source and its pending suggestions. Approved memories are managed separately.") }, confirmButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { deleting = false; vm.deleteMemorySource(id) }) { Text("Delete") } }, dismissButton = { TextButton(shape = MaterialTheme.shapes.small, onClick = { deleting = false }) { Text("Cancel") } })
+internal fun MemorySource(state: ChatUiState, vm: ChatViewModel, onDeleted: () -> Unit = {}) {
+    val actions = rememberNativeWorkspaceActions(vm, state)
+    val shared by actions.state.collectAsState()
+    // Continuing opens the chat on the phone, which closes this page.
+    com.localfirst.assistant.ui.workspace.MemorySourceScreen(actions, shared, onContinue = {}, onDeleted = onDeleted)
 }
 
 @Composable
 internal fun MemoryContext(state: ChatUiState) {
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        item { Text("Context supplied to the last reply", style = MaterialTheme.typography.titleLarge); Text(state.recallStatus ?: "No reply has used PC memory in this session."); Text("These are the sources supplied, not proof the model relied on every one.", style = MaterialTheme.typography.bodySmall) }
-        items(state.recallSources) { source -> Text(source.optString("title"), style = MaterialTheme.typography.titleMedium); Text(source.optString("kind"), style = MaterialTheme.typography.labelSmall); Text(source.optString("excerpt")); HorizontalDivider() }
+    val shared = remember(state.recallSources, state.recallStatus) {
+        fun JSONObject.wire() = com.localfirst.assistant.client.wireJson.parseToJsonElement(toString()).jsonObject
+        com.localfirst.assistant.client.WorkspaceState(recall = state.recallSources.map { it.wire() }, recallStatus = state.recallStatus)
     }
+    com.localfirst.assistant.ui.workspace.MemoryContextScreen(shared)
 }

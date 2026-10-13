@@ -10,9 +10,7 @@ import uuid
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 
-spec = importlib.util.spec_from_file_location('workspace', Path(__file__).parents[1] / 'workspace.py')
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+from desktop.workspace import workspace as module
 
 
 class StorageTests(unittest.TestCase):

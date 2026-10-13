@@ -16,6 +16,11 @@ data class FeatureState(
     val sessions: List<JsonObject> = emptyList(), val session: JsonObject? = null,
     val accountContent: JsonObject? = null, val schedules: List<JsonObject> = emptyList(),
     val accounts: List<JsonObject> = emptyList(), val providers: List<JsonObject> = emptyList(), val oauth: JsonObject? = null,
+    /** The PC's tool-server connections and whether each is confirmed. */
+    val mcp: JsonObject? = null,
+    /** Live views of PC sessions and FRIDAY tasks that chats started, by id, for their in-chat cards. */
+    val chatPc: Map<String, JsonObject> = emptyMap(), val chatTasks: Map<String, JsonObject> = emptyMap(),
+    val chatWorkBusy: Boolean = false,
 )
 
 /** Portable service orchestration; optional PC services report their own availability per screen. */
@@ -62,15 +67,38 @@ class FeatureController(val gateway: WorkspaceGateway, private val scope: Corout
                     val sessions = gateway.request("/workspace/pc/sessions").rows()
                     val session = old.session?.string("id")?.let { gateway.request("/workspace/pc/sessions/$it").jsonObject }
                     next = next.copy(pc = pc, sessions = sessions, session = session, schedules = gateway.request("/workspace/pc/schedules").rows())
+                    try { next = next.copy(mcp = gateway.request("/workspace/pc/mcp").jsonObject) } catch (e: CancellationException) { throw e } catch (e: Exception) { /* Older computers have no tool-server list. */ }
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) { next = next.copy(pc = buildJsonObject { put("detail", e.message ?: "PC agent unavailable") }) }
             }
             "accounts" -> next = old.copy(accounts = gateway.request("/workspace/agent/accounts").jsonObject["accounts"]?.rows().orEmpty(), providers = gateway.request("/workspace/agent/accounts/providers").rows())
         }
-        if (identity == epoch && old.page == state.value.page && old.task?.string("id") == state.value.task?.string("id") && old.session?.string("id") == state.value.session?.string("id")) mutable.value = next.copy(busy = true)
+        if (identity == epoch && old.page == state.value.page && old.task?.string("id") == state.value.task?.string("id") && old.session?.string("id") == state.value.session?.string("id")) mutable.value = next.copy(busy = true, chatPc = state.value.chatPc, chatTasks = state.value.chatTasks, chatWorkBusy = state.value.chatWorkBusy)
     }
     fun change(path: String, method: String = "POST", body: JsonObject? = null): Job? = run { identity ->
         gateway.request(path, method, body); load(identity)
+    }
+    private var chatWork: Job? = null
+    /** Refreshes the PC sessions and FRIDAY tasks shown as cards in a chat, without blocking the rest of FRIDAY. */
+    fun refreshChatWork(pcIds: List<String>, taskIds: List<String>): Job? {
+        val pcs = pcIds.filter { Regex("[A-Za-z0-9_-]{1,100}").matches(it) }.distinct().takeLast(5)
+        val tasks = taskIds.filter { Regex("[a-f0-9]{32}").matches(it) }.distinct().takeLast(5)
+        if (pcs.isEmpty() && tasks.isEmpty() || chatWork?.isActive == true) return chatWork
+        val identity = epoch
+        mutable.update { it.copy(chatWorkBusy = true) }
+        return scope.launch {
+            try {
+                val pcViews = pcs.mapNotNull { id -> try { id to gateway.request("/workspace/pc/sessions/$id").jsonObject } catch (e: CancellationException) { throw e } catch (e: Exception) { null } }
+                val taskViews = tasks.mapNotNull { id -> try { id to gateway.request("/workspace/agent/tasks/$id").jsonObject } catch (e: CancellationException) { throw e } catch (e: Exception) { null } }
+                if (identity == epoch) mutable.update { it.copy(chatPc = it.chatPc + pcViews, chatTasks = it.chatTasks + taskViews) }
+            } finally { if (identity == epoch) mutable.update { it.copy(chatWorkBusy = false) } }
+        }.also { chatWork = it }
+    }
+    /** An action taken from an in-chat card, then that card's fresh view. */
+    fun chatAction(path: String, body: JsonObject? = null, pcIds: List<String> = emptyList(), taskIds: List<String> = emptyList()): Job? = run { identity ->
+        gateway.request(path, "POST", body)
+        chatWork?.cancel()
+        if (identity == epoch) refreshChatWork(pcIds, taskIds)?.join()
     }
     fun startPc(prompt: String): Job? = run { identity ->
         val value = gateway.request("/workspace/pc/sessions", "POST", buildJsonObject { put("prompt", prompt) }).jsonObject

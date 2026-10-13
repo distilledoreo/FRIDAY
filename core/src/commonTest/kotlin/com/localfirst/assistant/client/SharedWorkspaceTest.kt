@@ -6,7 +6,7 @@ import kotlinx.coroutines.test.*
 import kotlinx.serialization.json.*
 import kotlin.test.*
 
-private class Pc : WorkspaceGateway {
+internal class Pc : WorkspaceGateway {
     val items = linkedMapOf<String, SyncItem>()
     val calls = mutableListOf<Pair<String, JsonObject?>>()
     val facts = mutableListOf<JsonObject>()
@@ -14,30 +14,43 @@ private class Pc : WorkspaceGateway {
     var jobError = ""
     var jobStatus = "completed"
     var legacy = false
+    var privateEvents: (suspend (suspend (JsonObject) -> Unit) -> Unit)? = null
     var privateWait: CompletableDeferred<Unit>? = null
     var privateChat: StoredConversation? = null
-    override suspend fun upload(name: String, mime: String, bytes: ByteArray) = buildJsonObject { put("id", "attachment"); put("name", name) }
+    /** Extra routes by "METHOD path", answered before the built-in ones. */
+    val routes = mutableMapOf<String, (JsonObject?) -> JsonElement>()
+    /** Events a job's progress stream sends; null keeps job streams unavailable, as on a gateway without them. */
+    var jobEvents: (suspend (String, suspend (JsonObject) -> Unit) -> Unit)? = null
+    /** Fields added to the fixture's single job, such as item_id and pending. */
+    var jobFields: JsonObject = JsonObject(emptyMap())
+    val files = mutableMapOf<String, ByteArray>()
+    override suspend fun fileBytes(id: String) = files[id] ?: throw WorkspaceException(404, "File not found")
+    var uploads = 0
+    override suspend fun upload(name: String, mime: String, bytes: ByteArray) = buildJsonObject { put("id", if (uploads++ == 0) "attachment" else "upload$uploads"); put("name", name); put("mime", mime) }
     override suspend fun stream(path: String, body: JsonObject?, event: suspend (JsonObject) -> Unit) {
+        if (path.startsWith("/workspace/jobs/")) { calls += path to body; jobEvents?.invoke(path, event) ?: error("Stream unavailable in this fixture"); return }
         check(path == "/workspace/chat/ephemeral") { "Stream unavailable in this fixture" }
         calls += path to body
         privateChat = decodeConversation(body!!.getValue("chat").jsonPrimitive.content)
+        privateEvents?.let { it(event); return }
         event(buildJsonObject { put("text", "Private partial") })
         privateWait?.await()
         event(buildJsonObject { put("text", "Private reply"); put("done", true) })
     }
     /** Record ids returned by each change-cursor reply. */
     val sent = mutableListOf<List<String>>()
-    private fun jobs() = buildJsonArray { add(buildJsonObject { put("id", "job"); put("status", jobStatus); put("result", "Done"); put("error", jobError) }) }
+    private fun jobs() = buildJsonArray { add(JsonObject(buildJsonObject { put("id", "job"); put("status", jobStatus); put("result", "Done"); put("error", jobError) } + jobFields)) }
     override fun connect(baseUrl: String, token: String) {}
     override fun lock() {}
     override suspend fun request(path: String, method: String, body: JsonObject?): JsonElement {
         calls += path to body
+        routes["$method ${path.substringBefore('?')}"]?.let { return it(body) }
         if (path.startsWith("/workspace/changes?")) {
             if (legacy) throw WorkspaceException(404, "Not found")
             wait?.await()
             val since = com.localfirst.assistant.platform.PlatformNet.decodeUrl(path.substringAfter("since=").substringBefore('&')).split('|')
             val seen = since[0].split(',').filter { it.isNotEmpty() }.associate { it.substringBefore(':') to it.substringAfter(':').toInt() }
-            val jobMark = "$jobStatus/$jobError"; val memoryMark = facts.hashCode().toString()
+            val jobMark = "$jobStatus/$jobError/$jobFields"; val memoryMark = facts.hashCode().toString()
             val moved = items.values.filter { seen[it.id] != it.revision }
             sent += moved.map { it.id }
             return buildJsonObject {

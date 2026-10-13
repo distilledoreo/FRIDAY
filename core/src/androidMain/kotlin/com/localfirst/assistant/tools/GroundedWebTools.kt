@@ -2,7 +2,6 @@ package com.localfirst.assistant.tools
 
 import com.localfirst.assistant.json.JsonCodec
 import kotlinx.serialization.json.*
-import java.net.URI
 
 /** Stateless reads through the host's pinned static HTTPS broker. No crawler fallback. */
 class GroundedWebSearchTool(private val client: WorkspaceGateway) : Tool {
@@ -13,17 +12,7 @@ class GroundedWebSearchTool(private val client: WorkspaceGateway) : Tool {
     override suspend fun execute(arguments: JsonObject): ToolExecutionResult {
         val request = WebSearchArguments.parse(arguments)
         val body = buildJsonObject { put("query", request.query); put("limit", request.limit); put("fetch_pages", request.fetchPages) }
-        val text = client.toolRequest("/grounding", "POST", body.toString())
-        val result = JsonCodec.json.parseToJsonElement(text).jsonObject
-        val evidence = result["evidence"]?.jsonArray.orEmpty()
-        val sources = evidence.mapNotNull { item ->
-            val value = item.jsonObject; val url = value["url"]?.jsonPrimitive?.content.orEmpty()
-            if (!safePublicUrl(url)) null else SourceLink(value["title"]?.jsonPrimitive?.content.orEmpty().ifBlank { url }, url,
-                contentRead = value["status"]?.jsonPrimitive?.content == "retrieved" && value["passages"]?.jsonArray?.isNotEmpty() == true)
-        }
-        val success = evidence.isNotEmpty()
-        // Each result carries a ref id the interface language can bind and cite.
-        return ToolExecutionResult(success, com.localfirst.assistant.genui.UiBindings.withRefs(text), sources)
+        return com.localfirst.assistant.grounding.GroundedEvidence.search(client.toolRequest("/grounding", "POST", body.toString()))
     }
 }
 
@@ -44,16 +33,8 @@ class PublicPageTool(private val client: WorkspaceGateway) : Tool {
         require(safePublicUrl(url)) { "Use a public HTTPS URL on port 443 without credentials." }
         val query = arguments["query"]?.jsonPrimitive?.content.orEmpty()
         require(query.length <= 500)
-        val text = client.toolRequest("/grounding/page", "POST", buildJsonObject { put("url", url); put("query", query) }.toString())
-        val result = JsonCodec.json.parseToJsonElement(text).jsonObject
-        val finalUrl = result.getValue("url").jsonPrimitive.content
-        require(safePublicUrl(finalUrl))
-        return ToolExecutionResult(true, com.localfirst.assistant.genui.UiBindings.withRefs(text), listOf(SourceLink(result["title"]?.jsonPrimitive?.content.orEmpty().ifBlank { finalUrl }, finalUrl,
-            contentRead = result["passages"]?.jsonArray?.isNotEmpty() == true)))
+        return com.localfirst.assistant.grounding.GroundedEvidence.page(client.toolRequest("/grounding/page", "POST", buildJsonObject { put("url", url); put("query", query) }.toString()))
     }
 }
 
-private fun safePublicUrl(url: String): Boolean = runCatching {
-    val value = URI(url)
-    url.length <= 4096 && value.scheme == "https" && value.host != null && value.rawUserInfo == null && value.port in listOf(-1, 443) && '\\' !in url
-}.getOrDefault(false)
+private fun safePublicUrl(url: String) = com.localfirst.assistant.grounding.GroundedEvidence.safePublicUrl(url)

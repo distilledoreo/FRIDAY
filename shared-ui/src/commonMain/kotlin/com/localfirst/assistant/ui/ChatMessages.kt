@@ -68,6 +68,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -102,7 +104,18 @@ fun SharedUserMessage(
                 modifier = Modifier
                     .widthIn(max = 320.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .combinedClickable(onClick = {}, onLongClick = { menu = true }),
+                    .combinedClickable(onClick = {}, onLongClick = { menu = true })
+                    // A mouse's secondary button opens the same menu, as long-press does on touch screens.
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                if (event.type == androidx.compose.ui.input.pointer.PointerEventType.Press && event.buttons.isSecondaryPressed) {
+                                    menu = true; event.changes.forEach { it.consume() }
+                                }
+                            }
+                        }
+                    },
             ) {
                 Column(
                     horizontalAlignment = Alignment.End,

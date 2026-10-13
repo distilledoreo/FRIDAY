@@ -207,7 +207,7 @@ data class PendingApproval(
 enum class ApprovalAnswer { DENY, ALLOW, ALWAYS }
 
 /** A document drafted from an answer: edited on the phone, saved to files. */
-data class CanvasDoc(val title: String, val body: String)
+typealias CanvasDoc = com.localfirst.assistant.client.CanvasDoc
 
 class ChatViewModel(
     private val settingsStore: ServerSettingsStore,
@@ -362,6 +362,8 @@ class ChatViewModel(
             scope = viewModelScope,
             selectIo = { engines.select(_state.value.settings) },
             chat = state,
+            view = { s -> com.localfirst.assistant.voice.VoiceTurn(s.messages, s.busy, s.turnMessagesReady,
+                s.pendingApproval?.let { com.localfirst.assistant.voice.VoiceApproval(it.toolName + "\n" + it.title, it.prompt) }) },
             submit = ::submitSpoken,
             resubmit = ::resubmitSpoken,
             stopTurn = ::stop,
@@ -762,14 +764,14 @@ class ChatViewModel(
                 val searchTool = session.toolRegistry.getAvailableTools().firstOrNull { it.name == "web_search" }
                 if (searchTool != null && com.localfirst.assistant.grounding.GroundingPrecheck.needsSearch(pendingRecallQuery)) {
                     groundingAttempted = true
-                    _state.update { it.copy(groundingStatus = "Checking current sources…", groundingSources = emptyList()) }
+                    _state.update { it.copy(groundingStatus = grounding.CHECKING_STATUS, groundingSources = emptyList()) }
                     val result = com.localfirst.assistant.grounding.GroundingPrecheck.run(pendingRecallQuery, searchTool)
                     if (result != null) {
                         session.latestUserNote = session.latestUserNote.orEmpty() + com.localfirst.assistant.grounding.GroundingPrecheck.note(result)
-                        _state.update { it.copy(groundingStatus = if (result.success) "Evidence retrieved; checking claim support and citations" else "Current sources could not be verified", groundingSources = result.sources) }
+                        _state.update { it.copy(groundingStatus = grounding.retrievedStatus(result.success), groundingSources = result.sources) }
                     }
-                } else _state.update { it.copy(groundingStatus = if (grounding.privateRequest(pendingRecallQuery)) "Private question: public web lookups require separate approval" else null, groundingSources = emptyList()) }
-                if (grounding.blocksWeb(pendingRecallQuery)) session.latestUserNote = session.latestUserNote.orEmpty() + "\nPublic web access is disabled for this turn by the user's request. State when current facts cannot be verified; do not invent citations."
+                } else _state.update { it.copy(groundingStatus = if (grounding.privateRequest(pendingRecallQuery)) grounding.PRIVATE_STATUS else null, groundingSources = emptyList()) }
+                if (grounding.blocksWeb(pendingRecallQuery)) session.latestUserNote = session.latestUserNote.orEmpty() + grounding.OPT_OUT_NOTE
                 outcome = block { messages ->
                     _state.update { it.copy(messages = messages, turnMessagesReady = true) }
                 }
@@ -1205,16 +1207,10 @@ class ChatViewModel(
 
     /** Starts a deep-research task from the draft: a fixed multi-step plan, approved in Activity, reported back for discussion. */
     fun proposeDeepResearch() {
-        val query = _state.value.draft.trim()
-        val grounding = com.localfirst.assistant.grounding.GroundingPrecheck
-        if (query.isEmpty() || _state.value.busy || _state.value.workspaceBusy || _state.value.privacy.incognito) return
-        if (grounding.blocksWeb(query) || grounding.privateRequest(query)) {
-            _state.update { it.copy(error = "This looks private: public deep research needs a version without personal details.") }; return
-        }
-        if (query.length > 7900) { _state.update { it.copy(error = "This research prompt exceeds the task limit. Use a focused public question.") }; return }
-        proposeAgentTask("Research this thoroughly: $query",
-            listOf("Find primary authoritative sources", "Read the relevant passages and dates",
-                "Check material claims, conflicting evidence and limits", "Write a structured report with citations and uncertainty"))
+        if (_state.value.busy || _state.value.workspaceBusy || _state.value.privacy.incognito) return
+        val (prompt, plan) = com.localfirst.assistant.client.DeepResearch.proposal(_state.value.draft)
+            .getOrElse { e -> if (_state.value.draft.isNotBlank()) _state.update { it.copy(error = e.message) }; return }
+        proposeAgentTask(prompt, plan)
         _state.update { it.copy(showWorkspace = true, workspaceDestination = WorkspaceDestination.ACTIVITY) }
     }
 
@@ -1813,9 +1809,9 @@ class ChatViewModel(
     }
     fun discardChatGptImport() = workspaceAction { _state.value.importPreview?.optString("id")?.let { workspace?.request("/workspace/memory/imports/$it", "DELETE") }; _state.update { it.copy(importPreview = null) }; "Import preview discarded." }
     fun reviewMemory(id: String, accept: Boolean, text: String? = null) = workspaceAction { workspace?.request("/workspace/memory/suggestions/$id", "POST", JSONObject().put("accept", accept).apply { text?.let { put("text", it) } }); refreshMemory(); if (accept) "Memory approved." else "Suggestion dismissed." }
-    fun refreshArchive(query: String = _state.value.archiveQuery, offset: Int = 0) {
+    fun refreshArchive(query: String = _state.value.archiveQuery, offset: Int = 0): Job {
         _state.update { it.copy(archiveQuery = query, archiveOffset = offset) }
-        viewModelScope.launch {
+        return viewModelScope.launch {
             try {
                 val rows = JSONArray(workspace?.request("/workspace/memory/sources?q=" + java.net.URLEncoder.encode(query, "UTF-8") + "&offset=$offset") ?: return@launch)
                 if (_state.value.archiveQuery == query && _state.value.archiveOffset == offset) _state.update { it.copy(archiveSources = jsonRows(rows)) }

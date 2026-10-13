@@ -31,7 +31,7 @@ class FetchWorkspaceGateway : WorkspaceGateway {
     }
     fun origin(): String { val address = base; return js("new URL(address || window.location.origin, window.location.origin).origin") as String }
     override fun lock() { epoch++; token = ""; controllers.toList().forEach { it.abort() }; controllers.clear() }
-    private fun valid(path: String) = path.startsWith("/workspace/") || path in setOf("/transcribe", "/speak", "/extract") || path.startsWith("/images?") || path.startsWith("/image?")
+    private fun valid(path: String) = path.startsWith("/workspace/") || path in setOf("/transcribe", "/speak", "/extract", "/v1/models", "/grounding", "/grounding/page") || path.startsWith("/images?") || path.startsWith("/image?")
     private suspend fun <T> fetch(path: String, method: String, body: dynamic = null, mime: String? = null, extra: Map<String, String> = emptyMap(), timeoutMs: Int = 120000, read: suspend (Response) -> T): T {
         require(valid(path) && !path.substringBefore('?').contains("..")) { "Unknown computer path." }
         check(token.isNotBlank()) { "Connect to the computer first." }
@@ -103,6 +103,10 @@ class FetchWorkspaceGateway : WorkspaceGateway {
             return ByteArray(result.length) { result.asDynamic()[it] as Byte }
         } finally { bitmap.close() }
     }
+    override suspend fun fileBytes(id: String): ByteArray { require(Regex("[a-f0-9]{32}").matches(id)); return bytes("/workspace/files/$id") }
+    /** Streams a picked file straight from disk, without copying it into page memory. */
+    suspend fun sendFile(path: String, file: dynamic, mime: String = "application/octet-stream"): JsonElement =
+        fetch(path, "POST", file, mime, timeoutMs = 600000) { wireJson.parseToJsonElement(it.text().await()) }
     override suspend fun artifact(id: String) {
         require(Regex("[a-f0-9]{32}").matches(id))
         fetch("/workspace/files/$id", "GET") { response ->
@@ -123,7 +127,8 @@ class FetchWorkspaceGateway : WorkspaceGateway {
                     if (chunk.done == true) break
                     val options = js("({stream:true})")
                     pending += decoder.decode(chunk.value, options) as String
-                    check(pending.length < 256000) { "Stream response is too large." }
+                    // One event can carry a job's tool steps so far (each result is capped at 32,000 characters).
+                    check(pending.length < 16_000_000) { "Stream response is too large." }
                     while (pending.contains("\n\n")) {
                         val frame = pending.substringBefore("\n\n"); pending = pending.substringAfter("\n\n")
                         val data = frame.lines().filter { it.startsWith("data:") }.joinToString("\n") { it.removePrefix("data:").trimStart() }

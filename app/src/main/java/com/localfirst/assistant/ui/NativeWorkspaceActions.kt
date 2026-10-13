@@ -25,7 +25,11 @@ internal class NativeWorkspaceActions(private val vm: ChatViewModel, private val
             sourcePreview = native.archiveSource?.wire(),
             memorySettings = summary?.optJSONObject("settings")?.wire() ?: JsonObject(emptyMap()),
             memoryError = if (summary == null) native.workspaceStatus ?: "Loading shared memory…" else null,
-            error = native.workspaceError,
+            error = native.workspaceError, notice = native.workspaceStatus,
+            memorySummary = summary?.wire() ?: JsonObject(emptyMap()),
+            suggestions = native.memorySuggestions.map { it.wire() }, situations = native.memorySituations.map { it.wire() },
+            importPreview = native.importPreview?.wire(), archiveQuery = native.archiveQuery,
+            recall = native.recallSources.map { it.wire() }.takeIf { native.recallStatus != null }, recallStatus = native.recallStatus,
             tasks = native.tasks.map { task -> buildJsonObject {
                 put("id", task.id); put("prompt", task.prompt); put("status", task.status)
                 put("result", task.result); put("error", task.error)
@@ -50,6 +54,16 @@ internal class NativeWorkspaceActions(private val vm: ChatViewModel, private val
     override fun moreMemories(): Job? { vm.loadMoreMemories(); return null }
     override fun saveProject(id: String?, name: String, instructions: String, context: String, baseline: WorkspaceState) = track(vm.saveProject(id, name, instructions, context, baseline.knowledge.projects))
     override fun deleteProject(id: String) = track(vm.deleteProject(id))
+    override fun reviewSuggestion(id: String, accept: Boolean, text: String?) = track(vm.reviewMemory(id, accept, text))
+    override fun resolveSituation(id: String) = track(vm.resolveSituation(id))
+    override fun forgetSituation(id: String) = track(vm.forgetSituation(id))
+    override fun searchArchive(query: String) = track(vm.refreshArchive(query))
+    override fun deleteSource(id: String) = track(vm.deleteMemorySource(id))
+    override fun extractSource(id: String) = track(vm.extractMemorySource(id))
+    override fun continueSource(): Job? { vm.continueMemorySource(); return null }
+    override fun commitImport(extract: Boolean) = track(vm.commitChatGptImport(extract))
+    override fun discardImport() = track(vm.discardChatGptImport())
+    override fun refreshMemoryReview() = track(vm.refreshMemory())
 }
 
 @Composable

@@ -51,8 +51,9 @@ class BrowserChatTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post('/workspace/chat/ephemeral', json={'chat': json.dumps(self.chat())})
         self.assertEqual(response.status_code, 200)
         events = self.events(response)
-        self.assertEqual(events[0]['text'], 'Private')
-        self.assertEqual(events[-1], {'text': 'Private answer', 'done': True})
+        self.assertEqual(len(events[0]['session']), 32)
+        self.assertEqual(events[1]['text'], 'Private')
+        self.assertEqual(events[-1], {'text': 'Private answer', 'entries': [{'role': 'assistant', 'content': 'Private answer'}], 'done': True})
         self.assertEqual(self.workspace.items(), [])
         self.assertEqual(self.workspace.jobs(), [])
         self.assertEqual((self.workspace.root / 'workspace.sqlite').read_bytes(), before)
@@ -60,6 +61,11 @@ class BrowserChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers['cache-control'], 'no-store')
     async def test_private_route_rejects_attachments_malformed_chats_and_missing_auth(self):
         chat = self.chat(); chat['messages'][0]['attachments'] = [{'remoteFileId': 'normal-file'}]
+        tools = self.chat(); tools['messages'] += [{'role': 'tool_call', 'id': 'c', 'name': 'web_search', 'arguments': '{}'}, {'role': 'tool_result', 'id': 'c', 'name': 'web_search', 'content': 'Tea', 'success': True}, {'role': 'user', 'content': 'More?'}]
+        allowed = await self.client.post('/workspace/chat/ephemeral', json={'chat': json.dumps(tools)})
+        self.assertEqual(allowed.status_code, 200)
+        self.assertEqual(self.inputs[-1][0][2], {'role': 'assistant', 'content': 'Earlier web_search result: Tea'})
+        self.inputs.clear()
         for value in ('{}', '[]', json.dumps(chat), '{"messages": [null]}', '{"messages": "invalid"}'):
             response = await self.client.post('/workspace/chat/ephemeral', json={'chat': value})
             self.assertEqual(response.status_code, 400)

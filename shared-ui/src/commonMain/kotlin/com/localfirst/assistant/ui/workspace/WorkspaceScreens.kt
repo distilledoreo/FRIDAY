@@ -34,25 +34,58 @@ import com.localfirst.assistant.ui.theme.FridaySpacing
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 
-private enum class Page(val label: String) { CHAT("Chat"), PROJECTS("Projects"), MEMORY("Memory"), TASKS("Tasks"), FILES("Library"), IMAGES("Images"), ACTIVITY("FRIDAY"), ACCOUNTS("Accounts"), SETTINGS("Settings") }
+private enum class Page(val label: String) { CHAT("Chat"), PROJECTS("Projects"), MEMORY("Memory"), TASKS("Tasks"), FILES("Library"), IMAGES("Images"), ACTIVITY("FRIDAY"), ACCOUNTS("Accounts"), SETTINGS("Settings"),
+    IMPORT("Import ChatGPT"), REVIEW("Review memories"), ARCHIVE("Archive"), SOURCE("Source chat"), CONTEXT("Recall context"), DATA("Data controls"), BRIEF("Dashboard") }
+
+/** Voice mode's controls, supplied by a host that can run spoken conversations. */
+class VoiceControls(val toggle: () -> Unit, val pause: () -> Unit, val resume: () -> Unit, val interrupt: () -> Unit, val close: () -> Unit, val mute: (() -> Unit)? = null)
 
 @Composable
 fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
     features: FeatureController? = null, code: com.localfirst.assistant.ui.code.CodeWorkspace? = null,
     onAttach: (() -> Unit)? = null, onLibraryUpload: (() -> Unit)? = null,
     onDictate: (() -> Unit)? = null, dictating: Boolean = false,
-    onVoice: (() -> Unit)? = null, voiceActive: Boolean = false, voiceStatus: String = "",
+    voice: com.localfirst.assistant.voice.VoiceUiState? = null, voiceControls: VoiceControls? = null,
+    onShare: ((String) -> Unit)? = null,
+    onImportChatGpt: (() -> Unit)? = null, onRestoreBackup: (() -> Unit)? = null,
+    briefing: DashboardActions? = null,
+    /** Where a notification leads: "tasks", "activity", "code", "brief" or "chat:<id>". */
+    navigation: kotlinx.coroutines.flow.Flow<String>? = null,
     settingsExtras: @Composable ColumnScope.() -> Unit = {}) {
     var projectPage by remember { mutableStateOf<String?>(null) }
     var page by remember { mutableStateOf(Page.CHAT) }
+    var fridayTask by remember { mutableStateOf<String?>(null) }
+    var fridaySession by remember { mutableStateOf<String?>(null) }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val snackbar = remember { SnackbarHostState() }
+    var dashboardOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(dashboardOpen, state.projectId, state.incognito) { if (dashboardOpen && !state.incognito) briefing?.refreshDashboard(state.projectId.orEmpty()) else briefing?.clearDashboard() }
     LaunchedEffect(state.connected) { if (!state.connected) { page = Page.CHAT; drawer.snapTo(DrawerValue.Closed) } }
+    LaunchedEffect(navigation) {
+        navigation?.collect { target ->
+            when {
+                target == "tasks" -> page = Page.TASKS
+                target == "activity" -> { fridayTask = null; fridaySession = null; page = if (features != null) Page.ACTIVITY else Page.TASKS }
+                target == "code" -> code?.open()
+                target == "brief" -> page = Page.BRIEF
+                target.startsWith("chat:") -> { vm.select(target.removePrefix("chat:")); page = Page.CHAT }
+            }
+        }
+    }
+    LaunchedEffect(state.notice) { state.notice?.let { snackbar.currentSnackbarData?.dismiss(); snackbar.showSnackbar(it); vm.dismissNotice() } }
     if (!state.connected) { ConnectScreen(vm, state); return }
+    /** The dashboard's quick actions: a new chat in the current project about [text]. */
+    fun chatAbout(text: String) { if (state.busy || state.activeJob != null) return; vm.newChat(state.projectId); vm.setDraft(text); vm.send(); page = Page.CHAT }
     BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         val wide = maxWidth >= 900.dp
         val idle = !state.busy && state.activeJob == null
-        fun go(target: Page) { if (target in listOf(Page.FILES, Page.IMAGES, Page.ACTIVITY, Page.ACCOUNTS, Page.TASKS) && state.incognito) { if (!idle) return; vm.newChat() }; page = target; scope.launch { drawer.close() } }
+        fun go(target: Page) {
+            if (target in listOf(Page.FILES, Page.IMAGES, Page.ACTIVITY, Page.ACCOUNTS, Page.TASKS, Page.IMPORT, Page.ARCHIVE, Page.SOURCE, Page.DATA) && state.incognito) { if (!idle) return; vm.newChat() }
+            if (target == Page.ACTIVITY && page != Page.CHAT) { fridayTask = null; fridaySession = null }
+            page = target; scope.launch { drawer.close() }
+        }
+        fun openFriday(task: String?, session: String?) { fridayTask = task; fridaySession = session; page = Page.ACTIVITY }
         // The same sidebar and header as the phone. Destinations this client lacks are passed as null and left out.
         val sidebar: @Composable () -> Unit = {
             ChatDrawer(
@@ -71,7 +104,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
                 activeProjectId = state.projectId.takeIf { page == Page.CHAT },
                 onProject = { projectPage = it; go(Page.PROJECTS) },
                 onProjects = { projectPage = null; go(Page.PROJECTS) },
-                onActivity = features?.let { { go(Page.ACTIVITY) } },
+                onActivity = features?.let { { fridayTask = null; fridaySession = null; go(Page.ACTIVITY) } },
                 onFiles = features?.let { { go(Page.FILES) } },
                 onImages = features?.let { { go(Page.IMAGES) } },
                 destinations = buildList { addAll(listOf(
@@ -86,23 +119,30 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
                 Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Spacer(Modifier.weight(1f))
                     val working = state.activeJob != null || state.tasks.any { it["status"]?.jsonPrimitive?.contentOrNull == "running" }
+                    val needsYou = state.approval != null || state.tasks.any { it["status"]?.jsonPrimitive?.contentOrNull == "waiting" }
                     HomeHeaderActions(
                         showNewChat = page != Page.CHAT || state.active != null || state.draft.isNotBlank() || state.attachments.isNotEmpty() || state.projectId != null,
-                        onNewChat = { if (idle) { vm.newChat(); page = Page.CHAT } },
-                        friday = FridayStatus("FRIDAY. " + if (working) "Working" else "Work on your computer", if (working) LocalFridayPalette.current.accent else null),
-                        onFriday = { go(if (features != null) Page.ACTIVITY else Page.TASKS) },
+                        onNewChat = { vm.newChat(); page = Page.CHAT },
+                        friday = FridayStatus("FRIDAY. " + when { needsYou -> "Needs your attention"; working -> "Working"; else -> "Work on your computer" },
+                            when { needsYou -> LocalFridayPalette.current.warning; working -> LocalFridayPalette.current.accent; else -> null }),
+                        onFriday = { fridayTask = null; fridaySession = null; go(if (features != null) Page.ACTIVITY else Page.TASKS) },
                         profileName = state.preferences.displayName,
                         menu = buildList {
+                            if (briefing != null && !state.incognito) add("Personal dashboard" to { dashboardOpen = true })
+                            if (state.incognito) add("Exit incognito" to { vm.newChat(); page = Page.CHAT }) else add("Start incognito chat" to { vm.newIncognito(); page = Page.CHAT })
+                            if (state.incognito) add((if (state.freshSlate) "Use saved memories (new incognito chat)" else "Fresh slate (new incognito chat)") to { vm.newIncognito(!state.freshSlate); page = Page.CHAT })
                             add((if (state.projectId == null) "Choose project" else "Projects") to { page = Page.PROJECTS })
                             if (state.projectId != null && page == Page.CHAT && idle) add("Remove from project" to { vm.selectProject(null) })
+                            if (state.active?.conversation?.messages?.isNotEmpty() == true && page == Page.CHAT) add("Export chat" to { vm.exportChat("md") })
                             add("Memory" to { page = Page.MEMORY })
                             if (features != null) add("Accounts" to { go(Page.ACCOUNTS) })
+                            add("Data controls" to { go(Page.DATA) })
                             add("Settings" to { page = Page.SETTINGS })
                             add("Lock" to { vm.lock() })
                         },
                     )
                 }
-                state.error?.let { error ->
+                if (page != Page.CHAT) state.error?.let { error ->
                     Surface(color = MaterialTheme.colorScheme.errorContainer, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
                         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(error, Modifier.weight(1f), color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall)
@@ -111,7 +151,34 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
                     }
                 }
                 Box(Modifier.weight(1f).fillMaxWidth()) {
-                    when(page) { Page.CHAT -> ChatScreen(vm, state, onAttach, onDictate, dictating, onVoice, voiceActive, voiceStatus); Page.PROJECTS -> ProjectsScreen(vm, state, selectedProjectId = projectPage, openChat = { page = Page.CHAT }); Page.MEMORY -> MemoryScreen(vm, state); Page.TASKS -> TasksScreen(vm, state); Page.SETTINGS -> SettingsScreen(vm, state, settingsExtras); Page.FILES -> features?.let { LibraryScreen(it, { vm.artifact(it) }, onLibraryUpload) }; Page.IMAGES -> features?.let { ImagesScreen(it) { vm.artifact(it) } }; Page.ACTIVITY -> features?.let { ActivityScreen(it) { report -> vm.newChat(); vm.setDraft("Discuss this report:\n$report"); page = Page.CHAT } }; Page.ACCOUNTS -> features?.let { AccountsScreen(it) } }
+                    val memoryPage: (Page) -> Unit = { target -> if (target == Page.IMPORT || target == Page.ARCHIVE || target == Page.SOURCE) go(target) else page = target }
+                    when(page) {
+                        Page.CHAT -> ChatScreen(vm, state, code, features, onAttach, onDictate, dictating, voice, voiceControls, onShare,
+                            openFriday = { task, session -> if (features != null) openFriday(task, session) },
+                            onDashboard = if (briefing != null && !state.incognito) ({ dashboardOpen = true }) else null)
+                        Page.PROJECTS -> ProjectsScreen(vm, state, selectedProjectId = projectPage, openChat = { page = Page.CHAT })
+                        Page.MEMORY -> MemoryScreen(vm, state, onSource = { memoryPage(Page.SOURCE) }) {
+                            MemoryTools(vm, state, onImport = { memoryPage(Page.IMPORT) }, onReview = { page = Page.REVIEW }, onArchive = { memoryPage(Page.ARCHIVE) }, onContext = { page = Page.CONTEXT })
+                        }
+                        Page.IMPORT -> ChatGptImportScreen(vm, state, onChoose = { onImportChatGpt?.invoke() },
+                            platformNote = "Choose your ChatGPT export ZIP or conversations.json. It streams straight to your computer; this browser keeps no copy.")
+                        Page.REVIEW -> MemoryReviewScreen(vm, state)
+                        Page.ARCHIVE -> MemoryArchiveScreen(vm, state) { page = Page.SOURCE }
+                        Page.SOURCE -> MemorySourceScreen(vm, state, onContinue = { page = Page.CHAT }, onDeleted = { page = Page.ARCHIVE })
+                        Page.CONTEXT -> MemoryContextScreen(state)
+                        Page.DATA -> DataControlsScreen(state,
+                            onExportChat = if (state.active?.conversation?.messages?.isNotEmpty() == true) { format -> vm.exportChat(format) } else null,
+                            onExportToLibrary = if (!state.incognito && state.active != null) { { vm.exportChatToLibrary() } } else null,
+                            onBackup = { vm.exportBackup() }, onRestore = { onRestoreBackup?.invoke() }, onImportChatGpt = { page = Page.IMPORT })
+                        Page.TASKS -> TasksScreen(vm, state)
+                        Page.SETTINGS -> SettingsScreen(vm, state, settingsExtras)
+                        Page.FILES -> features?.let { LibraryScreen(it, { vm.artifact(it) }, onLibraryUpload) }
+                        Page.IMAGES -> features?.let { ImagesScreen(it) { vm.artifact(it) } }
+                        Page.ACTIVITY -> features?.let { ActivityScreen(it, fridayTask, fridaySession) { report -> vm.newChat(); vm.setDraft("Discuss this report:\n$report"); page = Page.CHAT } }
+                        Page.ACCOUNTS -> features?.let { AccountsScreen(it) }
+                        Page.BRIEF -> briefing?.let { com.localfirst.assistant.ui.dashboard.BriefSettingsScreen(it, state.projectId.orEmpty(), state.incognito, state.busy, "browser",
+                            onAccounts = { go(Page.ACCOUNTS) }, notificationNote = "Notifications are delivered to your phone.") }
+                    }
                 }
             }
         }
@@ -126,6 +193,21 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
         }
         code?.let { com.localfirst.assistant.ui.code.CodeScreen(it) }
         FridayBrand(opened, { if (!wide) scope.launch { if (drawer.isOpen) drawer.close() else drawer.open() } }, Modifier.align(Alignment.TopStart).padding(start = 16.dp, top = 4.dp))
+        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp))
+    }
+    if (dashboardOpen && briefing != null) FridaySheet(onDismiss = { dashboardOpen = false }) { _, _, close ->
+        com.localfirst.assistant.ui.dashboard.PersonalDashboard(briefing, state.projectId.orEmpty(), state.incognito, state.busy || state.activeJob != null,
+            state.preferences.proactivity, onClose = { close(); dashboardOpen = false },
+            go = com.localfirst.assistant.ui.dashboard.DashboardNavigation(settings = { page = Page.BRIEF }, accounts = { page = Page.ACCOUNTS }, appSettings = { page = Page.SETTINGS },
+                talk = ::chatAbout, planDay = { chatAbout("Help me plan my day. Check my calendar and daily brief for today, then tell me what to prioritize.") },
+                openFriday = { task -> if (features != null) { fridayTask = task; fridaySession = null; page = Page.ACTIVITY } },
+                askFriday = { request -> features?.startPc(request); if (features != null) { fridayTask = null; fridaySession = null; page = Page.ACTIVITY } }))
+    }
+    state.canvas?.let { doc ->
+        val clipboard = LocalClipboardManager.current
+        CanvasSheet(doc, state.busy, onTitle = { vm.updateCanvas(it, doc.body) }, onBody = { vm.updateCanvas(doc.title, it) },
+            onSave = { vm.saveCanvas() }, onCopy = { clipboard.setText(AnnotatedString(it)) }, onClose = vm::closeCanvas,
+            saveLabel = if (state.incognito) "Download" else "Save to Library", onDownload = if (state.incognito) null else ({ vm.downloadCanvas() }))
     }
 }
 
@@ -147,22 +229,25 @@ private fun ConnectScreen(vm: WorkspaceController, state: WorkspaceState) {
 }
 
 @Composable
-private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState,
+private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState, code: com.localfirst.assistant.ui.code.CodeWorkspace?, features: FeatureController?,
     onAttach: (() -> Unit)?, onDictate: (() -> Unit)?, dictating: Boolean,
-    onVoice: (() -> Unit)?, voiceActive: Boolean, voiceStatus: String) {
+    voice: com.localfirst.assistant.voice.VoiceUiState?, voiceControls: VoiceControls?, onShare: ((String) -> Unit)?,
+    openFriday: (String?, String?) -> Unit, onDashboard: (() -> Unit)?) {
     val scroll = rememberLazyListState()
-    val messages = state.active?.conversation?.messages.orEmpty()
-    val transcript = remember(messages, state.activeJob) { Transcript.items(messages, state.activeJob != null) }
+    val messages = state.transcript
+    val working = state.activeJob != null
+    val transcript = remember(messages, working, state.approval != null) { Transcript.items(messages, working && state.approval == null) }
     val clipboard = LocalClipboardManager.current
     val copy: (String) -> Unit = { clipboard.setText(AnnotatedString(it)) }
-    LaunchedEffect(state.activeId, transcript.size, state.streamingText.length / 100) { if (transcript.isNotEmpty()) scroll.animateScrollToItem(if (state.streamingText.isBlank()) transcript.lastIndex else transcript.size) }
+    val bottom = transcript.size + listOfNotNull(state.streamingText.takeIf { it.isNotBlank() }, state.approval, state.error).size
+    LaunchedEffect(state.activeId, bottom, state.streamingText.length / 100) { if (bottom > 0) scroll.animateScrollToItem(bottom - 1) }
     val palette = LocalFridayPalette.current
     BoxWithConstraints(Modifier.fillMaxSize()) {
     // As on the phone: FRIDAY's light fills an empty chat and dims behind a conversation, and the composer
     // rests a third of the way up until there is something to read.
-    val conversation = transcript.isNotEmpty() || state.detachedReply != null
+    val conversation = transcript.isNotEmpty() || state.detachedReply != null || voice != null
     val homeOffset by animateDpAsState(if (conversation) 0.dp else maxHeight * .34f, tween(palette.transitionMillis), label = "composer position")
-    FridayAmbient(null, 0f, state.activeJob != null, Modifier.fillMaxSize().alpha(if (conversation) .14f else 1f))
+    FridayAmbient(voice?.phase, voice?.level ?: 0f, working, Modifier.fillMaxSize().alpha(if (conversation) .14f else 1f))
     Column(Modifier.align(Alignment.TopCenter).fillMaxHeight().widthIn(max = 820.dp).fillMaxWidth().padding(horizontal = 16.dp)) {
         // A quiet label for where you are, with rename and delete kept on the chat's row in the sidebar.
         val project = state.knowledge.projects.firstOrNull { it.id == state.projectId }?.name
@@ -173,24 +258,84 @@ private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState,
         Box(Modifier.weight(1f).fillMaxWidth()) {
             LazyColumn(state = scroll, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
                 items(transcript, key = { it.key }) { item -> when(item) {
-                    is TranscriptItem.User -> SharedUserMessage(item, actionsEnabled = false, onCopy = copy)
-                    is TranscriptItem.Assistant -> SharedAssistantMessage(item, actionsEnabled = !state.busy, onCopy = copy,
-                        onChoose = vm::setDraft, interfaceContent = { AssistantReply(item.text, state.preferences.interactiveAnswers, vm::setDraft, messages) })
-                    is TranscriptItem.ToolActivity -> SharedToolActivityCard(item)
+                    is TranscriptItem.User -> SharedUserMessage(item, actionsEnabled = state.idle, onCopy = copy, onEdit = vm::startEditing,
+                        onBranch = if (state.incognito) null else ({ index -> vm.branch(index) }))
+                    is TranscriptItem.Assistant -> SharedAssistantMessage(item, actionsEnabled = state.idle, onCopy = copy,
+                        onRegenerate = { vm.regenerate() }, onChoose = vm::setDraft, onCanvas = vm::openCanvas, onShare = onShare,
+                        onFeedback = if (state.incognito) null else ({ liked -> vm.feedback(item.index, item.text, liked) }),
+                        interfaceContent = { AssistantReply(item.text, state.preferences.interactiveAnswers, vm::setDraft, messages) })
+                    is TranscriptItem.ToolActivity -> SharedToolActivityCard(item) { step ->
+                        ChatToolResult(step, { vm.artifact(it) }, openFriday, code, { id -> if (!state.incognito) code?.open(id) }, features.takeUnless { state.incognito },
+                            discuss = { text -> if (state.draft.isBlank()) vm.setDraft(text) else vm.reportError("Send or clear your draft first.") })
+                    }
                     TranscriptItem.Thinking -> if (state.streamingText.isBlank()) ThinkingIndicator()
                 } }
                 if (state.streamingText.isNotBlank()) item(key = "streaming-reply") { NativeResponseContent(state.streamingText) }
+                state.approval?.let { approval -> item(key = "approval") {
+                    fun text(key: String) = (approval[key] as? JsonPrimitive)?.contentOrNull.orEmpty()
+                    ApprovalCard(text("tool"), text("title").ifBlank { "Allow this?" }, text("prompt"), { vm.answerApproval(it) },
+                        approveLabel = text("approve").ifBlank { "Approve" }, enabled = state.canAnswerApproval)
+                } }
+                state.error?.let { error -> item(key = "error") {
+                    Column {
+                        ErrorCard(error, retryEnabled = state.idle && state.active != null) { vm.dismissError(); vm.retry() }
+                        TextButton({ vm.dismissError() }) { Text("Dismiss") }
+                    }
+                } }
                 state.detachedReply?.let { reply -> item { Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = RoundedCornerShape(12.dp)) { Column(Modifier.padding(16.dp)) { Text("Reply saved separately because the chat changed", style = MaterialTheme.typography.titleSmall); AssistantReply(reply, state.preferences.interactiveAnswers, vm::setDraft) } } } }
             }
         }
-        if (state.incognito) Text("Incognito · this conversation stays in tab memory until you leave or lock", style = MaterialTheme.typography.labelSmall)
-        if (voiceStatus.isNotBlank()) Row(verticalAlignment = Alignment.CenterVertically) { Text(voiceStatus, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium); if (voiceActive) TextButton({ onVoice?.invoke() }) { Text("End voice") } }
-        SharedComposer(state.draft, busy = state.activeJob != null, editing = false,
-            onDraftChange = vm::setDraft, onSend = { vm.send() }, onStop = { vm.stop() },
-            onCancelEdit = {}, onVoice = onVoice, voiceActive = voiceActive, onDictate = onDictate, dictating = dictating,
-            onAttach = onAttach.takeUnless { state.incognito || state.busy }, hasAttachments = state.attachments.isNotEmpty(),
-            attachmentContent = { AttachmentStrip(state.attachments, !state.busy && state.activeJob == null, vm::removeAttachment) }, sendEnabled = state.canSend)
+        // As on the phone: source checking for the latest turn, its sources, and an offer of larger research.
+        state.groundingStatus?.let { status ->
+            val uri = androidx.compose.ui.platform.LocalUriHandler.current
+            Text(status, Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelSmall)
+            if (state.groundingResearch != null && features != null) TextButton({ if (vm.proposeGroundedResearch(features)) openFriday(null, null) }, enabled = state.idle) { Text("Have FRIDAY research this deeper") }
+            if (state.groundingSources.isNotEmpty()) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).horizontalScroll(rememberScrollState())) {
+                state.groundingSources.take(5).forEach { source -> TextButton({ uri.openUri(source.url) }) { Text(source.title.take(35), maxLines = 1) } }
+            }
+        }
+        if (state.incognito) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Won’t be saved · Fresh slate", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
+                Switch(state.freshSlate, { vm.newIncognito(it) }, enabled = state.idle)
+            }
+            Text(if (state.freshSlate) "No memories. Ends when you leave or lock this tab, or start another chat." else "Saved memories are available. Ends when you leave or lock this tab, or start another chat.",
+                Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelSmall)
+        }
+        if (voice != null && voiceControls != null) InlineVoice(voice, voiceControls.pause, voiceControls.resume, voiceControls.interrupt, voiceControls.close, onMuteMic = voiceControls.mute)
+        val editingHasAttachments = (state.active?.conversation?.messages?.getOrNull(state.editingIndex ?: -1) as? Message.User)?.attachments?.isNotEmpty() == true
+        var menu by remember { mutableStateOf(false) }
+        var imageOptions by remember { mutableStateOf(false) }
+        val featureState = features?.state?.collectAsState()?.value
+        // The phone's attach menu: files, the web, deep research, images and export.
+        Box {
+            SharedComposer(state.draft, busy = working, editing = state.editingIndex != null,
+                onDraftChange = vm::setDraft, onSend = { vm.send() }, onStop = { vm.stop() },
+                onCancelEdit = vm::cancelEditing, onVoice = voiceControls?.toggle, voiceActive = voice != null, onDictate = onDictate, dictating = dictating,
+                onAttach = { menu = true }.takeUnless { state.busy || state.editingIndex != null }, hasAttachments = state.attachments.isNotEmpty(),
+                attachmentContent = { AttachmentStrip(state.attachments, !state.busy && state.activeJob == null, vm::removeAttachment) }, sendEnabled = state.canSend,
+                editingHasAttachments = editingHasAttachments,
+                imageMode = state.imageMode, imageSummary = state.imageSettings.summary, onImageSettings = { imageOptions = true; features?.open("images") },
+                onExitImageMode = { vm.setImageMode(false) })
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                if (onAttach != null && !state.incognito) DropdownMenuItem(text = { Text("Files") }, onClick = { menu = false; onAttach() })
+                DropdownMenuItem(text = { Text("Search the web") }, onClick = { menu = false; vm.setDraft("Search the web for: " + state.draft) })
+                if (features != null && !state.incognito) DropdownMenuItem(text = { Text("Research deeply") }, enabled = state.draft.isNotBlank() && !state.busy,
+                    onClick = { menu = false; if (vm.proposeResearch(features)) openFriday(null, null) })
+                if (!state.incognito) DropdownMenuItem(text = { Text("Create image") }, onClick = { menu = false; vm.setImageMode(true); imageOptions = true; features?.open("images") })
+                DropdownMenuItem(text = { Text("Export chat") }, enabled = state.active?.conversation?.messages?.isNotEmpty() == true && !state.busy, onClick = { menu = false; vm.exportChat("md") })
+            }
+        }
+        if (imageOptions) FridaySheet(onDismiss = { imageOptions = false }) { _, _, close ->
+            ImageOptions(state.imageSettings, featureState?.files.orEmpty().filter { (it["mime"] as? JsonPrimitive)?.contentOrNull.orEmpty().startsWith("image/") }
+                .map { (it["id"] as? JsonPrimitive)?.contentOrNull.orEmpty() to (it["name"] as? JsonPrimitive)?.contentOrNull.orEmpty() }, state.busy,
+                { vm.saveImageSettings(it); close() })
+        }
         Spacer(Modifier.height(16.dp + homeOffset))
+    }
+    // As on the phone, the empty home has a handle that opens the personal dashboard.
+    if (!conversation && onDashboard != null) TextButton(onDashboard, Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp).height(48.dp).width(120.dp)) {
+        Box(Modifier.width(32.dp).height(3.dp).background(MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(2.dp)))
     }
     }
 }
@@ -199,6 +344,16 @@ private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState,
 private fun SettingsScreen(vm: WorkspaceController, state: WorkspaceState, extras: @Composable ColumnScope.() -> Unit) {
     val prefs = state.preferences
     ScreenColumn("Settings") {
+        if (state.models.isNotEmpty()) {
+            Text("Model", style = MaterialTheme.typography.titleMedium)
+            Text("This client's choice, like the phone's model setting. Chats and voice on this device use it; other clients keep their own.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+            (listOf<String?>(null) + state.models).forEach { id ->
+                Row(Modifier.fillMaxWidth().clickable { vm.setModel(id) }, verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(state.model == id, { vm.setModel(id) }); Text(id ?: "Computer default", style = MaterialTheme.typography.bodyLarge)
+                }
+            }
+            HorizontalDivider()
+        }
         AppearanceControls(prefs, enabled = !state.busy,
             revision = { key -> state.items.firstOrNull { it.id == "preferences-$key" }?.revision ?: 0 },
             save = { key, value, revision -> vm.preference(key, value, revision) })
@@ -209,7 +364,7 @@ private fun SettingsScreen(vm: WorkspaceController, state: WorkspaceState, extra
 }
 
 @Composable
-fun MemoryScreen(vm: WorkspaceActions, state: WorkspaceState, extras: @Composable ColumnScope.() -> Unit = {}) {
+fun MemoryScreen(vm: WorkspaceActions, state: WorkspaceState, onSource: (() -> Unit)? = null, extras: @Composable ColumnScope.() -> Unit = {}) {
     var query by remember { mutableStateOf("") }
     var requested by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(query, state.busy) {
@@ -244,15 +399,15 @@ fun MemoryScreen(vm: WorkspaceActions, state: WorkspaceState, extras: @Composabl
         Text("Exclude a source to keep it out of recall, including after future history updates.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
         for (source in state.archiveSources) Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
             val id = source.getValue("id").jsonPrimitive.content
-            val excluded = source["excluded"]?.jsonPrimitive?.intOrNull == 1
+            val excluded = source.excluded()
             Column(Modifier.padding(16.dp)) {
                 Text(source["title"]?.jsonPrimitive?.content.orEmpty())
-                Row { TextButton({ vm.source(id) }, enabled = !state.busy) { Text("View source") }; TextButton({ vm.excludeSource(id, !excluded) }, enabled = !state.busy) { Text(if (excluded) "Allow recall" else "Exclude from recall") } }
+                Row { TextButton({ vm.source(id); onSource?.invoke() }, enabled = !state.busy) { Text("View source") }; TextButton({ vm.excludeSource(id, !excluded) }, enabled = !state.busy) { Text(if (excluded) "Allow recall" else "Exclude from recall") } }
             }
         }
         if (state.archiveSources.size < state.archiveTotal) OutlinedButton({ vm.moreSources() }, enabled = !state.busy) { Text("More archive sources (${state.archiveSources.size} of ${state.archiveTotal})") }
     }
-    state.sourcePreview?.let { source -> AlertDialog(onDismissRequest = vm::closeSource, title = { Text(source["title"]?.jsonPrimitive?.content.orEmpty()) }, text = {
+    if (onSource == null) state.sourcePreview?.let { source -> AlertDialog(onDismissRequest = vm::closeSource, title = { Text(source["title"]?.jsonPrimitive?.content.orEmpty()) }, text = {
         Column(Modifier.heightIn(max = 500.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             for (entry in source["messages"]?.jsonArray.orEmpty()) { val message = entry.jsonObject; Text(message["role"]?.jsonPrimitive?.content.orEmpty(), style = MaterialTheme.typography.labelLarge); Text(message["content"]?.jsonPrimitive?.content.orEmpty()) }
             if (source["truncated"]?.jsonPrimitive?.booleanOrNull == true) Text("This preview shows a bounded excerpt.", color = MaterialTheme.colorScheme.secondary)

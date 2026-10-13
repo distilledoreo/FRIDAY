@@ -41,6 +41,7 @@ class VoiceControllerTest {
         scope = scope,
         selectIo = { selection },
         chat = chat,
+        view = { s -> VoiceTurn(s.messages, s.busy, s.turnMessagesReady, s.pendingApproval?.let { VoiceApproval(it.toolName + "\n" + it.title, it.prompt) }) },
         submit = { text ->
             chat.update { it.copy(messages = if(deferSnapshot)it.messages else it.messages + Message.User(text), busy = true, turnMessagesReady = !deferSnapshot) }
             scope.launch { reply(text) }

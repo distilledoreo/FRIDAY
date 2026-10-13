@@ -159,6 +159,20 @@ fun ActivityScreen(vm: FeatureController, initialTask: String? = null, initialSe
             items(state.schedules, key = { "schedule-" + it.string("id") }) { schedule -> Row { Text(schedule.string("prompt"), Modifier.weight(1f)); TextButton({ vm.change("/workspace/pc/schedules/${schedule.string("id")}", "DELETE") }) { Text("Cancel schedule") } } }
             item { Text("Computer access", style = MaterialTheme.typography.titleMedium); Text("Changing access stops active computer sessions.");
             FlowRow { listOf("ask" to "Ask for every action", "ask_changes" to "Ask before changes", "full" to "Full access").forEach { (mode, label) -> FilterChip(state.pc.string("mode") == mode, { vm.change("/workspace/pc/settings", "PUT", JsonObject(state.pc.filterKeys { it in setOf("enabled", "computer_use", "mode", "allow", "deny") } + ("mode" to JsonPrimitive(mode)))) }, label = { Text(label) }, enabled = !state.busy) } }; listOf("enabled" to "PC access", "computer_use" to "Desktop control").forEach { (key, label) -> Row(verticalAlignment = Alignment.CenterVertically) { Text(label, Modifier.weight(1f)); Switch(state.pc.flag(key), { enabled -> vm.change("/workspace/pc/settings", "PUT", JsonObject(state.pc.filterKeys { it in setOf("enabled", "computer_use", "mode", "allow", "deny") } + (key to JsonPrimitive(enabled)))) }, enabled = !state.busy && state.pc.isNotEmpty()) } } }
+            // Tool servers the PC's mcp.json connects: a new or changed one waits here until confirmed, as on the phone.
+            state.mcp?.get("servers")?.rows()?.let { servers -> item {
+                Text("Connected services", style = MaterialTheme.typography.titleSmall)
+                Text("Operator-configured tool servers from the PC's mcp.json. A new or changed server waits here until you confirm it; its tool calls still ask approval one by one afterwards.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+                if (servers.isEmpty()) Text("No service connections configured.")
+                servers.forEach { server ->
+                    val name = server.string("name")
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) { Text(name); Text(server.string("type"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary) }
+                        if (server.flag("confirmed")) Text("Confirmed", style = MaterialTheme.typography.labelMedium)
+                        else TextButton({ vm.change("/workspace/pc/mcp/${com.localfirst.assistant.platform.PlatformNet.encodeUrl(name)}/confirm") }, enabled = !state.busy) { Text("Confirm") }
+                    }
+                }
+            } }
         }
     }
     approval?.let { exact -> AlertDialog(onDismissRequest = { approval = null }, title = { Text("Start this exact plan?") }, text = { Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) { Text(describePlan(exact["proposal"] as? JsonObject ?: JsonObject(emptyMap()))); Text("FRIDAY sends this request and the pages she reads to a cloud model. Account reads require the exact scopes in this plan.") } }, confirmButton = { TextButton({ vm.change("/workspace/agent/tasks/${exact.string("id")}/approve", body = buildJsonObject { put("fingerprint", exact.string("fingerprint")) }); approval = null }) { Text("Start") } }, dismissButton = { TextButton({ approval = null }) { Text("Back") } }) }

@@ -129,11 +129,12 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                             onReview = { page = WorkspaceDestination.MEMORY_REVIEW },
                             onArchive = { page = WorkspaceDestination.MEMORY_ARCHIVE; vm.refreshArchive() },
                             onEdit = { item -> memory = item.getString("text"); vm.editMemory(item); page = WorkspaceDestination.NEW_MEMORY },
-                            onContext = { page = WorkspaceDestination.MEMORY_CONTEXT })
+                            onContext = { page = WorkspaceDestination.MEMORY_CONTEXT },
+                            onSource = { page = WorkspaceDestination.MEMORY_SOURCE })
                         WorkspaceDestination.IMPORT_CHATGPT -> ChatGptImport(state, vm)
                         WorkspaceDestination.MEMORY_REVIEW -> MemoryReview(state, vm)
                         WorkspaceDestination.MEMORY_ARCHIVE -> MemoryArchive(state, vm) { page = WorkspaceDestination.MEMORY_SOURCE }
-                        WorkspaceDestination.MEMORY_SOURCE -> MemorySource(state, vm)
+                        WorkspaceDestination.MEMORY_SOURCE -> MemorySource(state, vm) { page = WorkspaceDestination.MEMORY_ARCHIVE }
                         WorkspaceDestination.MEMORY_CONTEXT -> MemoryContext(state)
                         WorkspaceDestination.NEW_MEMORY -> FormScreen {
                             OutlinedTextField(memory, { memory = it.take(2000) }, label = { Text("What should I remember?") }, minLines = 4, modifier = Modifier.fillMaxWidth())

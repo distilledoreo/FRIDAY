@@ -27,9 +27,11 @@ fun main() = onWasmReady {
     ComposeViewport(document.body!!) {
         val scope = rememberCoroutineScope()
         val gateway = remember { FetchWorkspaceGateway() }
-        val vm = remember { WorkspaceController(WorkspaceRepository(gateway), scope, ::randomConversationId, PlatformSystem::currentTimeMillis) }
+        val vm = remember { WorkspaceController(WorkspaceRepository(gateway), scope, ::randomConversationId, PlatformSystem::currentTimeMillis,
+            save = { name, mime, bytes -> downloadBytes(name, mime, bytes) }, inflate = browserInflate) }
         val state by vm.state.collectAsState()
         val features = remember { FeatureController(gateway, scope, browserOAuth = true) }
+        val briefing = remember { BriefingController(gateway, scope) }
         val code = remember { CodeWorkspace(scope, { path, method, body -> gateway.request(path, method, body?.json()).toString() }) }
         val featureState by features.state.collectAsState()
         var oauthWindow by remember { mutableStateOf<dynamic>(null) }
@@ -46,23 +48,71 @@ fun main() = onWasmReady {
             onDispose { window.removeEventListener("message", listener); oauthWindow?.close() }
         }
         val images = remember { BrowserImages(gateway) }
-        val voice = remember { BrowserVoice(gateway, vm, scope) }
+        val audio = remember { BrowserVoiceIo(gateway, scope) }
+        // The same voice loop as the phone: streamed sentences, talking over FRIDAY, and spoken approvals.
+        var voiceEngine by remember { mutableStateOf(DeviceChoices.voiceEngine) }
+        var bargeIn by remember { mutableStateOf(DeviceChoices.bargeIn) }
+        var notify by remember { mutableStateOf(DeviceChoices.notifications && notificationsSupported) }
+        var notifyNote by remember { mutableStateOf<String?>(null) }
+        val navigation = remember { kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 4) }
+        // The browser's own voice where chosen and supported, as the phone can use its own; otherwise the computer's.
+        val selectVoice: suspend () -> com.localfirst.assistant.voice.VoiceSelection = {
+            val own = audio.browserIo
+            when {
+                DeviceChoices.voiceEngine != "browser" -> com.localfirst.assistant.voice.VoiceSelection(audio.io)
+                own != null -> com.localfirst.assistant.voice.VoiceSelection(own)
+                else -> com.localfirst.assistant.voice.VoiceSelection(audio.io, "Using the computer's voice: this browser has no built-in speech recognition.")
+            }
+        }
+        val voice = remember { com.localfirst.assistant.voice.VoiceController(scope, selectVoice, vm.state,
+            view = { s -> com.localfirst.assistant.voice.VoiceTurn(
+                s.transcript + listOfNotNull(s.streamingText.takeIf { it.isNotBlank() }?.let { Message.Assistant(it) }),
+                busy = s.busy || s.activeJob != null,
+                approval = s.approval?.let { com.localfirst.assistant.voice.VoiceApproval(it.string("call_id"), it.string("title") + ". " + it.string("prompt")) }) },
+            submit = { text -> vm.setDraft(text); vm.send() != null },
+            resubmit = { text ->
+                // A continuation of the last spoken message replaces it, unless a tool already ran for it.
+                val messages = vm.state.value.active?.conversation?.messages.orEmpty()
+                val last = messages.indexOfLast { it is Message.User }
+                last >= 0 && messages.drop(last + 1).none { it is Message.ToolCall } && run { vm.startEditing(last); vm.setDraft(text); vm.send() != null }
+            },
+            stopTurn = { vm.stop() }, answerApproval = { vm.answerApproval(it) }, bargeInEnabled = { DeviceChoices.bargeIn }) }
+        // This device's model choice, as the phone keeps its own.
+        LaunchedEffect(state.models) { if (state.models.isNotEmpty()) DeviceChoices.model?.takeIf { it in state.models }?.let(vm::setModel) }
+        LaunchedEffect(state.model, state.models) { if (state.models.isNotEmpty()) DeviceChoices.model = state.model }
+        // Background notices, by the phone's rules; check-ins are refreshed every fifteen minutes.
+        LaunchedEffect(state.connected, notify) {
+            if (!state.connected || !notify) return@LaunchedEffect
+            val seen = DeviceChoices.seen()
+            val planner = NoticePlanner({ path, method, body -> gateway.request(path, method, body) }, seen, PlatformSystem::currentTimeMillis)
+            var lastCheckins = 0L
+            while (true) {
+                val now = PlatformSystem.currentTimeMillis()
+                val checkins = now - lastCheckins >= 15 * 60_000L
+                if (checkins) lastCheckins = now
+                val notices = try { planner.poll(checkins) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { emptyList() }
+                DeviceChoices.saveSeen(seen)
+                val away = document.asDynamic().hidden == true || document.asDynamic().hasFocus() != true
+                if (away) notices.forEach { n -> showNotice(n.title, n.text, n.key) { navigation.tryEmit(n.open) } }
+                kotlinx.coroutines.delay(60_000)
+            }
+        }
         val voiceState by voice.state.collectAsState()
+        val dictating by audio.dictating.collectAsState()
         val apps = remember(state.activeId, state.incognito) { object : AppBlockStore {
             private val values = mutableMapOf<String, String>()
             override fun get(id: String) = values[id]
             override fun set(id: String, json: String) { if (json.length <= 200000 && values.size < 40) values[id] = json }
         } }
-        LaunchedEffect(state.connected) { if (!state.connected) { voice.close(); images.clear(); features.reset(); code.reset(); oauthWindow?.close(); oauthWindow = null } }
-        LaunchedEffect(state.activeId, state.incognito) { if (voice.state.value.recording || voice.state.value.status == "Requesting microphone…") voice.close() }
-        LaunchedEffect(state.activeJob, state.active?.conversation?.messages?.lastOrNull()) {
-            if (state.activeJob == null) (state.active?.conversation?.messages?.lastOrNull() as? Message.Assistant)?.let { voice.reply(it.content) }
-        }
+        LaunchedEffect(state.connected) { if (!state.connected) { voice.close(); audio.close(); images.clear(); features.reset(); briefing.reset(); code.reset(); oauthWindow?.close(); oauthWindow = null } }
+        // Voice belongs to one conversation; leaving it ends voice mode.
+        var voiceChat by remember { mutableStateOf<String?>(null) }
+        LaunchedEffect(state.activeId, state.incognito) { if (voice.active && voiceChat != null && state.activeId != voiceChat) voice.close(); voiceChat = state.activeId }
         DisposableEffect(vm) {
             vm.startPolling { document.asDynamic().hidden != true }
             val listener: (Event) -> Unit = { if (document.asDynamic().hidden != true && vm.state.value.connected) vm.refresh(true) }
             document.addEventListener("visibilitychange", listener)
-            onDispose { voice.close(); features.reset(); code.reset(); document.removeEventListener("visibilitychange", listener); vm.close() }
+            onDispose { voice.shutdown(); audio.close(); features.reset(); code.reset(); document.removeEventListener("visibilitychange", listener); vm.close() }
         }
         CompositionLocalProvider(LocalOAuthLauncher provides { url -> oauthWindow = window.open(url, "friday-account-sign-in", "popup,width=600,height=750") }, LocalFeatureImages provides images::path, LocalReplyImages provides images, LocalReplyApps provides apps, LocalUriHandler provides object : UriHandler {
             override fun openUri(uri: String) {
@@ -72,11 +122,44 @@ fun main() = onWasmReady {
             }
         }) { AssistantTheme(state.preferences) { WorkspaceApp(vm, state, features, code,
             onAttach = { pickBrowserFiles(scope, vm) }, onLibraryUpload = { pickBrowserFiles(scope, vm, false) },
-            onDictate = voice::dictate, dictating = voiceState.recording,
-            onVoice = voice::converse, voiceActive = voiceState.conversation, voiceStatus = voiceState.status) {
+            onDictate = { audio.dictate(vm, voice.active) }, dictating = dictating,
+            voice = voiceState, voiceControls = VoiceControls(toggle = { if (voice.active) voice.close() else { voiceChat = state.activeId; voice.start() } },
+                pause = { voice.pause("Voice paused. Resume when you're ready.") }, resume = voice::start, interrupt = { voice.interrupt() },
+                close = voice::close, mute = { voice.muteMic(voiceState?.micMuted != true) }),
+            onShare = { text -> shareText(text) { vm.reportError(it) } },
+            onImportChatGpt = { pickBrowserFile(".zip,.json,application/zip,application/json") { file ->
+                vm.stageImport { gateway.sendFile("/workspace/memory/imports", file) } } },
+            onRestoreBackup = { pickBrowserFile(".zip,application/zip") { file ->
+                scope.launch { try { vm.restoreBackup(fileBytes(file)) } catch (e: Exception) { vm.reportError(e.message ?: "Backup could not be read") } } } },
+            briefing = briefing, navigation = navigation) {
+            DeviceSettingsSection(DeviceSettings(voiceEngine, buildList {
+                    add("computer" to "Computer voice (recognition and speech on your computer)")
+                    add("browser" to if (audio.browserIo != null) "This browser's voice" else "This browser's voice (unavailable here; uses the computer's)")
+                }, bargeIn, notify, notificationsSupported, notifyNote ?: if (!notificationsSupported) "Notifications need HTTPS or localhost and a browser that supports them." else null),
+                onVoiceEngine = { voiceEngine = it; DeviceChoices.voiceEngine = it; if (voice.active) { voice.close() } },
+                onBargeIn = { bargeIn = it; DeviceChoices.bargeIn = it },
+                onNotifications = { on ->
+                    if (!on) { notify = false; DeviceChoices.notifications = false }
+                    else scope.launch {
+                        val granted = runCatching { requestNotificationPermission() }.getOrDefault(false)
+                        notify = granted; DeviceChoices.notifications = granted
+                        notifyNote = if (granted) null else "This browser blocked notifications. Allow them for this site, then try again."
+                    }
+                })
             val legacy = remember { legacyChats() }
             if (legacy.isNotEmpty()) androidx.compose.material3.OutlinedButton({ vm.importLegacy(legacy, ::importId) }, enabled = !state.busy) { androidx.compose.material3.Text("Import ${legacy.size} older browser chats") }
             androidx.compose.material3.Text("Import copies older local chats into shared history. The originals stay in this browser.")
         } } }
     }
+}
+
+/** The browser's share sheet where it exists, otherwise the clipboard. */
+private fun shareText(text: String, failed: (String) -> Unit) {
+    val trimmed = text.trim().take(20000)
+    if (trimmed.isEmpty()) return
+    val navigator = window.navigator.asDynamic()
+    val payload = js("({})"); payload.text = trimmed
+    val sharing = if (navigator.share != null) navigator.share(payload) else navigator.clipboard?.writeText(trimmed)
+    (sharing as? kotlin.js.Promise<dynamic>)?.catch { error -> if (error.asDynamic()?.name != "AbortError") failed("Sharing is unavailable in this browser."); null }
+        ?: failed("Sharing is unavailable in this browser.")
 }
