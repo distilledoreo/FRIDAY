@@ -80,7 +80,7 @@ actual class PlatformDecimalFormatSymbols actual constructor() {
     internal val delegate = DecimalFormatSymbols(Locale.US)
 }
 actual class PlatformDecimalFormat actual constructor(pattern: String, symbols: PlatformDecimalFormatSymbols) {
-    private val delegate = DecimalFormat(pattern, symbols.delegate)
+    private val delegate = DecimalFormat(pattern, symbols.delegate).apply { roundingMode = java.math.RoundingMode.HALF_UP }
     actual var minimumFractionDigits: Int = 0
         set(value) { field = value; delegate.minimumFractionDigits = value }
     actual var maximumFractionDigits: Int = 3
@@ -146,6 +146,7 @@ actual fun appendCodePoint(sb: StringBuilder, codePoint: Int): StringBuilder = s
 
 actual typealias PlatformVolatile = kotlin.jvm.Volatile
 actual typealias PlatformStackOverflowError = java.lang.StackOverflowError
+actual open class PlatformStacklessException actual constructor() : RuntimeException(null, null, false, false)
 
 actual object PlatformTime {
     actual var zone: String = ZoneId.systemDefault().id

@@ -33,7 +33,7 @@ the user's data, `.env` tokens, Python venv and llama runtime. Rules:
 ## Build and test
 
 - Android: `./gradlew :app:testDebugUnitTest :core:test` and `./gradlew :app:assembleDebug`
-  (needs Android SDK 35 and JDK 17). Web/shared JS: `./gradlew :core:jsNodeTest :shared-ui:jsNodeTest :shared-ui:testDebugUnitTest :web:stageGateway`. The version is in `app/build.gradle.kts` (`versionCode`/`versionName`).
+  (needs Android SDK 35 and JDK 21). Web/shared JS: `./gradlew :core:jsNodeTest :shared-ui:jsNodeTest :shared-ui:testDebugUnitTest :web:stageGateway`. The version is in `app/build.gradle.kts` (`versionCode`/`versionName`).
 - Server modules: `python -m unittest desktop.agent.tests.<module>` from the repo root, using the server's
   venv (`~/assistant-server/api/.venv/bin/python`).
 

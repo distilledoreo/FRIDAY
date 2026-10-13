@@ -162,6 +162,17 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             messages = json.loads(db.execute('SELECT messages FROM jobs WHERE id=?', (r.json()['id'],)).fetchone()[0])
         self.assertNotIn('Prefer concise answers', messages[0]['content'])
 
+    async def test_recall_failure_still_starts_the_reply(self):
+        class Broken:
+            def native(self, source): return False
+            def context(self, *args): raise RuntimeError('recall offline')
+        self.workspace.memory_store = Broken()
+        chat = {'version': 1, 'summary': {'id': 'recall-chat', 'title': 'Test', 'createdAt': 1, 'updatedAt': 1},
+                'messages': [{'role': 'user', 'content': 'Hello'}]}
+        with self.assertLogs(level='ERROR'):
+            r = await self.client.post('/workspace/items/recall-chat/continue', json={'revision': 0, 'payload': {'chat': json.dumps(chat)}})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['revision'], 1)
     async def test_interface_prompt_is_opt_in_bounded_and_not_archived(self):
         chat = {'version': 1, 'summary': {'id': 'interface-chat', 'title': 'Test', 'createdAt': 1, 'updatedAt': 1},
                 'messages': [{'role': 'user', 'content': 'A calculator'}]}

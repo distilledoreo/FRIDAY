@@ -8,6 +8,10 @@ class PlatformContractTest {
         val hex = PlatformMessageDigest.sha1("abc".encodeToByteArray()).joinToString("") { it.toUByte().toString(16).padStart(2, '0') }
         assertEquals("a9993e364706816aba3e25717850c26c9cd0d89d", hex)
         assertEquals("web_327c3f", UiBindings.ref("https://example.com"))
+        // At 56 and 120 bytes the length no longer fits in the last block, so padding adds one.
+        fun sha1(n: Int) = PlatformMessageDigest.sha1("a".repeat(n).encodeToByteArray()).joinToString("") { it.toUByte().toString(16).padStart(2, '0') }
+        assertEquals("c2db330f6083854c99d4b5bfb6e8f29f201be699", sha1(56))
+        assertEquals("f34c1488385346a55709ba056ddd08280dd4c6d6", sha1(120))
     }
     @Test fun numberEpsilonMatchesTheSharedInterpreterContract() {
         assertEquals(2.220446049250313e-16, PlatformMath.ulp(1.0))

@@ -141,6 +141,9 @@ expect annotation class PlatformVolatile constructor()
 /** Stack-overflow signal the interpreter catches on deep recursion. */
 expect class PlatformStackOverflowError : Throwable
 
+/** A RuntimeException that skips stack-trace capture where the platform allows it (the JVM). */
+expect open class PlatformStacklessException() : RuntimeException
+
 /** JS Date emulation backend (java.time on JVM, native Date on JS). */
 expect object PlatformTime {
     var zone: String

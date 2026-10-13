@@ -481,8 +481,13 @@ def install(app, auth, root, model, search, fetch):
         context = ''
         if workspace.memory_store is not None:
             query = next((e.get('content', '') for e in reversed(chat['messages']) if e['role'] == 'user'), '')
-            context = workspace.memory_store.context(query[:4000], chat['summary'].get('projectId') or '',
-                'native-' + uuid.UUID(item_id).hex if _is_uuid(item_id) else item_id)['context']
+            # The chat is already saved; a failed recall must not strand it without a reply.
+            try:
+                context = (await asyncio.to_thread(workspace.memory_store.context, query[:4000],
+                    chat['summary'].get('projectId') or '',
+                    'native-' + uuid.UUID(item_id).hex if _is_uuid(item_id) else item_id))['context']
+            except Exception:
+                logging.getLogger(__name__).exception('Recall unavailable; continuing without memory context')
         knowledge_item = next((i for i in workspace.items() if i['id'] == 'knowledge' and not i['deleted']), None)
         if knowledge_item:
             knowledge = json.loads(knowledge_item['payload']['knowledge'])

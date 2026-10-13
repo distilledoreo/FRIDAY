@@ -219,6 +219,7 @@ actual annotation class PlatformVolatile actual constructor()
 
 /** The interpreter catches this on deep recursion; JS surfaces stack exhaustion as a RangeError. */
 actual class PlatformStackOverflowError : Throwable()
+actual open class PlatformStacklessException actual constructor() : RuntimeException()
 
 actual object PlatformTime {
     actual var zone: String = js("Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'").unsafeCast<String>()

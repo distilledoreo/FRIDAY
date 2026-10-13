@@ -172,6 +172,8 @@ class InterpreterTest {
         assertEquals("-1.50", js("(-1.5).toFixed(2)"))
         assertEquals("1,234,567.891", js("(1234567.891).toLocaleString()"))
         assertEquals("1,234.5", js("(1234.5).toLocaleString('en-US')"))
+        assertEquals("0.13", js("(0.125).toLocaleString('en-US', { maximumFractionDigits: 2 })"))
+        assertEquals("3", js("(2.5).toLocaleString('en-US', { maximumFractionDigits: 0 })"))
         assertEquals("$1,234.50", js("(1234.5).toLocaleString('en-US', { style: 'currency', currency: 'USD' })"))
         assertEquals("€9.00", js("new Intl.NumberFormat('en-US', { style: 'currency', currency: 'EUR' }).format(9)"))
         assertEquals("45%", js("new Intl.NumberFormat('en-US', { style: 'percent' }).format(0.45)"))

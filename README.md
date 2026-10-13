@@ -230,7 +230,7 @@ Not possible for a regular app: a wake word (hotword detection is reserved for p
 
 ## Build
 
-JDK 17 or newer and Android SDK 35 (compile SDK and build-tools 35.0.0).
+JDK 21 and Android SDK 35 (compile SDK and build-tools 35.0.0).
 
 ```bash
 echo "sdk.dir=$ANDROID_HOME" > local.properties

@@ -5,7 +5,7 @@ plugins {
     id("org.jetbrains.compose")
 }
 kotlin {
-    jvmToolchain(17)
+    jvmToolchain(21)
     androidTarget { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
     js(IR) { browser { testTask { enabled = false } }; nodejs() }
     sourceSets {

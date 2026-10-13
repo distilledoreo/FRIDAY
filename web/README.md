@@ -20,7 +20,7 @@ Shared appearance fields are theme, accent, proactivity, reduced motion, display
 
 ## Build and serve
 
-Use JDK 17, Android SDK 35 and the repository's Gradle wrapper. Kotlin/JS installs its Node/Yarn tools; its generated dependency lock is committed in `kotlin-js-store/yarn.lock`.
+Use JDK 21, Android SDK 35 and the repository's Gradle wrapper. Kotlin/JS installs its Node/Yarn tools; its generated dependency lock is committed in `kotlin-js-store/yarn.lock`.
 
 ```sh
 ./gradlew :web:stageGateway
@@ -28,7 +28,7 @@ Use JDK 17, Android SDK 35 and the repository's Gradle wrapper. Kotlin/JS instal
 
 This builds a production bundle and stages it in `desktop/workspace/web-dist/` (generated and ignored). Run the existing server setup procedure on the PC after staging; it copies these public assets alongside the workspace module. Restart the gateway and open `/friday/`. Without staged assets the endpoint returns a clear 503 response. No extra listener, database or account provider is needed. The bundled HTML loads Skiko before starting Compose, and assets use relative URLs so the `/friday/` prefix works.
 
-Deploy the updated Android build and gateway together. Android 0.23.0 includes the new preference protocol; older Android builds do not understand preference records. Build the APK with the normal signing setup so an installed app can be updated. This work does not deploy or restart a live PC installation.
+Deploy the updated Android build and gateway together. Android 0.24.0 includes the new preference protocol; older Android builds do not understand preference records. Build the APK with the normal signing setup so an installed app can be updated. This work does not deploy or restart a live PC installation.
 
 Development compilation is available with `./gradlew :web:jsBrowserDevelopmentWebpack`. Opening a development app on another origin requires an explicitly allowed gateway CORS configuration; serving from the gateway avoids that requirement.
 

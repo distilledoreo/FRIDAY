@@ -9,7 +9,7 @@ internal object Sha1 {
             "(function(b){" +
                 "function rotl(n,s){return ((n<<s)|(n>>>(32-s)))>>>0;}" +
                 "var l=b.length*8;" +
-                "var pad=((56-(b.length%64))+64)%64;" +
+                "var pad=((55-(b.length%64))+64)%64+1;" +
                 "var m=new Uint8Array(b.length+pad+8);" +
                 "m.set(b);" +
                 "m[b.length]=0x80;" +

@@ -3,6 +3,7 @@ package com.localfirst.assistant.genui.script
 import com.localfirst.assistant.platform.platformRegex
 
 import com.localfirst.assistant.platform.PlatformBigDecimal
+import com.localfirst.assistant.platform.PlatformStacklessException
 import com.localfirst.assistant.platform.buildRegex
 import kotlin.math.abs
 import kotlin.math.floor
@@ -17,7 +18,7 @@ object Undefined { override fun toString() = "undefined" }
 object Null { override fun toString() = "null" }
 
 /** A thrown JS value. */
-class JsThrow(val value: Any?) : RuntimeException(null, null) {
+class JsThrow(val value: Any?) : PlatformStacklessException() {
     override val message: String get() = Values.errorMessage(value)
 }
 
