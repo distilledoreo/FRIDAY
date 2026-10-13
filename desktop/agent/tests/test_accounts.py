@@ -66,6 +66,21 @@ class AccountsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(account),{'id','provider','label'})
         with self.assertRaises(ValueError): await self.accounts.complete(flow['flow_id'],flow['state'],'code')
 
+    async def test_browser_google_sign_in_binds_redirect_and_pkce_to_one_use_flow(self):
+        redirect = 'https://gateway.example/friday/oauth-callback'
+        flow = await self.accounts.begin('google', ['mail_read'], redirect)
+        query = parse_qs(flow['authorization_url'].split('?', 1)[1])
+        self.assertEqual(query['redirect_uri'], [redirect])
+        self.assertEqual(query['state'], [flow['state']])
+        self.assertEqual(query['code_challenge_method'], ['S256'])
+        self.assertNotIn('client_secret', flow)
+        await self.accounts.complete(flow['flow_id'], flow['state'], 'synthetic-code')
+        form = parse_qs(self.requests[0].content.decode())
+        self.assertEqual(form['redirect_uri'], [redirect])
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(form['code_verifier'][0].encode()).digest()).decode().rstrip('=')
+        self.assertEqual(query['code_challenge'], [challenge])
+        with self.assertRaises(ValueError): await self.accounts.complete(flow['flow_id'], flow['state'], 'synthetic-code')
+
     async def test_expired_flow_and_configuration_change_are_rejected(self):
         flow=await self.accounts.begin('google',['mail_read'])
         self.accounts.flows[flow['flow_id']]['expires']=0

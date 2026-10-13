@@ -10,15 +10,15 @@
 | Conversation wire format, transcript grouping and tool labels | `core/src/commonMain/.../conversation` and `.../presentation` |
 | Colors, spacing, typography, composer, messages, standard workspace screens | `shared-ui/src/commonMain` |
 | Generated interface controls, charts, forms, timers, date/time fields | `shared-ui/src/commonMain/.../ui/genui` |
-| Browser HTTP, authentication lifetime, downloads, legacy browser import, startup | `web/src/jsMain` |
+| Browser HTTP, file picker, microphone/audio, image decoding, authentication lifetime, downloads, legacy browser import, startup | `web/src/jsMain` |
 | Android voice, permissions, attachments, offline storage, lifecycle, notifications | `app/src/main` |
 | System motion, maps links, dialog windows, embedded app hosts, local scheduling time | `shared-ui/src/androidMain` and `shared-ui/src/jsMain` |
 
 Shared screens depend on `WorkspaceActions`. The browser uses `WorkspaceController`; Android uses `NativeWorkspaceActions` to project its offline/native state and perform the same shared repository operations through `ClientGateway`. Android retains its local conversation engine, three-way offline synchronization, and native streaming/session persistence. The browser continues conversations through PC jobs. These orchestration paths are still distinct; this migration does not claim that every non-device workflow is consolidated.
 
-Android-only workspace extensions (accounts, PC/Code tools, import/review, archive investigation, voice and data controls) remain in their existing hosts. Moving or adding a portable feature should add a shared screen/controller contract and a platform adapter, rather than a second screen implementation. The web module contains no Compose screen or component implementations.
+Library, Images, FRIDAY activity, account forms and Code screens are shared. `FeatureController` owns their portable API operations; Code retains its shared controller. Android-only import/review, archive investigation, voice hardware and data controls remain in their existing hosts. Moving or adding a portable feature should add a shared screen/controller contract and a platform adapter, rather than a second screen implementation. The web module contains no Compose screen or component implementations.
 
-Android supplies `GenUiImageService` and the offline WebView AppBlock host. Browser image loading and sandboxed DOM AppBlock hosting remain future adapters; browser prompts omit those capabilities. The same component registry renders supported interface replies on both clients. A contract test rejects advertised components without registered renderers.
+Android supplies `GenUiImageService` and the offline WebView AppBlock host. The browser supplies authenticated image loading and an opaque-origin DOM AppBlock host with a restrictive CSP. Browser AppBlock state stays in tab memory, and messages require confirmation into the composer. The same component registry renders supported interface replies on both clients. A contract test rejects advertised components without registered renderers.
 
 ## Verification
 

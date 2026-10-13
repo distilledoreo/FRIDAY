@@ -6,7 +6,7 @@ import kotlin.math.max
 
 /** Turns Markdown into text worth reading aloud. */
 object SpeechText {
-    private val link = platformRegex("""\[([^\]]+)]\((?:[^)]+)\)""")
+    private val link = platformRegex("""\[([^\]]+)\]\((?:[^)]+)\)""")
     private val bareUrl = platformRegex("""https?://\S+""")
     private val emphasis = platformRegex("""(\*\*|__|\*|_|~~)(?=\S)(.+?)(?<=\S)\1""")
     private val heading = platformRegex("""^\s{0,3}#{1,6}\s+""", RegexOption.MULTILINE)

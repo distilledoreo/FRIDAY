@@ -43,25 +43,7 @@ internal fun GeneratedImage(result: String, loader: suspend (String) -> File, op
 
 @Composable
 internal fun ImageJobs(state: ChatUiState, vm: ChatViewModel) {
-    FridayVisibleEffect(Unit) {
-        while (true) { vm.refreshImages(); delay(2000) }
-    }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
-        item { Text("Your generated images and their status appear here.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        if (state.imageJobs.isEmpty()) item { Text("No generated images yet.") }
-        items(state.imageJobs, key = { it.optString("id") }) { job ->
-            FridayCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp),verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(job.optString("prompt"), style=MaterialTheme.typography.titleSmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                Text(job.optString("phase").replace('_', ' '), style = MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                if (job.optString("status") == "completed") GeneratedImage(job.toString(), vm::loadImage, vm::openArtifact)
-                job.optString("error").takeIf { it.isNotBlank() && it != "null" }?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                if (job.optString("status") !in listOf("completed", "failed", "cancelled")) TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.cancelImage(job.optString("id")) }) { Text("Cancel") }
-                else TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.removeImageJob(job.optString("id")) }) { Text("Remove from image history") }
-                HorizontalDivider()
-            }
-            }
-        }
-    }
+    com.localfirst.assistant.ui.workspace.ImagesScreen(vm.features) { vm.openArtifact("assistant://artifact/$it") }
 }
 
 @Composable

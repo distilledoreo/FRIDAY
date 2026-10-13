@@ -1,5 +1,8 @@
 package com.localfirst.assistant.ui
 
+import androidx.compose.ui.graphics.asImageBitmap
+import kotlinx.serialization.json.jsonPrimitive
+
 import android.app.Application
 import android.content.Context
 import com.localfirst.assistant.conversation.KnowledgeStore
@@ -232,9 +235,24 @@ class ChatViewModel(
 
     private fun sharedWorkspace() = com.localfirst.assistant.client.WorkspaceRepository(
         com.localfirst.assistant.workspace.ClientGateway(workspace ?: error("Computer unavailable.")))
+    internal val features = com.localfirst.assistant.client.FeatureController(object : com.localfirst.assistant.client.WorkspaceGateway {
+        override fun connect(baseUrl: String, token: String) { error("Use native connection settings") }
+        override fun lock() {}
+        override suspend fun request(path: String, method: String, body: kotlinx.serialization.json.JsonObject?) =
+            com.localfirst.assistant.client.wireJson.parseToJsonElement((workspace ?: error("Computer unavailable")).request(path, method, body?.let { JSONObject(it.toString()) }))
+    }, viewModelScope)
+    internal suspend fun loadFeatureImage(path: String): androidx.compose.ui.graphics.ImageBitmap? = withContext(Dispatchers.IO) {
+        val file = when {
+            path.startsWith("/workspace/files/") -> loadImage(path.substringAfterLast('/'))
+            path == "/workspace/pc/screenshot" -> (workspace ?: error("Computer unavailable")).downloadPcScreenshot(File(app?.cacheDir ?: error("Preview unavailable"), "pc-preview.png"))
+            path.startsWith("/workspace/agent/tasks/") -> loadAgentScreenshot(path.split('/')[4], path.substringAfterLast('/'))
+            else -> return@withContext null
+        }
+        android.graphics.BitmapFactory.decodeFile(file.absolutePath)?.let { it.asImageBitmap() }
+    }
     /** The Code workspace: GitHub repositories on the PC, kept apart from chat state. */
     val code = com.localfirst.assistant.ui.code.CodeWorkspace(viewModelScope,
-        request = { path, method, body -> (workspace ?: error("Computer unavailable")).request(path, method, body) },
+        request = { path, method, body -> (workspace ?: error("Computer unavailable")).request(path, method, body?.let { JSONObject(it.toString()) }) },
         remembered = app?.let { context ->
             object : com.localfirst.assistant.ui.code.CodeWorkspace.Remembered {
                 private val prefs = context.getSharedPreferences("code", Context.MODE_PRIVATE)
@@ -1358,6 +1376,13 @@ class ChatViewModel(
     }
     fun handleAccountCallback(uri: Uri?) {
         if (uri?.scheme != "msauth" || uri.host != "com.localfirst.assistant" || uri.path != "/k+71zY1PlQ+a2Hd9Wur3tSmBEcI=") return
+        val sharedFlow = features.state.value.oauth
+        if (sharedFlow?.get("provider")?.jsonPrimitive?.content == "microsoft") {
+            val code = uri.getQueryParameter("code"); val returned = uri.getQueryParameter("state")
+            if (code.isNullOrBlank() || returned.isNullOrBlank() || _state.value.privacy.incognito) features.cancelOAuth()
+            else features.finishOAuth(code, returned, sharedFlow["flow_id"]?.jsonPrimitive?.content)
+            openWorkspace(WorkspaceDestination.ACCOUNTS); return
+        }
         if (_state.value.oauthFlow?.optString("provider") != "microsoft") { failAccountSignIn("No active Microsoft sign-in; start again."); return }
         val code = uri.getQueryParameter("code")
         val state = uri.getQueryParameter("state")

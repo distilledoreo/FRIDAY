@@ -101,6 +101,7 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                 Column(Modifier.fillMaxSize().padding(padding)) {
                     if (state.workspaceBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
                     state.workspaceStatus?.takeIf { it.isNotBlank() && !it.startsWith("Computer online") }?.let { Text(it, Modifier.padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall) }
+                    CompositionLocalProvider(com.localfirst.assistant.ui.workspace.LocalFeatureImages provides vm::loadFeatureImage) {
                     when (page) {
                         WorkspaceDestination.COMPUTER_ACCESS -> PcSettingsPage(state,vm)
                         WorkspaceDestination.APPEARANCE -> AppearancePage()
@@ -163,19 +164,7 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                             }
                         }
                         WorkspaceDestination.NEW_TASK -> TaskEditor(state.workspaceBusy, vm::scheduleTaskAt)
-                        WorkspaceDestination.FILES -> ScreenList {
-                            if (state.workspaceFiles.isEmpty()) item { EmptyList("Your files live here", "Uploaded files and files created by the assistant will appear here.") }
-                            items(state.workspaceFiles, key = { it.id }) { f ->
-                                FridayCard(Modifier.fillMaxWidth()) {
-                                    ListItem(headlineContent={Text(f.name,maxLines=2,overflow=TextOverflow.Ellipsis)},
-                                        supportingContent={Text("${if(f.size<1024) "${f.size} B" else "${f.size/1024} KB"} · ${f.mime}",style=MaterialTheme.typography.bodySmall)},
-                                        leadingContent={Icon(AppIcons.Folder,null,Modifier.size(20.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant)},
-                                        colors=ListItemDefaults.colors(containerColor=MaterialTheme.colorScheme.surface),
-                                        modifier=Modifier.heightIn(min=72.dp).clickable(enabled=!state.workspaceBusy) { vm.openArtifact("assistant://artifact/${f.id}") },
-                                        trailingContent={MoreActions(listOf("Delete" to { deletingFile=f }))})
-                                }
-                            }
-                        }
+                        WorkspaceDestination.FILES -> com.localfirst.assistant.ui.workspace.LibraryScreen(vm.features, { vm.openArtifact("assistant://artifact/$it") })
                         WorkspaceDestination.DATA -> ScreenList {
                             item { SettingsRow("Sync now", "Share chats, projects and memories with your computer", vm::syncChats) }
                             items(state.syncConflicts, key = { it.id }) { conflict -> SyncComparison(conflict, state.workspaceBusy, vm) }
@@ -185,6 +174,7 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                             item { SettingsRow("Restore a backup", "Import chats as new copies") { restore.launch(arrayOf("application/zip", "application/octet-stream")) } }
                             if (state.conversationId != null) item { SettingsRow("Export current chat", "Save as Markdown") { export.launch("chat.md") } }
                         }
+                    }
                     }
                 }
             }
@@ -223,12 +213,6 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
         ListItem(headlineContent={Text(title)},supportingContent=detail?.let { { Text(it) } },
             trailingContent={Text("›",style=MaterialTheme.typography.titleLarge,color=MaterialTheme.colorScheme.onSurfaceVariant)},
             colors=ListItemDefaults.colors(containerColor=MaterialTheme.colorScheme.surface),modifier=Modifier.heightIn(min=64.dp))
-    }
-}
-@Composable internal fun MoreActions(actions: List<Pair<String, () -> Unit>>,contentColor:androidx.compose.ui.graphics.Color=MaterialTheme.colorScheme.onSurfaceVariant) {
-    var expanded by remember { mutableStateOf(false) }
-    Box { IconButton(onClick = { expanded = true }) { Icon(Icons.Filled.MoreVert, "More options",tint=contentColor) }
-        DropdownMenu(expanded, onDismissRequest = { expanded = false }) { actions.forEach { (label, action) -> DropdownMenuItem(text = { Text(label) }, onClick = { expanded = false; action() }) } }
     }
 }
 @Composable private fun ConfirmDelete(title: String, detail: String, dismiss: () -> Unit, confirm: () -> Unit) { AlertDialog(onDismissRequest = dismiss,

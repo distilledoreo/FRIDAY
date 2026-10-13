@@ -129,7 +129,7 @@ class Accounts:
     def status(self):
         return [{'provider': name, 'configured': self.vault.has_application(name)} for name in SCOPES]
 
-    async def begin(self, provider, features):
+    async def begin(self, provider, features, redirect_uri=None):
         if provider not in SCOPES or not isinstance(features, list) or not features or not all(isinstance(feature,str) for feature in features) or not set(features) <= FEATURES:
             raise ValueError('Choose supported account features')
         config = self.vault.application(provider)
@@ -140,14 +140,20 @@ class Accounts:
             identifier, state = secrets.token_urlsafe(24), secrets.token_urlsafe(32)
             verifier = secrets.token_urlsafe(48)
             self.flows[identifier] = {'provider': provider, 'state': state, 'verifier': verifier,
-                'expires': time.time()+600, 'scopes': scopes, 'features': sorted(set(features)), 'client_id': config['client_id']}
+                'expires': time.time()+600, 'scopes': scopes, 'features': sorted(set(features)), 'client_id': config['client_id'], 'redirect_uri': redirect_uri}
         result = {'flow_id': identifier, 'state': state, 'provider': provider, 'client_id': config['client_id'], 'scopes': scopes}
         if provider == 'microsoft':
             challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
-            result['redirect_uri'] = MICROSOFT_REDIRECT
+            result['redirect_uri'] = redirect_uri or MICROSOFT_REDIRECT
             result['authorization_url'] = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?' + urlencode({
-                'client_id': config['client_id'], 'response_type': 'code', 'redirect_uri': MICROSOFT_REDIRECT,
+                'client_id': config['client_id'], 'response_type': 'code', 'redirect_uri': redirect_uri or MICROSOFT_REDIRECT,
                 'scope': ' '.join(scopes), 'state': state, 'code_challenge': challenge, 'code_challenge_method': 'S256', 'prompt': 'select_account'})
+        elif redirect_uri:
+            result['redirect_uri'] = redirect_uri
+            result['authorization_url'] = 'https://accounts.google.com/o/oauth2/v2/auth?' + urlencode({
+                'client_id': config['client_id'], 'response_type': 'code', 'redirect_uri': redirect_uri,
+                'scope': ' '.join(scopes), 'state': state, 'access_type': 'offline', 'prompt': 'consent',
+                'code_challenge': base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('='), 'code_challenge_method': 'S256'})
         else:
             result['method'] = 'android_google_authorization_server_code'
         return result
@@ -163,8 +169,10 @@ class Accounts:
         config = self.vault.application(provider)
         if config['client_id'] != flow['client_id']: raise ValueError('Provider configuration changed; start sign-in again')
         body = {'client_id': config['client_id'], 'grant_type': 'authorization_code', 'code': code}
-        if provider == 'google': body.update(client_secret=config['client_secret'], redirect_uri='')
-        else: body.update(redirect_uri=MICROSOFT_REDIRECT, code_verifier=flow['verifier'], scope=' '.join(flow['scopes']))
+        if provider == 'google':
+            body.update(client_secret=config['client_secret'], redirect_uri=flow.get('redirect_uri') or '')
+            if flow.get('redirect_uri'): body['code_verifier'] = flow['verifier']
+        else: body.update(redirect_uri=flow.get('redirect_uri') or MICROSOFT_REDIRECT, code_verifier=flow['verifier'], scope=' '.join(flow['scopes']))
         tokens = await request_json(self.client, 'POST', TOKEN[provider], data=body)
         record = self._tokens(tokens, flow['features'], config['client_id'], provider=provider)
         headers = {'Authorization': 'Bearer ' + record['access_token']}

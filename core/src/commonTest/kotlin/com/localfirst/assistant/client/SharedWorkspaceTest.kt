@@ -14,6 +14,17 @@ private class Pc : WorkspaceGateway {
     var jobError = ""
     var jobStatus = "completed"
     var legacy = false
+    var privateWait: CompletableDeferred<Unit>? = null
+    var privateChat: StoredConversation? = null
+    override suspend fun upload(name: String, mime: String, bytes: ByteArray) = buildJsonObject { put("id", "attachment"); put("name", name) }
+    override suspend fun stream(path: String, body: JsonObject?, event: suspend (JsonObject) -> Unit) {
+        check(path == "/workspace/chat/ephemeral") { "Stream unavailable in this fixture" }
+        calls += path to body
+        privateChat = decodeConversation(body!!.getValue("chat").jsonPrimitive.content)
+        event(buildJsonObject { put("text", "Private partial") })
+        privateWait?.await()
+        event(buildJsonObject { put("text", "Private reply"); put("done", true) })
+    }
     /** Record ids returned by each change-cursor reply. */
     val sent = mutableListOf<List<String>>()
     private fun jobs() = buildJsonArray { add(buildJsonObject { put("id", "job"); put("status", jobStatus); put("result", "Done"); put("error", jobError) }) }
@@ -69,6 +80,48 @@ private class Pc : WorkspaceGateway {
 }
 @OptIn(ExperimentalCoroutinesApi::class)
 class SharedWorkspaceTest {
+    @Test fun incognitoKeepsConversationOnlyInSessionAndLockClearsIt() = runTest {
+        val pc = Pc(); val vm = WorkspaceController(WorkspaceRepository(pc), this, { "private" }, { 5 })
+        vm.connect("", "token")!!.join(); vm.newIncognito(); vm.setDraft("Sensitive question"); vm.send()!!.join()
+        assertTrue(vm.state.value.incognito)
+        assertEquals("Private reply", (vm.state.value.active!!.conversation.messages.last() as Message.Assistant).content)
+        assertTrue(pc.items.isEmpty())
+        assertFalse(pc.calls.any { it.first.endsWith("/continue") })
+        vm.refresh()!!.join()
+        assertEquals("Sensitive question", (vm.state.value.active!!.conversation.messages.first() as Message.User).content)
+        vm.lock()
+        assertNull(vm.state.value.active)
+        assertFalse(vm.state.value.incognito)
+    }
+    @Test fun lockingDuringPrivateStreamDiscardsLateReply() = runTest {
+        val pc = Pc().apply { privateWait = CompletableDeferred() }; val vm = WorkspaceController(WorkspaceRepository(pc), this, { "private" }, { 5 })
+        vm.connect("", "token")!!.join(); vm.newIncognito(); vm.setDraft("Question")
+        val send = vm.send()!!; runCurrent()
+        assertEquals("Private partial", vm.state.value.streamingText)
+        vm.lock(); pc.privateWait!!.complete(Unit); send.join()
+        assertEquals(WorkspaceState(), vm.state.value)
+        assertTrue(pc.items.isEmpty())
+    }
+    @Test fun attachmentDraftSurvivesRefreshAndConflictingSend() = runTest {
+        val pc = Pc().apply { chat() }; val vm = WorkspaceController(WorkspaceRepository(pc), this, { "new" }, { 5 })
+        vm.connect("", "token")!!.join(); vm.select("a"); vm.upload("notes.txt", "text/plain", "Hello".encodeToByteArray())!!.join(); vm.setDraft("Read this")
+        vm.refresh()!!.join()
+        assertEquals("Hello", vm.state.value.attachments.single().text)
+        pc.chat(revision = 2)
+        vm.send()!!.join()
+        assertEquals("Read this", vm.state.value.draft)
+        assertEquals("attachment", vm.state.value.attachments.single().remoteFileId)
+        assertNotNull(vm.state.value.error)
+    }
+    @Test fun successfulSendUsesAttachmentsAndClearsOnlyTheSentStrip() = runTest {
+        val pc = Pc(); val vm = WorkspaceController(WorkspaceRepository(pc), this, { "new" }, { 5 })
+        vm.connect("", "token")!!.join(); vm.upload("photo.png", "image/png", byteArrayOf(1))!!.join()
+        assertTrue(vm.state.value.canSend)
+        vm.send()!!.join()
+        val chat = decodeConversation(pc.items.getValue("new").payload.getValue("chat").jsonPrimitive.content)
+        assertEquals("remote:attachment", (chat.messages.single() as Message.User).attachments.single().path)
+        assertTrue(vm.state.value.attachments.isEmpty())
+    }
     @Test fun canonicalWirePreservesToolsAttachmentsAndUnicode() {
         val c = StoredConversation(ConversationSummary("id", "Quote \" and é", 1, 2, "project"), listOf(
             Message.User("line 1\nline 2", listOf(Attachment("asset", AttachmentKind.IMAGE, "image.jpg", "image/jpeg", path = "remote:abc"))),

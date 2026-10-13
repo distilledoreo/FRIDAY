@@ -103,6 +103,7 @@ internal val LocalGenUi = staticCompositionLocalOf<GenUiContext> { error("Interf
 
 /** Native renderers by catalog name. Each component file adds its own; unknown types show their children. */
 internal object GenUiRegistry {
+    val rawRenderers = HashMap<String, @Composable (UiRaw) -> Unit>()
     val renderers = HashMap<String, @Composable (UiElement) -> Unit>()
     fun register(vararg names: String, render: @Composable (UiElement) -> Unit) { names.forEach { renderers[it] = render } }
 
@@ -111,6 +112,7 @@ internal object GenUiRegistry {
         registerInputs()
         registerData()
         registerMedia()
+        rawRenderers["AppBlock"] = { AppBlockView(it) }
     }
 }
 
@@ -135,7 +137,7 @@ internal fun GenBlocks(nodes: List<UiNode>, gap: Dp = 10.dp, modifier: Modifier 
 internal fun GenNode(node: UiNode) {
     when (node) {
         is UiText -> Appear(node.key, slide = false) { NativeResponseContent(node.text.trim()) }
-        is UiRaw -> AppBlockView(node)
+        is UiRaw -> GenUiRegistry.rawRenderers.getValue("AppBlock")(node)
         is UiElement -> {
             if (node.bool("hidden") == true) return
             val render = GenUiRegistry.renderers[node.type]

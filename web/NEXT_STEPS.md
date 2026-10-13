@@ -1,45 +1,64 @@
-# Browser client: next steps
+# Browser client: implemented checklist
 
-The goal is a browser client that looks and behaves like the Android app, minus what a browser cannot do.
-The rule for getting there is in [`shared-ui/README.md`](../shared-ui/README.md): a screen or control is
-written once in `shared-ui` and both clients render it. A browser-only copy drifts.
+The browser and Android render portable controls from `shared-ui`. Browser permissions, audio,
+HTTP, downloads and DOM hosting remain platform adapters.
 
-## Done
+| Item | Implementation |
+| --- | --- |
+| Attach | Browser multi-file picker, authenticated uploads, document extraction and scanned-page images, bounded vision previews, and a removable composer strip. Attachments survive refresh and revision conflicts. |
+| Voice | Microphone capture as 16 kHz WAV, `/transcribe` dictation, silence-triggered conversation turns, and `/speak` playback followed by listening again. Ending voice or locking releases microphone tracks, audio and requests. |
+| Library | Shared file list, downloads, deletion confirmation and browser uploads. Android uses the same Library screen. |
+| Images | Shared generation controls, size/steps/seed/transparency, reference selection, image history, previews, cancellation and removal. Android and browser use the same screen. |
+| FRIDAY | Shared computer sessions, follow-ups, permission/question cards, PC screenshots and access controls; research plans, schedules, explicit account scopes, reports, runs, events, page previews and exact approvals. The header opens FRIDAY. |
+| Incognito | `/workspace/chat/ephemeral` streams a conversation without writing chats, jobs, recall or checkpoints. Conversation and AppBlock state stay in tab memory and disappear on leaving or locking. Persistent service destinations end the private conversation first. |
+| Code | Existing Code screens, models and controller moved into shared UI, including repositories, branches, model selection, tasks, approvals, questions, diffs, follow-ups, stop/discard, push and pull requests. |
 
-- Sidebar: the Android drawer is shared (`ChatDrawer`). Search, icon rows, projects, chats grouped by day,
-  rename and delete on each chat's row. A destination a client lacks is passed as `null` and left out.
-- Header: the new chat, FRIDAY and profile buttons are shared (`HomeHeaderActions`).
-- Identity: the F menu button that unfolds into the wordmark (`FridayBrand`) and the ambient backdrop
-  (`FridayAmbient`) are shared. An empty chat shows the backdrop with the composer a third of the way up.
-- Sync: both clients learn what changed through `ChangeFeed` and `/workspace/changes`.
+The earlier gaps are addressed:
 
-## Next, in order
+- Sidebar project rows open a project page with its chats, settings and a new-chat action.
+- The header opens FRIDAY's activity instead of Tasks.
+- Image search/loading uses authenticated gateway adapters. AppBlocks open in an opaque-origin iframe
+  with scripts isolated from the host, network resources blocked, and messages confirmed into the composer.
+- Accounts use shared configuration, sign-in, IMAP/SMTP forms, inbox/calendar previews and removal.
+  Android retains its Google authorization effect. Browser OAuth uses PKCE and a one-use gateway callback;
+  provider tokens and client secrets remain in the PC vault.
+- Ordinary jobs publish incremental replies over `/workspace/jobs/{id}/events`; final replies and
+  tool checkpoints retain the existing revision/conflict and restart behavior.
 
-| Item | What it needs | Size |
-| --- | --- | --- |
-| Attach | A browser file picker, upload to the existing `/workspace/files`, and the attachment strip in the composer. The gateway already accepts attachments on a browser send. | Medium |
-| Voice | Microphone capture in the browser and the gateway's existing `/transcribe` and `/speak`. Dictation into the composer first, then a full spoken conversation. The browser gateway adapter only allows `/workspace/` paths today. | Medium, then large |
-| Library | Move the Android files screen into `shared-ui`. The API exists. | Medium |
-| Images | Move the image generation screen into `shared-ui`. Depends on the image service on the PC. | Medium |
-| FRIDAY | Move the activity screens (her computer, agent tasks, approvals) into `shared-ui`. The largest Android-only screens. | Large |
-| Incognito | New gateway work. A browser chat runs as a PC job that saves the chat, so a path that saves nothing has to be added before the browser can offer it. | Large |
-| Code | Move the Code workspace screens into `shared-ui`. | Large |
+## Service requirements and behavior
 
-## Known gaps
+Microphone capture requires HTTPS or localhost and browser permission. A spoken reply may require the
+browser's audio playback permission. Voice text uses the same shared Markdown/interface speech cleanup.
+Images, PC tasks, Code and accounts depend on their existing PC services. Unavailable services report
+errors on their screen. Browser OAuth applications must register the public gateway's
+`/friday/oauth-callback` URL; native redirects continue to work independently.
 
-- Chats that belong to a project are left out of the main chat list unless you search, as on Android. The
-  browser has no project page that lists a project's chats yet, so they are hard to find there.
-- The header's dots button opens Tasks in the browser. On Android it opens FRIDAY's activity; it should do
-  the same in the browser once that screen is shared.
-- No image loading, embedded app blocks or account management in the browser.
-- Replies arrive when the PC job finishes. They do not stream.
+Private chats can use public search/page reads, but cannot upload files, create artifacts, run Python,
+or access accounts. They do not use saved memory or project context. Model and public-source services
+still receive the requests needed to answer. Closing the request cancels private generation; it cannot
+be resumed after a tab or server restart. Ordinary PC jobs continue if a browser disconnects.
 
-## Working on it
+## Build and verification
 
-`./gradlew :web:stageGateway` builds the bundle into `desktop/workspace/web-dist/`. On a machine short of
-memory, webpack needs `NODE_OPTIONS=--max-old-space-size=3072`.
+```sh
+NODE_OPTIONS=--max-old-space-size=3072 ./gradlew \
+  :core:jsNodeTest :core:testDebugUnitTest \
+  :shared-ui:jsNodeTest :shared-ui:testDebugUnitTest \
+  :app:testDebugUnitTest :app:assembleDebug :web:stageGateway
+python -m unittest desktop.workspace.tests.test_browser_chat desktop.agent.tests.test_accounts \
+  desktop.agent.tests.test_api desktop.agent.tests.test_account_scopes
+python -m unittest desktop.workspace.tests.test_workspace.ApiTests
+```
 
-To look at the app without the real computer, serve `web-dist` at `/friday/` from a small local server that
-answers `/workspace/changes`, `/workspace/items/{id}`, `/workspace/jobs` and `/workspace/memory*` with
-sample data. Compose draws to a canvas, so browser automation has to send `keydown` events to the canvas
-to type.
+`stageGateway` writes generated public assets to `desktop/workspace/web-dist/`. Build changes do not
+install, deploy, or restart the live PC. Fixture browser checks can run this bundle with a local gateway;
+real microphones, OAuth providers, GPU generation and two-device synchronization need device/service checks.
+
+Regression checks cover private storage isolation, authenticated streams and canonical saved replies,
+fragmented model tool calls, browser OAuth/PKCE, attachment conflicts, shared Code edits, renderer support
+and Markdown speech formatting on both Android and JavaScript.
+
+This change passed 448 Kotlin tests and 48 relevant server tests. Chromium fixture checks exercised
+sign-in, shared destinations, project chats, native file picking/upload/extraction, private streaming,
+dictation, spoken replies followed by listening again, and microphone release on Lock without browser
+errors. Both the Android debug APK and production browser bundle build successfully.

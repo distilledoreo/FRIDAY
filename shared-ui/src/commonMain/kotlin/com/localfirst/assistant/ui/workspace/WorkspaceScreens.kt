@@ -34,10 +34,16 @@ import com.localfirst.assistant.ui.theme.FridaySpacing
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 
-private enum class Page(val label: String) { CHAT("Chat"), PROJECTS("Projects"), MEMORY("Memory"), TASKS("Tasks"), SETTINGS("Settings") }
+private enum class Page(val label: String) { CHAT("Chat"), PROJECTS("Projects"), MEMORY("Memory"), TASKS("Tasks"), FILES("Library"), IMAGES("Images"), ACTIVITY("FRIDAY"), ACCOUNTS("Accounts"), SETTINGS("Settings") }
 
 @Composable
-fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState, settingsExtras: @Composable ColumnScope.() -> Unit = {}) {
+fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
+    features: FeatureController? = null, code: com.localfirst.assistant.ui.code.CodeWorkspace? = null,
+    onAttach: (() -> Unit)? = null, onLibraryUpload: (() -> Unit)? = null,
+    onDictate: (() -> Unit)? = null, dictating: Boolean = false,
+    onVoice: (() -> Unit)? = null, voiceActive: Boolean = false, voiceStatus: String = "",
+    settingsExtras: @Composable ColumnScope.() -> Unit = {}) {
+    var projectPage by remember { mutableStateOf<String?>(null) }
     var page by remember { mutableStateOf(Page.CHAT) }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -46,7 +52,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState, settingsExtras:
     BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         val wide = maxWidth >= 900.dp
         val idle = !state.busy && state.activeJob == null
-        fun go(target: Page) { page = target; scope.launch { drawer.close() } }
+        fun go(target: Page) { if (target in listOf(Page.FILES, Page.IMAGES, Page.ACTIVITY, Page.ACCOUNTS, Page.TASKS) && state.incognito) { if (!idle) return; vm.newChat() }; page = target; scope.launch { drawer.close() } }
         // The same sidebar and header as the phone. Destinations this client lacks are passed as null and left out.
         val sidebar: @Composable () -> Unit = {
             ChatDrawer(
@@ -54,7 +60,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState, settingsExtras:
                 conversations = state.filteredChats.map { it.conversation.summary },
                 currentId = state.activeId.takeIf { page == Page.CHAT },
                 onNewChat = { vm.newChat(); go(Page.CHAT) },
-                onIncognito = null,
+                onIncognito = { vm.newIncognito(); go(Page.CHAT) },
                 onOpen = { vm.select(it); go(Page.CHAT) },
                 onRename = { id, title -> vm.rename(title, state.chats.firstOrNull { it.item.id == id }) },
                 onDelete = { vm.delete(it) },
@@ -63,15 +69,15 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState, settingsExtras:
                 onQuery = vm::search,
                 projects = state.knowledge.projects,
                 activeProjectId = state.projectId.takeIf { page == Page.CHAT },
-                onProject = { vm.newChat(it); go(Page.CHAT) },
-                onProjects = { go(Page.PROJECTS) },
-                onActivity = null,
-                onFiles = null,
-                onImages = null,
-                destinations = listOf(
+                onProject = { projectPage = it; go(Page.PROJECTS) },
+                onProjects = { projectPage = null; go(Page.PROJECTS) },
+                onActivity = features?.let { { go(Page.ACTIVITY) } },
+                onFiles = features?.let { { go(Page.FILES) } },
+                onImages = features?.let { { go(Page.IMAGES) } },
+                destinations = buildList { addAll(listOf(
                     DrawerDestination("Memory", LineIcons.Memory, page == Page.MEMORY) { go(Page.MEMORY) },
                     DrawerDestination("Tasks", LineIcons.Clock, page == Page.TASKS) { go(Page.TASKS) },
-                ),
+                )); if (code != null) add(DrawerDestination("Code", LineIcons.Code, false) { if (idle) { if (state.incognito) vm.newChat(); code.open() } }) },
                 deleteNote = "will be removed from history on every client. Its recall archive and approved memories stay managed in Memory.",
             )
         }
@@ -81,15 +87,16 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState, settingsExtras:
                     Spacer(Modifier.weight(1f))
                     val working = state.activeJob != null || state.tasks.any { it["status"]?.jsonPrimitive?.contentOrNull == "running" }
                     HomeHeaderActions(
-                        showNewChat = page != Page.CHAT || state.active != null || state.draft.isNotBlank() || state.projectId != null,
+                        showNewChat = page != Page.CHAT || state.active != null || state.draft.isNotBlank() || state.attachments.isNotEmpty() || state.projectId != null,
                         onNewChat = { if (idle) { vm.newChat(); page = Page.CHAT } },
-                        friday = FridayStatus("Tasks. " + if (working) "Working" else "Work on your computer", if (working) LocalFridayPalette.current.accent else null),
-                        onFriday = { page = Page.TASKS },
+                        friday = FridayStatus("FRIDAY. " + if (working) "Working" else "Work on your computer", if (working) LocalFridayPalette.current.accent else null),
+                        onFriday = { go(if (features != null) Page.ACTIVITY else Page.TASKS) },
                         profileName = state.preferences.displayName,
                         menu = buildList {
                             add((if (state.projectId == null) "Choose project" else "Projects") to { page = Page.PROJECTS })
                             if (state.projectId != null && page == Page.CHAT && idle) add("Remove from project" to { vm.selectProject(null) })
                             add("Memory" to { page = Page.MEMORY })
+                            if (features != null) add("Accounts" to { go(Page.ACCOUNTS) })
                             add("Settings" to { page = Page.SETTINGS })
                             add("Lock" to { vm.lock() })
                         },
@@ -104,7 +111,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState, settingsExtras:
                     }
                 }
                 Box(Modifier.weight(1f).fillMaxWidth()) {
-                    when(page) { Page.CHAT -> ChatScreen(vm, state); Page.PROJECTS -> ProjectsScreen(vm, state) { page = Page.CHAT }; Page.MEMORY -> MemoryScreen(vm, state); Page.TASKS -> TasksScreen(vm, state); Page.SETTINGS -> SettingsScreen(vm, state, settingsExtras) }
+                    when(page) { Page.CHAT -> ChatScreen(vm, state, onAttach, onDictate, dictating, onVoice, voiceActive, voiceStatus); Page.PROJECTS -> ProjectsScreen(vm, state, selectedProjectId = projectPage, openChat = { page = Page.CHAT }); Page.MEMORY -> MemoryScreen(vm, state); Page.TASKS -> TasksScreen(vm, state); Page.SETTINGS -> SettingsScreen(vm, state, settingsExtras); Page.FILES -> features?.let { LibraryScreen(it, { vm.artifact(it) }, onLibraryUpload) }; Page.IMAGES -> features?.let { ImagesScreen(it) { vm.artifact(it) } }; Page.ACTIVITY -> features?.let { ActivityScreen(it) { report -> vm.newChat(); vm.setDraft("Discuss this report:\n$report"); page = Page.CHAT } }; Page.ACCOUNTS -> features?.let { AccountsScreen(it) } }
                 }
             }
         }
@@ -117,6 +124,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState, settingsExtras:
             drawer.currentOffset.isNaN() -> if (drawer.isOpen) 1f else 0f
             else -> (1f + drawer.currentOffset / drawerPixels).coerceIn(0f, 1f)
         }
+        code?.let { com.localfirst.assistant.ui.code.CodeScreen(it) }
         FridayBrand(opened, { if (!wide) scope.launch { if (drawer.isOpen) drawer.close() else drawer.open() } }, Modifier.align(Alignment.TopStart).padding(start = 16.dp, top = 4.dp))
     }
 }
@@ -139,13 +147,15 @@ private fun ConnectScreen(vm: WorkspaceController, state: WorkspaceState) {
 }
 
 @Composable
-private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState) {
+private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState,
+    onAttach: (() -> Unit)?, onDictate: (() -> Unit)?, dictating: Boolean,
+    onVoice: (() -> Unit)?, voiceActive: Boolean, voiceStatus: String) {
     val scroll = rememberLazyListState()
     val messages = state.active?.conversation?.messages.orEmpty()
     val transcript = remember(messages, state.activeJob) { Transcript.items(messages, state.activeJob != null) }
     val clipboard = LocalClipboardManager.current
     val copy: (String) -> Unit = { clipboard.setText(AnnotatedString(it)) }
-    LaunchedEffect(state.activeId, transcript.size) { if (transcript.isNotEmpty()) scroll.animateScrollToItem(transcript.lastIndex) }
+    LaunchedEffect(state.activeId, transcript.size, state.streamingText.length / 100) { if (transcript.isNotEmpty()) scroll.animateScrollToItem(if (state.streamingText.isBlank()) transcript.lastIndex else transcript.size) }
     val palette = LocalFridayPalette.current
     BoxWithConstraints(Modifier.fillMaxSize()) {
     // As on the phone: FRIDAY's light fills an empty chat and dims behind a conversation, and the composer
@@ -167,14 +177,19 @@ private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState) {
                     is TranscriptItem.Assistant -> SharedAssistantMessage(item, actionsEnabled = !state.busy, onCopy = copy,
                         onChoose = vm::setDraft, interfaceContent = { AssistantReply(item.text, state.preferences.interactiveAnswers, vm::setDraft, messages) })
                     is TranscriptItem.ToolActivity -> SharedToolActivityCard(item)
-                    TranscriptItem.Thinking -> ThinkingIndicator()
+                    TranscriptItem.Thinking -> if (state.streamingText.isBlank()) ThinkingIndicator()
                 } }
+                if (state.streamingText.isNotBlank()) item(key = "streaming-reply") { NativeResponseContent(state.streamingText) }
                 state.detachedReply?.let { reply -> item { Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = RoundedCornerShape(12.dp)) { Column(Modifier.padding(16.dp)) { Text("Reply saved separately because the chat changed", style = MaterialTheme.typography.titleSmall); AssistantReply(reply, state.preferences.interactiveAnswers, vm::setDraft) } } } }
             }
         }
+        if (state.incognito) Text("Incognito · this conversation stays in tab memory until you leave or lock", style = MaterialTheme.typography.labelSmall)
+        if (voiceStatus.isNotBlank()) Row(verticalAlignment = Alignment.CenterVertically) { Text(voiceStatus, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium); if (voiceActive) TextButton({ onVoice?.invoke() }) { Text("End voice") } }
         SharedComposer(state.draft, busy = state.activeJob != null, editing = false,
             onDraftChange = vm::setDraft, onSend = { vm.send() }, onStop = { vm.stop() },
-            onCancelEdit = {}, onVoice = null, sendEnabled = state.canSend)
+            onCancelEdit = {}, onVoice = onVoice, voiceActive = voiceActive, onDictate = onDictate, dictating = dictating,
+            onAttach = onAttach.takeUnless { state.incognito || state.busy }, hasAttachments = state.attachments.isNotEmpty(),
+            attachmentContent = { AttachmentStrip(state.attachments, !state.busy && state.activeJob == null, vm::removeAttachment) }, sendEnabled = state.canSend)
         Spacer(Modifier.height(16.dp + homeOffset))
     }
     }

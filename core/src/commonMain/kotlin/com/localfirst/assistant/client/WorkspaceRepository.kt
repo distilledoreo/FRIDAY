@@ -12,6 +12,8 @@ interface WorkspaceGateway {
     fun connect(baseUrl: String, token: String)
     fun lock()
     suspend fun artifact(id: String) { error("File downloads are unavailable on this client") }
+    suspend fun upload(name: String, mime: String, bytes: ByteArray): JsonObject { error("Uploads are unavailable on this client") }
+    suspend fun stream(path: String, body: JsonObject?, event: suspend (JsonObject) -> Unit) { event(request(path, if (body == null) "GET" else "POST", body).jsonObject) }
     suspend fun request(path: String, method: String = "GET", body: JsonObject? = null): JsonElement
 }
 class WorkspaceException(val status: Int, message: String) : Exception(message)

@@ -1,7 +1,6 @@
 @file:OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 package com.localfirst.assistant.ui.code
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -45,11 +44,11 @@ import kotlinx.coroutines.delay
 
 /** The Code workspace, over the chat: projects and tasks, then one task's conversation and changes. */
 @Composable
-internal fun CodeScreen(code: CodeWorkspace) {
+fun CodeScreen(code: CodeWorkspace) {
     val state by code.state.collectAsState()
     if (!state.open) return
     Dialog(onDismissRequest = { if (state.taskId != null) code.closeTask() else code.close() },
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        properties = DialogProperties(usePlatformDefaultWidth = false)) {
         FridayDialogWindow()
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             if (state.taskId != null) CodeTaskScreen(state, code) else CodeHome(state, code)
@@ -58,7 +57,7 @@ internal fun CodeScreen(code: CodeWorkspace) {
 }
 
 @Composable
-internal fun CodeHome(state: CodeState, code: CodeWorkspace) {
+fun CodeHome(state: CodeState, code: CodeWorkspace) {
     var prompt by rememberSaveable { mutableStateOf("") }
     var modelChoice by rememberSaveable { mutableStateOf("auto") }
     var picking by remember { mutableStateOf(false) }
@@ -222,7 +221,7 @@ private fun StateDot(task: CodeTask) {
 }
 
 @Composable
-internal fun LineCounts(additions: Int, deletions: Int) {
+fun LineCounts(additions: Int, deletions: Int) {
     val palette = LocalFridayPalette.current
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         if (additions > 0 || deletions == 0) Text("+$additions", style = MaterialTheme.typography.labelLarge, color = palette.success, fontFamily = FontFamily.Monospace)
@@ -297,9 +296,8 @@ private fun RepositorySheet(state: CodeState, code: CodeWorkspace, onDismiss: ()
 }
 
 @Composable
-internal fun CodeTaskScreen(state: CodeState, code: CodeWorkspace) {
+fun CodeTaskScreen(state: CodeState, code: CodeWorkspace) {
     val id = state.taskId ?: return
-    BackHandler(onBack = code::closeTask)
     val view = state.view?.takeIf { it.task.id == id }
     val task = view?.task ?: state.tasks.firstOrNull { it.id == id }
     val active = view == null || view.busy || view.waiting
@@ -426,7 +424,7 @@ private fun conversationBlocks(items: List<CodeItem>): List<Block> {
 }
 
 /** The first message carries the repository and branch for the agent; the user only needs their request. */
-internal fun taskRequest(text: String): String =
+fun taskRequest(text: String): String =
     if (text.startsWith("Repository: ") && "\n\nTask:\n" in text) text.substringAfter("\n\nTask:\n") else text
 
 @Composable
@@ -629,7 +627,7 @@ private fun DiffRow(line: DiffLine) {
     }
 }
 
-internal fun ago(seconds: Double, now: Long = System.currentTimeMillis()): String {
+fun ago(seconds: Double, now: Long = com.localfirst.assistant.platform.PlatformSystem.currentTimeMillis()): String {
     if (seconds <= 0) return ""
     val minutes = ((now / 1000.0 - seconds) / 60).toLong().coerceAtLeast(0)
     return when {
@@ -637,7 +635,6 @@ internal fun ago(seconds: Double, now: Long = System.currentTimeMillis()): Strin
         minutes < 60 -> "${minutes}m ago"
         minutes < 60 * 24 -> "${minutes / 60}h ago"
         minutes < 60 * 24 * 7 -> "${minutes / (60 * 24)}d ago"
-        else -> java.time.Instant.ofEpochSecond(seconds.toLong()).atZone(java.time.ZoneId.systemDefault())
-            .format(java.time.format.DateTimeFormatter.ofPattern("MMM d"))
+        else -> "${minutes / (60 * 24)}d ago"
     }
 }

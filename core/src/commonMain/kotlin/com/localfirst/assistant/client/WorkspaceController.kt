@@ -10,6 +10,8 @@ import kotlinx.serialization.json.*
 private fun JsonObject.text(key: String) = this[key]?.jsonPrimitive?.contentOrNull.orEmpty()
 
 data class WorkspaceState(
+    val incognito: Boolean = false, val privateChat: StoredConversation? = null,
+    val attachments: List<Attachment> = emptyList(), val streamingText: String = "",
     val connected: Boolean = false, val busy: Boolean = false, val activeJob: String? = null,
     val activeId: String? = null, val draft: String = "", val projectId: String? = null, val query: String = "",
     val tasks: List<JsonObject> = emptyList(), val detachedReply: String? = null,
@@ -18,8 +20,8 @@ data class WorkspaceState(
     val archiveSources: List<JsonObject> = emptyList(), val archiveTotal: Int = 0, val sourcePreview: JsonObject? = null,
     val memorySettings: JsonObject = JsonObject(emptyMap()), val memoryError: String? = null, val error: String? = null, val status: String = "Connect to your computer",
 ) {
-    val active get() = chats.firstOrNull { it.item.id == activeId }
-    val canSend get() = connected && !busy && activeJob == null && draft.isNotBlank()
+    val active get() = if (incognito) privateChat?.let { SharedChat(SyncItem(it.summary.id, 0), it) } else chats.firstOrNull { it.item.id == activeId }
+    val canSend get() = connected && !busy && activeJob == null && (draft.isNotBlank() || attachments.isNotEmpty())
     val filteredChats get() = chats.filter { query.isBlank() || it.conversation.summary.title.contains(query, true) || it.conversation.messages.any { m ->
         when(m) { is Message.User -> m.content.contains(query, true); is Message.Assistant -> m.content.contains(query, true); else -> false }
     } }
@@ -36,20 +38,39 @@ class WorkspaceController(
     private var operation: Job? = null
     private var polling: Job? = null
     private var watching: Job? = null
+    private var generation: Job? = null
     private var memoryStale = false
     private var memoryQuery = ""
     override fun setDraft(text: String) { mutable.update { it.copy(draft = text) } }
     fun search(text: String) { mutable.update { it.copy(query = text) } }
     fun selectProject(id: String?) { mutable.update { it.copy(projectId = id) } }
     fun dismissError() { mutable.update { it.copy(error = null) } }
-    override fun newChat(project: String?) { if (!state.value.busy && state.value.activeJob == null) mutable.update { it.copy(activeId = null, draft = "", projectId = project, error = null, detachedReply = null) } }
+    override fun newChat(project: String?) { if (!state.value.busy && state.value.activeJob == null) mutable.update { it.copy(activeId = null, draft = "", projectId = project, error = null, detachedReply = null, incognito = false, privateChat = null, attachments = emptyList(), streamingText = "") } }
+    fun newIncognito() { newChat(); if (!state.value.busy && state.value.activeJob == null) mutable.update { it.copy(incognito = true) } }
+    fun removeAttachment(id: String) { mutable.update { it.copy(attachments = it.attachments.filterNot { a -> a.id == id }) } }
+    fun upload(name: String, mime: String, bytes: ByteArray, attachToDraft: Boolean = true) = action { identity ->
+        require(!state.value.incognito) { "File uploads are disabled in this private chat." }
+        require(bytes.size <= 25 * 1024 * 1024) { "File exceeds 25 MB." }
+        require(state.value.attachments.size < 8) { "Attach at most eight files." }
+        val file = repository.gateway.upload(name, mime, bytes)
+        val id = file.getValue("id").jsonPrimitive.content
+        val actualMime = file["mime"]?.jsonPrimitive?.contentOrNull ?: mime
+        val image = actualMime.startsWith("image/")
+        val text = if (!image && (mime.startsWith("text/") || name.substringAfterLast('.').lowercase() in setOf("md", "txt", "csv", "json", "kt", "py", "js", "ts", "html", "xml", "yaml"))) bytes.decodeToString().take(60000) else null
+        val attachment = Attachment(id, if (image) AttachmentKind.IMAGE else AttachmentKind.DOCUMENT, name, actualMime,
+            path = if (image) file["vision"]?.jsonPrimitive?.contentOrNull ?: "remote:$id" else null, text = file["text"]?.jsonPrimitive?.contentOrNull ?: text, remoteFileId = id,
+            pageImages = (file["pageImages"] as? JsonArray)?.map { it.jsonPrimitive.content }.orEmpty(),
+            note = file["note"]?.jsonPrimitive?.contentOrNull ?: if (!image && text == null) "Use the file tool to inspect this document." else null)
+        if (identity == epoch && attachToDraft) mutable.update { it.copy(attachments = it.attachments + attachment) }
+    }
+    fun reportError(message: String) { mutable.update { it.copy(error = message) } }
     override fun select(id: String) {
         if (state.value.busy || state.value.activeJob != null) return
         val chat = state.value.chats.firstOrNull { it.item.id == id } ?: return
-        mutable.update { it.copy(activeId = id, projectId = chat.conversation.summary.projectId, error = null, detachedReply = null) }
+        mutable.update { it.copy(activeId = id, projectId = chat.conversation.summary.projectId, error = null, detachedReply = null, incognito = false, privateChat = null, attachments = emptyList(), streamingText = "") }
     }
     fun lock() {
-        epoch++; memoryQuery = ""; memoryStale = false; operation?.cancel(); watching?.cancel(); repository.gateway.lock(); repository.forget(); mutable.value = WorkspaceState()
+        epoch++; memoryQuery = ""; memoryStale = false; operation?.cancel(); generation?.cancel(); watching?.cancel(); repository.gateway.lock(); repository.forget(); mutable.value = WorkspaceState()
     }
     fun close() { lock(); polling?.cancel() }
     private fun action(quiet: Boolean = false, body: suspend (Int) -> Unit): Job? {
@@ -97,11 +118,11 @@ class WorkspaceController(
             val jobs = changes.jobs ?: old.tasks
             val current = snapshot.chats.firstOrNull { it.item.id == old.activeId }
             val job = jobs.firstOrNull { it.text("id") == old.activeJob }
-            val working = old.activeJob != null && job?.text("status") in listOf("running", "scheduled")
+            val working = old.activeJob != null && (old.incognito || job?.text("status") in listOf("running", "scheduled"))
             old.copy(chats = snapshot.chats, tasks = jobs, items = snapshot.items, knowledge = snapshot.knowledge, knowledgeRevision = snapshot.knowledgeRevision,
-                preferences = snapshot.preferences, activeId = current?.item?.id,
+                preferences = snapshot.preferences, activeId = if (old.incognito) old.activeId else current?.item?.id,
                 projectId = if (old.activeId != null && current == null) old.projectId?.takeIf { id -> snapshot.knowledge.projects.any { it.id == id } } else old.projectId,
-                activeJob = if (working) old.activeJob else null,
+                activeJob = if (working) old.activeJob else null, streamingText = if (!old.incognito && !working) "" else old.streamingText,
                 detachedReply = if (old.activeJob != null && !working && job?.text("error")?.isNotBlank() == true) job.text("result").takeIf { it.isNotBlank() } else old.detachedReply,
                 error = job?.text("error")?.takeIf { it.isNotBlank() } ?: old.error,
                 status = if (working) "FRIDAY is working on the computer…" else "History and preferences synced")
@@ -137,22 +158,49 @@ class WorkspaceController(
     fun send() = if (!state.value.canSend) null else action { identity ->
         val old = state.value; val now = clock(); val active = old.active
         val conversation = active?.conversation ?: StoredConversation(ConversationSummary(newId(), old.draft.trim().take(70), now, now, old.projectId), emptyList())
-        val next = conversation.copy(summary = conversation.summary.copy(updatedAt = now, projectId = old.projectId), messages = conversation.messages + Message.User(old.draft.trim()))
+        val next = conversation.copy(summary = conversation.summary.copy(updatedAt = now, projectId = old.projectId), messages = conversation.messages + Message.User(old.draft.trim(), old.attachments))
+        if (old.incognito) {
+            mutable.update { it.copy(privateChat = next, activeId = next.summary.id, draft = "", activeJob = "private", streamingText = "") }
+            try {
+                repository.gateway.stream("/workspace/chat/ephemeral", buildJsonObject { put("chat", encodeConversation(next)); put("interface_prompt", if (old.preferences.interactiveAnswers) clientInterfacePrompt() else "") }) { event ->
+                    if (identity == epoch) {
+                        event["error"]?.jsonPrimitive?.contentOrNull?.let { error(it) }
+                        event["text"]?.jsonPrimitive?.contentOrNull?.let { text -> mutable.update { it.copy(streamingText = text) } }
+                    }
+                }
+                if (identity == epoch) mutable.update { it.copy(privateChat = next.copy(messages = next.messages + Message.Assistant(it.streamingText)), streamingText = "") }
+            } finally { if (identity == epoch) mutable.update { it.copy(activeJob = null) } }
+            return@action
+        }
         val job = repository.continueChat(next, active?.item?.revision ?: 0, if (old.preferences.interactiveAnswers) clientInterfacePrompt() else "")
         if (identity != epoch) return@action
         val item = SyncItem(next.summary.id, job.getValue("revision").jsonPrimitive.int, buildJsonObject { put("chat", encodeConversation(next)) })
         mutable.update { it.copy(activeId = item.id, chats = listOf(SharedChat(item, next)) + it.chats.filterNot { c -> c.item.id == item.id },
-            draft = "", activeJob = job.text("id"), status = "FRIDAY is working on the computer…") }
+            draft = "", attachments = emptyList(), streamingText = "", activeJob = job.text("id"), status = "FRIDAY is working on the computer…") }
+        generation?.cancel()
+        generation = scope.launch {
+            try {
+                repository.gateway.stream("/workspace/jobs/${job.text("id")}/events", null) { event ->
+                    if (identity == epoch && state.value.activeJob == job.text("id")) event["text"]?.jsonPrimitive?.contentOrNull?.let { text -> mutable.update { it.copy(streamingText = text) } }
+                }
+                if (identity == epoch) { refreshSnapshot(identity); mutable.update { it.copy(streamingText = "") } }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { /* The change feed still retrieves the durable result after a stream disconnect. */ }
+        }
     }
     override fun scheduleTask(prompt: String, runAt: Long, intervalSeconds: Int) = action { identity -> repository.scheduleTask(prompt, runAt, intervalSeconds); refreshSnapshot(identity) }
     override fun taskAction(id: String, taskAction: String) = action { identity ->
         repository.taskAction(id, taskAction)
         refreshSnapshot(identity)
     }
-    fun stop() = action { identity ->
+    fun stop(): Job? {
+        if (state.value.incognito) { epoch++; operation?.cancel(); mutable.update { it.copy(activeJob = null, streamingText = "", busy = false) }; return null }
+        return action { identity ->
         val job = state.value.activeJob ?: return@action
         repository.gateway.request("/workspace/jobs/$job/cancel", "POST")
         refreshSnapshot(identity)
+        generation?.cancel(); mutable.update { it.copy(streamingText = "") }
+        }
     }
     fun rename(title: String, baseline: SharedChat? = state.value.active) = action { identity ->
         val chat = baseline ?: return@action

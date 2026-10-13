@@ -22,7 +22,7 @@ import uuid
 from urllib.parse import unquote
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -367,6 +367,16 @@ def install(app, auth, root, model, search, fetch):
         async def missing_web_build():
             raise HTTPException(503, 'Build :web:stageGateway and reinstall the gateway to enable the Compose web app.')
 
+    @app.get('/friday/oauth-callback', include_in_schema=False)
+    async def oauth_callback():
+        # The callback carries a one-use provider code, never a gateway token. Only the opener receives it.
+        return HTMLResponse("""<!doctype html><meta charset="utf-8"><title>FRIDAY account sign-in</title>
+<p>Return to FRIDAY to finish connecting your account.</p><script>
+const q=new URLSearchParams(location.search);history.replaceState(null,'',location.pathname);
+if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('code'),state:q.get('state'),error:q.get('error')},location.origin);window.close();}
+</script>""", headers={'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
+            'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"})
+
     @app.get('/workspace-ui', include_in_schema=False)
     async def ui():
         # This page contains no personal data; every API request still requires bearer authentication.
@@ -523,6 +533,109 @@ def install(app, auth, root, model, search, fetch):
             running[job_id].cancel()
         return {'status': action}
 
+    # Progress lives only in RAM. Durable checkpoints and final replies stay in the existing jobs table.
+    progress = {}
+
+    async def generate(messages, available_tools, report):
+        stream = getattr(model, 'stream', None)
+        if stream is not None:
+            return await stream(messages, available_tools, report)
+        answer = await model(messages, available_tools)
+        await report(answer.get('content') or '')
+        return answer
+
+    @router.get('/jobs/{job_id}/events')
+    async def job_events(job_id: str, request: Request):
+        with workspace.db() as db:
+            if db.execute('SELECT id FROM jobs WHERE id=?', (job_id,)).fetchone() is None:
+                raise HTTPException(404, 'Task not found')
+        async def events():
+            previous = None
+            while not await request.is_disconnected():
+                with workspace.db() as db:
+                    row = db.execute('SELECT status,result,error FROM jobs WHERE id=?', (job_id,)).fetchone()
+                if row is None:
+                    yield 'data: ' + json.dumps({'error': 'Task was removed', 'done': True}) + '\n\n'
+                    return
+                done = row['status'] not in ('scheduled', 'running')
+                value = {'text': row['result'] if done else progress.get(job_id, ''), 'done': done}
+                if row['error']: value['error'] = row['error']
+                encoded = json.dumps(value)
+                if encoded != previous:
+                    yield 'data: ' + encoded + '\n\n'
+                    previous = encoded
+                else:
+                    yield ': keepalive\n\n'
+                if done: return
+                await asyncio.sleep(.2)
+        return StreamingResponse(events(), media_type='text/event-stream', headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'})
+
+    class PrivateChat(BaseModel):
+        chat: str = Field(max_length=100000)
+        interface_prompt: str = Field(default='', max_length=40000)
+
+    private_active = 0
+
+    @router.post('/chat/ephemeral')
+    async def ephemeral_chat(body: PrivateChat, request: Request):
+        # No Workspace calls here: no chat, job, recall index, tool checkpoint or artifact is written.
+        nonlocal private_active
+        try:
+            chat = json.loads(body.chat)
+            entries = chat['messages']
+            if not isinstance(entries, list) or not entries or len(entries) > 200 or any(not isinstance(e, dict) or e.get('role') not in ('user', 'assistant') or not isinstance(e.get('content', ''), str) or e.get('attachments') for e in entries):
+                raise ValueError()
+            messages = [{'role': 'system', 'content': 'This is a private conversation. No history or memory is saved. '
+                'You cannot create files, run code, or access accounts. Public sources may be searched when needed.\n' + body.interface_prompt}]
+            messages.extend({'role': e['role'], 'content': str(e.get('content', ''))} for e in entries)
+        except (KeyError, ValueError, TypeError):
+            raise HTTPException(400, 'Invalid private conversation; attachments are unavailable')
+        if private_active >= 4: raise HTTPException(429, 'Too many private conversations')
+        private_active += 1
+        async def events():
+            nonlocal private_active
+            queue = asyncio.Queue(maxsize=32)
+            async def report(text): await queue.put({'text': text})
+            async def produce():
+                try:
+                    for _ in range(20):
+                        answer = await asyncio.wait_for(generate(messages, tools[:2], report), 900)
+                        messages.append(answer)
+                        calls = answer.get('tool_calls') or []
+                        if not calls:
+                            await queue.put({'text': answer.get('content') or '', 'done': True})
+                            return
+                        for call in calls:
+                            args = json.loads(call['function']['arguments'])
+                            name = call['function']['name']
+                            try:
+                                if name == 'web_search': result = _source_refs(await search(args['query']))
+                                elif name == 'fetch_page': result = _source_refs(await fetch(args['url']))
+                                else: result = {'error': 'Unavailable in a private conversation'}
+                            except Exception:
+                                result = {'error': 'Public source unavailable'}
+                            messages.append({'role': 'tool', 'tool_call_id': call['id'], 'content': json.dumps(result)[:32000]})
+                    await queue.put({'error': 'Reached the private research limit. Try a shorter request.', 'done': True})
+                except asyncio.CancelledError: raise
+                except Exception:
+                    await queue.put({'error': 'Private reply could not be generated. Try again.', 'done': True})
+            producer = asyncio.create_task(produce())
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), 15)
+                    except asyncio.TimeoutError:
+                        yield ': keepalive\n\n'
+                        continue
+                    yield 'data: ' + json.dumps(event) + '\n\n'
+                    if event.get('done'): break
+            finally:
+                producer.cancel()
+                with contextlib.suppress(asyncio.CancelledError): await producer
+                messages.clear()
+                private_active -= 1
+        return StreamingResponse(events(), media_type='text/event-stream', headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'})
+
     @router.post('/items/{item_id}/continue')
     async def continue_chat(item_id: str, body: ContinueItem):
         try:
@@ -569,7 +682,7 @@ def install(app, auth, root, model, search, fetch):
                             if info['size'] > 3 * 1024 * 1024:
                                 continue
                             data = base64.b64encode((workspace.files / info['id']).read_bytes()).decode()
-                            parts.append({'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + data}})
+                            parts.append({'type': 'image_url', 'image_url': {'url': 'data:' + info['mime'] + ';base64,' + data}})
                 messages.append({'role': 'user', 'content': parts})
             elif role == 'assistant':
                 messages.append({'role': 'assistant', 'content': entry['content']})
@@ -610,7 +723,9 @@ def install(app, auth, root, model, search, fetch):
                 if status != 'running':
                     return
                 phases[job['id']] = 'model'
-                answer = await asyncio.wait_for(model(messages, tools), timeout=900)
+                progress[job['id']] = ''
+                async def report(text): progress[job['id']] = text[:64000]
+                answer = await asyncio.wait_for(generate(messages, tools, report), timeout=900)
                 with workspace.db() as db:
                     if db.execute('SELECT status FROM jobs WHERE id=?', (job['id'],)).fetchone()[0] != 'running':
                         return
@@ -683,6 +798,7 @@ def install(app, auth, root, model, search, fetch):
                 finally:
                     running.pop(job['id'], None)
                     phases.pop(job['id'], None)
+                    progress.pop(job['id'], None)
             else:
                 await asyncio.sleep(5)
 
