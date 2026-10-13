@@ -20,59 +20,28 @@ import org.json.JSONObject
 
 @Composable
 internal fun MemoryHub(state: ChatUiState, vm: ChatViewModel, onImport: () -> Unit, onReview: () -> Unit, onArchive: () -> Unit, onEdit: (JSONObject) -> Unit, onContext: () -> Unit) {
-    var query by rememberSaveable { mutableStateOf("") }
-    val summary = state.memorySummary
-    val settings = summary?.optJSONObject("settings")
-    FridayVisibleEffect(query) { delay(350); while (true) { vm.refreshMemory(query); delay(10000) } }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item {
-            Text("Memory lives on your PC", style = MaterialTheme.typography.titleMedium)
-            Text("The phone keeps settings and small previews. Imported history and the search index stay on the computer.", style = MaterialTheme.typography.bodyMedium)
-            summary?.let { Text("${it.optInt("memories")} approved memories · ${it.optInt("sources")} chats · ${it.optLong("storage_bytes") / 1024 / 1024} MB on PC", style = MaterialTheme.typography.bodySmall) }
-            Text(if (summary?.optBoolean("semantic") == true) "Meaning-based recall and text search" else "Text search · semantic encoder unavailable", style = MaterialTheme.typography.bodySmall)
-            summary?.optInt("indexing")?.takeIf { it > 0 }?.let { Text("Indexing $it conversation excerpts…", style = MaterialTheme.typography.bodySmall) }
-        }
-        item { Button(shape = MaterialTheme.shapes.small, onClick = onImport, modifier = Modifier.fillMaxWidth()) { Text("Import ChatGPT export") } }
-        item { OutlinedButton(shape = MaterialTheme.shapes.small, onClick = onReview, modifier = Modifier.fillMaxWidth()) { Text("Review suggestions · ${summary?.optInt("suggestions") ?: 0}") } }
-        item { TextButton(shape = MaterialTheme.shapes.small, onClick = onArchive) { Text("Browse PC conversation archive") } }
-        item { TextButton(shape = MaterialTheme.shapes.small, onClick = onContext) { Text("What influenced the last reply?") } }
-        item { TextButton(shape = MaterialTheme.shapes.small, onClick = vm::indexExistingChats, enabled = !state.workspaceBusy && !state.busy) { Text("Index existing phone chats on PC") } }
-        item { HorizontalDivider(); Text("Recall controls", style = MaterialTheme.typography.titleMedium) }
-        items(listOf("use_memories" to "Use approved memories", "use_history" to "Recall past conversations", "archive_chats" to "Archive new chats on PC", "suggest_from_chats" to "Suggest memories from new chats", "track_situations" to "Track recent ongoing situations", "allow_checkins" to "Allow occasional relevant check-ins")) { (key, label) ->
-            Row(verticalAlignment = Alignment.CenterVertically) { Text(label, Modifier.weight(1f)); Switch(settings?.optBoolean(key, key != "suggest_from_chats") ?: (key != "suggest_from_chats"), { vm.setMemorySetting(key, it) }, enabled = settings != null && !state.workspaceBusy && !state.busy) }
-        }
-        item { Text("Suggestions need review before becoming facts. Forgetting a source-linked memory also excludes its original chat from recall, so it won’t immediately return.", style = MaterialTheme.typography.bodySmall) }
-        item { HorizontalDivider(); Text("Recent situations", style = MaterialTheme.typography.titleMedium); Text("Tentative summaries from recent chats, separate from lasting facts. Open situations expire after 30 days; resolved ones after 7. Check-in offers have a three-day cooldown.", style = MaterialTheme.typography.bodySmall) }
-        if (state.memorySituations.isEmpty()) item { Text("No active situations yet.") }
-        items(state.memorySituations, key = { it.getString("id") }) { situation ->
-            Column(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).background(MaterialTheme.colorScheme.surface).padding(16.dp),verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    val actions = rememberNativeWorkspaceActions(vm, state)
+    val shared by actions.state.collectAsState()
+    FridayVisibleEffect(Unit) {
+        vm.refreshArchive()
+        while (true) { vm.refreshMemory(); delay(10000) }
+    }
+    com.localfirst.assistant.ui.workspace.MemoryScreen(actions, shared) {
+        Button(onImport) { Text("Import ChatGPT export") }
+        OutlinedButton(onReview) { Text("Review suggestions · ${state.memorySummary?.optInt("suggestions") ?: 0}") }
+        Row { TextButton(onArchive) { Text("Browse archive") }; TextButton(onContext) { Text("What influenced the last reply?") } }
+        TextButton(vm::indexExistingChats, enabled = !shared.busy) { Text("Index existing phone chats on PC") }
+        if (state.memorySituations.isNotEmpty()) {
+            Text("Recent situations", style = MaterialTheme.typography.titleMedium)
+            for (situation in state.memorySituations) {
                 Text(situation.getString("topic"), style = MaterialTheme.typography.titleSmall)
                 Text(situation.getString("summary"))
-                Text(situation.getString("status") + " · " + situation.optString("source_title"), style = MaterialTheme.typography.labelSmall)
-                Text("Source: “${situation.optString("quote") }”", style = MaterialTheme.typography.bodySmall)
                 Row {
-                    if (situation.optString("status") == "open") TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.resolveSituation(situation.getString("id")) }, enabled = !state.workspaceBusy && !state.busy) { Text("Mark resolved") }
-                    TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.forgetSituation(situation.getString("id")) }, enabled = !state.workspaceBusy && !state.busy) { Text("Forget") }
+                    if (situation.optString("status") == "open") TextButton({ vm.resolveSituation(situation.getString("id")) }, enabled = !shared.busy) { Text("Mark resolved") }
+                    TextButton({ vm.forgetSituation(situation.getString("id")) }, enabled = !shared.busy) { Text("Forget") }
                 }
             }
         }
-        item { HorizontalDivider(); OutlinedTextField(query, { query = it.take(2000) }, label = { Text("Search approved memories") }, modifier = Modifier.fillMaxWidth()) }
-        if (state.pcMemories.isEmpty()) item { Text("No matching approved memories. Import an export, review suggestions, or add a memory.") }
-        items(state.pcMemories, key = { it.getString("id") }) { memory ->
-            Column(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).background(MaterialTheme.colorScheme.surface).padding(16.dp),verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(memory.getString("text"), style = MaterialTheme.typography.bodyLarge)
-                Text(memory.optString("category") + if (memory.optString("source_title").let { it.isNotBlank() && it != "null" }) " · " + memory.optString("source_title") else "", style = MaterialTheme.typography.labelMedium)
-                memory.optString("quote").takeIf { it.isNotBlank() && it != "null" }?.let { Text("Source: “$it”", style = MaterialTheme.typography.bodySmall) }
-                Row { TextButton(shape = MaterialTheme.shapes.small, onClick = { onEdit(memory) }, enabled = !state.workspaceBusy && !state.busy) { Text("Edit") }; TextButton(shape = MaterialTheme.shapes.small, onClick = { vm.forgetMemory(memory.getString("id")) }, enabled = !state.workspaceBusy && !state.busy) { Text("Forget") } }
-                HorizontalDivider()
-            }
-        }
-        if (state.pcMemoriesMore) item(key = "more-memories") {
-            // Composed only when scrolled into view, so reaching the end of the list loads the next page.
-            LaunchedEffect(state.pcMemories.size) { vm.loadMoreMemories() }
-            Box(Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp) }
-        }
-        item { Text("Phone chat backups cover local chats and projects; the PC memory database is separate.", style = MaterialTheme.typography.bodySmall) }
     }
 }
 

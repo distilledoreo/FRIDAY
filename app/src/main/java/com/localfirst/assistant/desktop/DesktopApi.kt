@@ -21,7 +21,7 @@ internal fun desktopRequest(
     val connection = (url.openConnection() as HttpURLConnection).apply {
         instanceFollowRedirects = false
         requestMethod = method
-        connectTimeout = 8_000
+        connectTimeout = minOf(8_000, timeoutMs)
         readTimeout = timeoutMs
         apiKey?.takeIf { it.isNotBlank() }?.let { setRequestProperty("Authorization", "Bearer $it") }
         headers.forEach { (k, v) -> setRequestProperty(k, v) }

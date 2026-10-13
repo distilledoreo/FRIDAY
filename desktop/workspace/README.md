@@ -15,7 +15,13 @@ workspace_store = enable(app, auth, llm, search, fetch, FetchRequest,
 
 The adapter expects the gateway's authenticated FastAPI dependency list, existing HTTP client for llama.cpp, `search(q, n)`, and `fetch(FetchRequest(...))`. Restart the gateway. SQLite and files under `workspace-data` survive restart; back up this directory while the service is stopped. Existing systemd `Restart=on-failure` recovery remains applicable.
 
-Open `/workspace-ui` in a browser and enter the existing API token. The token stays in tab memory. The browser can continue synced chats, use project context, save memory, upload files, download artifacts, and manage tasks. Use Android Workspace → Sync now to exchange changes. Sync is manual; revision conflicts require choosing phone or computer. File deletions and job removals are explicit actions. Connected services are deliberately excluded.
+Open `/workspace-ui` in a browser and enter the existing API token. The token stays in tab memory. The browser can continue synced chats, use project context, save memory, upload files, download artifacts, and manage tasks. Android checks for changes every 15 seconds while open and idle; the connected browser refreshes every 5 seconds while visible and when returning to the tab. Android Workspace → Sync now remains available. Revision conflicts require choosing phone or computer. File deletions and job removals are explicit actions. Connected services are deliberately excluded.
+
+Both clients must use the same authenticated PC gateway. Saved chats (including rename/delete tombstones), attachment archives and project knowledge share its revisioned workspace store. Each portable appearance preference has an independent revision: theme, accent, proactivity, reduced motion, display name and interactive-answer preference. Saving one preference cannot overwrite another. Defaults on a fresh Android installation adopt the server values; previously saved settings can require an explicit first-sync choice. Offline Android edits remain local until a successful sync; concurrent edits are never silently merged. The browser retains the current unsent draft on refresh, conflict or remote chat deletion.
+
+The browser and Android use the same PC memory endpoints for approved facts and memory/recall controls. Browser replies retrieve scoped PC memory and history with the same recall settings, excluding the current conversation. Synced chat writes are indexed under the same native source ID used by Android; excluded sources remain excluded. Secondary indexing failures preserve the saved chat and retry on its next write. Older saved memories can be imported from the browser's Shared memory section; Android's Memory screen also migrates them. Delete a chat to remove it from synchronized history; its separate recall archive and approved facts remain managed in Memory.
+
+Credentials, connection addresses, backend selection, network timeouts, phone permissions, wake-word/voice hardware, Bluetooth routing, Android Auto and Wake-on-LAN stay local. Browser support for an interactive-answer preference does not add Android's interactive renderer. Background/closed-client sync and actual two-device validation remain future work. Install the updated gateway and Android app together: older Android builds do not recognize the new preference records. Deploy with the existing server setup procedure; this change does not publish or restart a live service.
 
 ## Python sandbox
 
@@ -29,7 +35,7 @@ Supported libraries include pandas/openpyxl, matplotlib, numpy, python-docx, and
 
 Background jobs have public-web search, page fetch, and isolated Python tools. They have no phone actions. A completed assistant/tool group is checkpointed before the next model call. After a restart, running jobs resume from their last complete checkpoint. Uncheckpointed model generations may repeat; interrupted file generation can leave an extra artifact. Completed tool groups are not replayed. Twenty tool rounds pause a job for explicit resumption. Recurrence is at least 15 minutes. Pause/cancel can interrupt model waits; an in-progress tool finishes before the worker stops. Results remain available while the phone is offline. Android polls for changed results roughly every 15 minutes, subject to OS scheduling and notification permission.
 
-The browser saves its prompt before generation and records the final answer only if the chat revision still matches. If another device edits the chat while generation runs, the answer remains in Tasks and does not overwrite the edit. Browser history displays final messages; full original Android tool transcripts remain in synced chat archives.
+The browser saves its prompt before generation and records the completed assistant/tool transcript only if the chat revision still matches. If another device edits the chat while generation runs, the answer remains in Tasks and does not overwrite the edit. The older workspace UI displays final messages; the Compose web client also displays synced tool activity. Browser tool groups use the same archive format as Android, including stable source references.
 
 ## App updates
 
@@ -45,6 +51,8 @@ Place the signed APK and `release.json` in the gateway's sibling `apk` directory
 
 ```sh
 python -m unittest discover -s desktop/workspace/tests -v
+python -m unittest discover -s desktop/memory/tests -v
+(cd desktop/workspace/tests && npm install && npm test)
 ./gradlew :core:test :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
 ```
 
@@ -58,3 +66,7 @@ Chat is the default screen. Open the sidebar to search chats, browse date-groupe
 The sidebar footer opens Settings. Memory and Data controls have separate screens; server/model/voice configuration is under Voice and server. Task creation uses local date/time pickers and repeat choices; non-existent daylight-saving times and past times are rejected. Sync conflicts show bounded, readable previews of both versions, and require another sync if the phone copy changed after comparison.
 
 Device UX checks still required: back navigation across nested screens, date/time pickers, keyboard and system insets, large font sizes, light/dark mode, project chat creation/rename/delete, and selecting a sync version.
+
+## Compose frontend
+
+The Android-style Kotlin/JS frontend is served at `/friday/` after `./gradlew :web:stageGateway` and the normal gateway installation. It uses the same shared APIs as this module. See [web client documentation](../../web/README.md).

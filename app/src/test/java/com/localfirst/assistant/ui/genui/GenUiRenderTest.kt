@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.hasScrollAction
@@ -164,4 +165,22 @@ class GenUiRenderTest {
         // trimIndent still applied: no line keeps the source indentation.
         assertTrue(on.lines().none { it.startsWith("        ") && !it.startsWith("          <") })
     }
+    @Test fun enablingInteractiveAnswersUpdatesAnAlreadyOpenReply() {
+        var enabled by mutableStateOf(false)
+        compose.setContent {
+            AssistantTheme(AppearanceSettings(reducedMotion = true)) {
+                com.localfirst.assistant.ui.SharedAssistantMessage(
+                    com.localfirst.assistant.presentation.TranscriptItem.Assistant(0, "<title>Interactive</title>", false, true),
+                    actionsEnabled = true, onCopy = {},
+                    interfaceContent = if (enabled) ({ androidx.compose.material3.Text("Interactive controls") }) else null,
+                )
+            }
+        }
+        compose.onNodeWithText("Interactive controls").assertDoesNotExist()
+        compose.runOnIdle { enabled = true }
+        compose.onNodeWithText("Interactive controls").assertIsDisplayed()
+        compose.runOnIdle { enabled = false }
+        compose.onNodeWithText("Interactive controls").assertDoesNotExist()
+    }
+
 }

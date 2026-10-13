@@ -12,8 +12,8 @@ android {
         applicationId = "com.localfirst.assistant"
         minSdk = 26
         targetSdk = 35
-        versionCode = 58
-        versionName = "0.22.3"
+        versionCode = 60
+        versionName = "0.24.0"
     }
 
     buildTypes {
@@ -46,6 +46,7 @@ android {
 
 dependencies {
     implementation(project(":core"))
+    implementation(project(":shared-ui"))
     implementation("com.google.android.gms:play-services-auth:22.0.0")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.car.app)

@@ -7,7 +7,8 @@ pluginManagement {
 }
 
 dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    // Kotlin/JS installs Node and Yarn through plugin-created distribution repositories.
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
     repositories {
         google()
         mavenCentral()
@@ -15,4 +16,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "local-android-assistant"
-include(":app", ":core")
+include(":app", ":core", ":web", ":shared-ui")
