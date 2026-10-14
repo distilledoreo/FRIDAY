@@ -27,11 +27,14 @@ val LocalFeatureImages = staticCompositionLocalOf<suspend (String) -> ImageBitma
 private fun ServiceScreen(title: String, vm: FeatureController, initialTask: String? = null, initialSession: String? = null, content: LazyListScope.(FeatureState) -> Unit) {
     val state by vm.state.collectAsState()
     LaunchedEffect(title, initialTask, initialSession) { vm.open(when(title) { "Library" -> "files"; "Images" -> "images"; "Accounts" -> "accounts"; else -> "activity" }, initialTask, initialSession) }
-    FridayVisibleEffect(title) { while (true) { delay(3000); vm.refresh() } }
+    FridayVisibleEffect(title) { if (title != "Library") while (true) { delay(3000); vm.refresh() } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Row(verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium); TextButton({ vm.refresh() }, enabled = !state.busy) { Text("Refresh") } } }
-        state.error?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
-        if (state.busy) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+        item(key = "service-header") { Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium); TextButton({ vm.refresh() }, enabled = !state.busy && !state.fileLoading) { Text("Refresh") } }
+            // Loading must not recreate a focused input or move it to a different lazy-list slot.
+            Box(Modifier.fillMaxWidth().height(4.dp)) { if (state.busy || state.fileLoading) LinearProgressIndicator(Modifier.fillMaxWidth()) }
+        } }
+        state.error?.let { item(key = "service-error") { Text(it, color = MaterialTheme.colorScheme.error) } }
         content(state)
     }
 }
@@ -40,15 +43,33 @@ private fun ServiceScreen(title: String, vm: FeatureController, initialTask: Str
 fun LibraryScreen(vm: FeatureController, open: (String) -> Unit, attach: (() -> Unit)? = null) {
     var deleting by remember { mutableStateOf<JsonObject?>(null) }
     ServiceScreen("Library", vm) { state ->
+        item(key = "library-controls") { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(state.fileQuery, vm::searchFiles, Modifier.fillMaxWidth(), singleLine = true,
+                label = { Text("Search filenames") }, trailingIcon = { if (state.fileQuery.isNotEmpty()) TextButton({ vm.searchFiles("") }) { Text("Clear") } })
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("all" to "All files", "images" to "Images", "documents" to "Documents", "audio" to "Audio", "video" to "Video", "other" to "Other").forEach { (kind, label) ->
+                    FilterChip(state.fileKind == kind, { vm.filterFiles(kind) }, label = { Text(label) })
+                }
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("recent" to "Newest first", "name" to "Name A–Z", "size" to "Largest first").forEach { (sort, label) ->
+                    FilterChip(state.fileSort == sort, { vm.sortFiles(sort) }, label = { Text(label) })
+                }
+            }
+            if (!state.fileLoading && state.error == null) Text("${state.files.size} of ${state.fileTotal} files", style = MaterialTheme.typography.bodySmall)
+        } }
         if (attach != null) item { Button(attach, enabled = !state.busy) { Text("Upload files") } }
-        if (state.files.isEmpty() && !state.busy) item { Text("Uploaded files and files created by FRIDAY appear here.") }
+        if (state.files.isEmpty() && !state.busy && !state.fileLoading && state.error == null) item {
+            Text(if (state.fileQuery.isNotBlank() || state.fileKind != "all") "No files match this search and file type." else "Uploaded files and files created by FRIDAY appear here.")
+        }
         items(state.files, key = { it.string("id") }) { file -> FridayCard(Modifier.fillMaxWidth()) {
             ListItem(headlineContent = { Text(file.string("name")) }, supportingContent = { Text("${file.string("size")} bytes · ${file.string("mime")}") },
                 modifier = Modifier.clickable { open(file.string("id")) }, trailingContent = { MoreActions(listOf("Delete" to { deleting = file })) })
         } }
+        if (state.fileNextOffset != null) item { TextButton({ vm.moreFiles() }, enabled = !state.fileLoading) { Text("Load more files") } }
     }
     deleting?.let { file -> AlertDialog(onDismissRequest = { deleting = null }, title = { Text("Delete ${file.string("name") }?") }, text = { Text("Chats or tasks using this file may no longer open it.") },
-        confirmButton = { TextButton({ vm.change("/workspace/files/${file.string("id")}", "DELETE"); deleting = null }) { Text("Delete") } }, dismissButton = { TextButton({ deleting = null }) { Text("Cancel") } }) }
+        confirmButton = { TextButton({ vm.change("/workspace/files/${file.string("id")}", "DELETE"); deleting = null }, enabled = !vm.state.value.busy) { Text("Delete") } }, dismissButton = { TextButton({ deleting = null }) { Text("Cancel") } }) }
 }
 
 @Composable

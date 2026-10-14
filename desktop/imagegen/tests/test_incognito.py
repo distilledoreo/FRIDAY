@@ -31,6 +31,22 @@ class IncognitoTests(unittest.IsolatedAsyncioTestCase):
         a=(await self.client.post('/workspace/incognito')).json()['id'];b=(await self.client.post('/workspace/incognito')).json()['id']
         fid=(await self.client.post(f'/workspace/incognito/{a}/files',content=b'a')).json()['id']
         self.assertEqual((await self.client.get(f'/workspace/incognito/{b}/files/{fid}')).status_code,404)
+    async def test_library_queries_page_only_the_current_ram_session(self):
+        a=(await self.client.post('/workspace/incognito')).json()['id'];b=(await self.client.post('/workspace/incognito')).json()['id']
+        for ident in (a,b):
+            for name in ('Beta.txt','Alpha.txt','Image.png'):
+                self.sessions.put_file(self.sessions.get(ident),b'fixture',name,'image/png' if name.endswith('.png') else 'text/plain')
+        self.normal.put_file(b'normal','Alpha-normal.txt','text/plain')
+        path=f'/workspace/incognito/{a}/files'
+        legacy=(await self.client.get(path)).json();self.assertIsInstance(legacy,list);self.assertEqual(len(legacy),3)
+        first=(await self.client.get(path,params={'paged':'true','kind':'documents','sort':'name','limit':1})).json()
+        self.assertEqual(first['total'],2);self.assertEqual(first['files'][0]['name'],'Alpha.txt');self.assertEqual(first['next_offset'],1)
+        second=(await self.client.get(path,params={'paged':'true','kind':'documents','sort':'name','limit':1,'offset':1})).json()
+        self.assertEqual(second['files'][0]['name'],'Beta.txt');self.assertIsNone(second['next_offset'])
+        found=(await self.client.get(path,params={'paged':'true','q':'BETA'})).json();self.assertEqual(found['total'],1)
+        self.assertEqual((await self.client.get(path,params={'sort':'invalid'})).status_code,422)
+        self.assertEqual((await self.client.get(path,headers={'Authorization':'wrong'})).status_code,401)
+        await self.sessions.close(a);self.assertEqual((await self.client.get(path,params={'paged':'true'})).status_code,410)
     async def test_image_prompt_is_temporary_and_cleanup_restores_fake_chat(self):
         ident=(await self.client.post('/workspace/incognito')).json()['id'];session=self.sessions.get(ident)
         response=await self.client.post(f'/workspace/incognito/{ident}/images',json={'prompt':'private image prompt'});self.assertEqual(response.status_code,200)

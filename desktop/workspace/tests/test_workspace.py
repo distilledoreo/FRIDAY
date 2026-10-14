@@ -113,6 +113,48 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             if job['status'] in {'completed', 'failed', 'paused'}: return job
             await asyncio.sleep(.1)
         self.fail('Job did not finish')
+    async def test_library_search_reaches_older_files_and_pages_complete_collection(self):
+        oldest = self.workspace.put_file(b'old', 'oldest-reference.txt', 'text/plain')
+        for i in range(205): self.workspace.put_file(b'x', f'file-{i:03d}.txt', 'text/plain')
+        legacy = (await self.client.get('/workspace/files')).json()
+        self.assertEqual(len(legacy), 200)
+        self.assertNotIn(oldest['id'], {row['id'] for row in legacy})
+        match = (await self.client.get('/workspace/files', params={'q': 'OLDEST', 'paged': 'true'})).json()
+        self.assertEqual(match['total'], 1)
+        self.assertEqual(match['files'][0]['id'], oldest['id'])
+        ids, offset = [], 0
+        while True:
+            page = (await self.client.get('/workspace/files', params={'paged': 'true', 'limit': 70, 'offset': offset, 'sort': 'name'})).json()
+            ids.extend(row['id'] for row in page['files'])
+            if page['next_offset'] is None: break
+            offset = page['next_offset']
+        self.assertEqual(len(ids), 206)
+        self.assertEqual(len(set(ids)), 206)
+
+    async def test_library_filter_sort_and_unicode_literal_search(self):
+        self.workspace.put_file(b'12345', 'Straße%_report.txt', 'text/plain')
+        image = self.workspace.put_file(b'x', 'image.png', 'image/png')
+        self.workspace.put_file(b'12', 'archive.zip', 'application/zip')
+        docs = (await self.client.get('/workspace/files', params={'kind': 'documents', 'q': 'STRASSE%_', 'paged': 'true'})).json()
+        self.assertEqual(docs['total'], 1)
+        self.assertEqual(docs['files'][0]['name'], 'Straße%_report.txt')
+        pictures = (await self.client.get('/workspace/files', params={'kind': 'images'})).json()
+        self.assertEqual([row['id'] for row in pictures], [image['id']])
+        others = (await self.client.get('/workspace/files', params={'kind': 'other'})).json()
+        self.assertEqual([row['name'] for row in others], ['archive.zip'])
+        sizes = (await self.client.get('/workspace/files', params={'sort': 'size'})).json()
+        self.assertEqual([row['size'] for row in sizes], [5, 2, 1])
+        empty = (await self.client.get('/workspace/files', params={'q': "' OR 1=1 --", 'paged': 'true'})).json()
+        self.assertEqual(empty['total'], 0)
+        self.assertIsNone(empty['next_offset'])
+
+    async def test_library_query_validation_and_auth(self):
+        for params in ({'sort': 'invalid'}, {'kind': 'invalid'}, {'offset': -1}, {'limit': 201}, {'q': 'x' * 501}):
+            response = await self.client.get('/workspace/files', params=params)
+            self.assertEqual(response.status_code, 422)
+        response = await self.client.get('/workspace/files', params={'paged': 'true'}, headers={'Authorization': ''})
+        self.assertEqual(response.status_code, 401)
+
     async def test_auth_required_for_workspace_and_downloads(self):
         r = await self.client.get('/workspace/items', headers={'Authorization': ''})
         self.assertEqual(r.status_code, 401)

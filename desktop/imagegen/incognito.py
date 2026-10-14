@@ -7,7 +7,8 @@ import shutil
 import tempfile
 import time
 import uuid
-from fastapi import APIRouter,HTTPException,Request
+from fastapi import APIRouter,HTTPException,Query,Request
+from typing import Literal
 from fastapi.responses import FileResponse
 from pydantic import BaseModel,Field
 from .manager import ImageManager
@@ -65,8 +66,11 @@ def enable(app,auth,workspace,images,image_request,ram_root=Path('/dev/shm')):
     @router.delete('/{ident}')
     async def close(ident:str):await sessions.close(ident);return {'deleted':True}
     @router.get('/{ident}/files')
-    def files(ident:str):
-        with sessions.get(ident).store.db() as db:return [dict(r) for r in db.execute('SELECT * FROM files ORDER BY created DESC')]
+    def files(ident:str, q:str=Query('',max_length=500),
+              kind:Literal['all','images','documents','audio','video','other']='all',
+              sort:Literal['recent','name','size']='recent',
+              limit:int=Query(200,ge=1,le=200), offset:int=Query(0,ge=0), paged:bool=False):
+        return sessions.get(ident).store.list_files(q,kind,sort,limit,offset,paged)
     @router.post('/{ident}/files')
     async def upload(ident:str,request:Request):
         session=sessions.get(ident);data=bytearray()
