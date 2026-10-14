@@ -65,4 +65,14 @@ class LibraryScreenTest {
         compose.onNodeWithText("document0.txt").performClick()
         compose.runOnIdle { assertEquals("0", opened); assertNull(vm.state.value.error) }
     }
+    @Test fun addToChatReusesTheChosenSavedFile() {
+        lateinit var vm: FeatureController
+        var reused: String? = null
+        val pc = Files()
+        compose.setContent { val scope = rememberCoroutineScope(); vm = androidx.compose.runtime.remember { FeatureController(pc, scope) }; MaterialTheme { LibraryScreen(vm, {}, reuse = { reused = it }) } }
+        compose.waitUntil(8000) { !vm.state.value.fileLoading && vm.state.value.files.size == 50 }
+        compose.onAllNodesWithContentDescription("More options")[0].performClick()
+        compose.onNodeWithText("Add to chat").performClick()
+        compose.runOnIdle { assertEquals(vm.state.value.files.first().string("id"), reused) }
+    }
 }

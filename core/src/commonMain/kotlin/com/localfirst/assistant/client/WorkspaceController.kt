@@ -137,6 +137,27 @@ class WorkspaceController(
         mutable.update { cleared(it).copy(activeId = null, projectId = null, incognito = true, freshSlate = freshSlate, draft = "") }
     }
     fun removeAttachment(id: String) { mutable.update { it.copy(attachments = it.attachments.filterNot { a -> a.id == id }) } }
+    /** An attachment built from a saved file's reference: no bytes are downloaded or uploaded. */
+    private fun referenceAttachment(info: JsonObject): Attachment {
+        val id = info.getValue("id").jsonPrimitive.content
+        val name = info["name"]?.jsonPrimitive?.contentOrNull ?: "file"
+        val mime = info["mime"]?.jsonPrimitive?.contentOrNull ?: "application/octet-stream"
+        val image = mime.startsWith("image/")
+        return Attachment(id, if (image) AttachmentKind.IMAGE else AttachmentKind.DOCUMENT, name, mime,
+            path = if (image) "remote:$id" else null,
+            text = info["text"]?.jsonPrimitive?.contentOrNull,
+            remoteFileId = id,
+            pageImages = (info["pageImageIds"] as? JsonArray)?.map { "remote:" + it.jsonPrimitive.content }.orEmpty(),
+            note = info["note"]?.jsonPrimitive?.contentOrNull
+                ?: if (!image && info["text"] == null) "Use the file tool to inspect this document." else null)
+    }
+    /** Attaches a saved Library file to the draft by reference; the server reads its own stored bytes. */
+    fun reuseFile(fileId: String) = action { identity ->
+        require(Regex("[a-f0-9]{32}").matches(fileId)) { "Unknown file." }
+        require(state.value.attachments.size < 8) { "Attach at most eight files." }
+        val info = repository.gateway.request("/workspace/files/$fileId/reference").jsonObject
+        if (identity == epoch) mutable.update { it.copy(attachments = it.attachments + referenceAttachment(info)) }
+    }
     fun upload(name: String, mime: String, bytes: ByteArray, attachToDraft: Boolean = true) = action { identity ->
         require(bytes.size <= 25 * 1024 * 1024) { "File exceeds 25 MB." }
         require(state.value.attachments.size < 8) { "Attach at most eight files." }

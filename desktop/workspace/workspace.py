@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 from .chat_tools import ChatTools, ToolError, sources as tool_sources
 from . import private_leak
+from .document import extract_document
 
 MAX_FILE = 25 * 1024 * 1024
 MAX_TOTAL = 500 * 1024 * 1024
@@ -299,6 +300,38 @@ class Workspace:
         if row is None or not (self.files / row['id']).is_file():
             raise HTTPException(404, 'File not found')
         return dict(row)
+
+    def reference(self, file_id):
+        """Attachment metadata for a saved file without moving its bytes: the same text,
+        page images and notes that uploading it again would produce."""
+        if not _is_uuid(file_id):
+            raise HTTPException(404, 'File not found')
+        info = self.file(file_id)
+        result = {'id': info['id'], 'name': info['name'], 'mime': info['mime'], 'size': info['size'],
+                  'url': f'assistant://artifact/{info["id"]}'}
+        if info['mime'].startswith('image/'):
+            if info['size'] > 3 * 1024 * 1024:
+                result['note'] = 'Image exceeds 3 MB and cannot be shown to the model; attach a smaller image or use the file tool.'
+            return result
+        try:
+            extracted = extract_document((self.files / info['id']).read_bytes(), info['name'], info['mime'])
+        except HTTPException:
+            result['note'] = 'Use the file tool to inspect this document.'
+            return result
+        except Exception:
+            result['note'] = 'Use the file tool to inspect this document.'
+            return result
+        result['text'] = extracted.get('text', '')
+        if extracted.get('truncated'):
+            result['note'] = 'Text cut at 60,000 characters.'
+        pages = []
+        for index, page in enumerate(extracted.get('images') or []):
+            pages.append(self.put_file(base64.b64decode(page), f"{info['name']}-page-{index + 1}.jpg", 'image/jpeg')['id'])
+        if pages:
+            result['pageImageIds'] = pages
+            if extracted.get('note'):
+                result['note'] = extracted['note']
+        return result
 
     def sandbox_status(self):
         if time.monotonic() - self._sandbox_check[0] < 15:
@@ -609,6 +642,10 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                     sort: Literal['recent', 'name', 'size'] = 'recent',
                     limit: int = Query(200, ge=1, le=200), offset: int = Query(0, ge=0), paged: bool = False):
         return workspace.list_files(q, kind, sort, limit, offset, paged)
+
+    @router.get('/files/{file_id}/reference')
+    async def reference_file(file_id: str):
+        return await asyncio.to_thread(workspace.reference, file_id)
 
     @router.get('/files/{file_id}')
     async def download(file_id: str):

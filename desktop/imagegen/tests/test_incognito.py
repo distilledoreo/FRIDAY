@@ -47,6 +47,15 @@ class IncognitoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get(path,params={'sort':'invalid'})).status_code,422)
         self.assertEqual((await self.client.get(path,headers={'Authorization':'wrong'})).status_code,401)
         await self.sessions.close(a);self.assertEqual((await self.client.get(path,params={'paged':'true'})).status_code,410)
+    async def test_reference_resolves_only_the_current_ram_session(self):
+        a=(await self.client.post('/workspace/incognito')).json()['id'];b=(await self.client.post('/workspace/incognito')).json()['id']
+        fid=self.sessions.put_file(self.sessions.get(a),b'private notes','note.txt','text/plain')['id']
+        ref=(await self.client.get(f'/workspace/incognito/{a}/files/{fid}/reference')).json()
+        self.assertEqual(ref['text'],'private notes');self.assertEqual(ref['id'],fid)
+        self.assertEqual((await self.client.get(f'/workspace/incognito/{b}/files/{fid}/reference')).status_code,404)
+        self.assertEqual((await self.client.get(f'/workspace/incognito/{a}/files/{"0"*32}/reference')).status_code,404)
+        await self.sessions.close(a)
+        self.assertEqual((await self.client.get(f'/workspace/incognito/{a}/files/{fid}/reference')).status_code,410)
     async def test_image_prompt_is_temporary_and_cleanup_restores_fake_chat(self):
         ident=(await self.client.post('/workspace/incognito')).json()['id'];session=self.sessions.get(ident)
         response=await self.client.post(f'/workspace/incognito/{ident}/images',json={'prompt':'private image prompt'});self.assertEqual(response.status_code,200)

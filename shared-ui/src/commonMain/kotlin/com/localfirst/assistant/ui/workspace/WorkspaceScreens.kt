@@ -173,7 +173,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
                             onBackup = { vm.exportBackup() }, onRestore = { onRestoreBackup?.invoke() }, onImportChatGpt = { page = Page.IMPORT })
                         Page.TASKS -> TasksScreen(vm, state)
                         Page.SETTINGS -> SettingsScreen(vm, state, settingsExtras)
-                        Page.FILES -> features?.let { LibraryScreen(it, { vm.artifact(it) }, onLibraryUpload) }
+                        Page.FILES -> features?.let { LibraryScreen(it, { vm.artifact(it) }, onLibraryUpload, { id -> vm.reuseFile(id) }) }
                         Page.IMAGES -> features?.let { ImagesScreen(it) { vm.artifact(it) } }
                         Page.ACTIVITY -> features?.let { ActivityScreen(it, fridayTask, fridaySession) { report -> vm.newChat(); vm.setDraft("Discuss this report:\n$report"); page = Page.CHAT } }
                         Page.ACCOUNTS -> features?.let { AccountsScreen(it) }

@@ -40,7 +40,9 @@ private fun ServiceScreen(title: String, vm: FeatureController, initialTask: Str
 }
 
 @Composable
-fun LibraryScreen(vm: FeatureController, open: (String) -> Unit, attach: (() -> Unit)? = null) {
+fun LibraryScreen(vm: FeatureController, open: (String) -> Unit, attach: (() -> Unit)? = null, reuse: ((String) -> Unit)? = null) {
+    // Library shows the persistent collection in ordinary chats; hosts leave incognito before opening it,
+    // so reuse always references a saved file into an ordinary draft and never crosses the private boundary.
     var deleting by remember { mutableStateOf<JsonObject?>(null) }
     ServiceScreen("Library", vm) { state ->
         item(key = "library-controls") { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -64,7 +66,10 @@ fun LibraryScreen(vm: FeatureController, open: (String) -> Unit, attach: (() -> 
         }
         items(state.files, key = { it.string("id") }) { file -> FridayCard(Modifier.fillMaxWidth()) {
             ListItem(headlineContent = { Text(file.string("name")) }, supportingContent = { Text("${file.string("size")} bytes · ${file.string("mime")}") },
-                modifier = Modifier.clickable { open(file.string("id")) }, trailingContent = { MoreActions(listOf("Delete" to { deleting = file })) })
+                modifier = Modifier.clickable { open(file.string("id")) }, trailingContent = { MoreActions(buildList {
+                    if (reuse != null) add("Add to chat" to { reuse(file.string("id")) })
+                    add("Delete" to { deleting = file })
+                }) })
         } }
         if (state.fileNextOffset != null) item { TextButton({ vm.moreFiles() }, enabled = !state.fileLoading) { Text("Load more files") } }
     }

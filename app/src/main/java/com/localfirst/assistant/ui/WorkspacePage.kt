@@ -165,7 +165,7 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                             }
                         }
                         WorkspaceDestination.NEW_TASK -> TaskEditor(state.workspaceBusy, vm::scheduleTaskAt)
-                        WorkspaceDestination.FILES -> com.localfirst.assistant.ui.workspace.LibraryScreen(vm.features, { vm.openArtifact("assistant://artifact/$it") })
+                        WorkspaceDestination.FILES -> com.localfirst.assistant.ui.workspace.LibraryScreen(vm.features, { vm.openArtifact("assistant://artifact/$it") }, reuse = { vm.reuseWorkspaceFile(it) })
                         WorkspaceDestination.DATA -> ScreenList {
                             item { SettingsRow("Sync now", "Share chats, projects and memories with your computer", vm::syncChats) }
                             items(state.syncConflicts, key = { it.id }) { conflict -> SyncComparison(conflict, state.workspaceBusy, vm) }

@@ -2018,6 +2018,36 @@ class ChatViewModel(
         _state.update { it.copy(tasks = (0 until jobs.length()).map { i -> BackgroundTask.from(jobs.getJSONObject(i)) }) }
         "Task $action requested."
     }
+    /** Attaches a saved Library file to the draft by reference; no bytes are downloaded or uploaded. */
+    private suspend fun reuseSavedFile(id: String): String {
+        require(Regex("[a-f0-9]{32}").matches(id)) { "Unknown file." }
+        val current = _state.value
+        require(current.draftAttachments.size < MAX_ATTACHMENTS) { "You can attach up to $MAX_ATTACHMENTS files per message." }
+        val info = JSONObject((workspace ?: error("Workspace unavailable.")).request("/workspace/files/$id/reference"))
+        val fileId = info.getString("id")
+        val name = info.optString("name", "file")
+        val mime = info.optString("mime", "application/octet-stream")
+        val image = mime.startsWith("image/")
+        val attachment = Attachment(
+            id = fileId,
+            kind = if (image) AttachmentKind.IMAGE else AttachmentKind.DOCUMENT,
+            name = name,
+            mimeType = mime,
+            path = if (image) "remote:$fileId" else null,
+            text = info.optString("text", null),
+            pageImages = buildList {
+                val pages = info.optJSONArray("pageImageIds")
+                for (i in 0 until (pages?.length() ?: 0)) add("remote:" + pages.getString(i))
+            },
+            note = info.optString("note", null)
+                ?: if (!image && !info.has("text")) "Use the file tool to inspect this document." else null,
+            remoteFileId = fileId,
+        )
+        _state.update {
+            it.copy(draftAttachments = it.draftAttachments + DraftAttachment(UUID.randomUUID().toString(), name, attachment.kind, DraftStatus.READY, attachment))
+        }
+        return "Added $name to this chat."
+    }
     fun deleteWorkspaceFile(id: String) = workspaceAction {
         workspace?.request("/workspace/files/$id", "DELETE") ?: error("Workspace unavailable.")
         _state.update { it.copy(workspaceFiles = it.workspaceFiles.filterNot { f -> f.id == id }) }
@@ -2039,6 +2069,7 @@ class ChatViewModel(
     }
     fun installUpdate() = workspaceAction { workspace?.installUpdate() ?: error("Workspace unavailable.") }
     fun openArtifact(uri: String) = workspaceAction { workspace?.openArtifact(uri); "File downloaded." }
+    fun reuseWorkspaceFile(id: String) = workspaceAction { reuseSavedFile(id) }
 
     // ---- settings ------------------------------------------------------------
 

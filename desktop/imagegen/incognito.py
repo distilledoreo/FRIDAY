@@ -82,6 +82,10 @@ def enable(app,auth,workspace,images,image_request,ram_root=Path('/dev/shm')):
     def download(ident:str,file_id:str):
         session=sessions.get(ident);info=session.store.file(file_id)
         return FileResponse(session.store.files/info['id'],media_type=info['mime'],filename=info['name'])
+    @router.get('/{ident}/files/{file_id}/reference')
+    async def reference(ident:str,file_id:str):
+        store=sessions.get(ident).store
+        return await asyncio.to_thread(store.reference,file_id)
     @router.post('/{ident}/create-file')
     def text_file(ident:str,body:TextFile):
         if Path(body.name).suffix.lower() not in {'.txt','.md','.csv','.tsv','.json','.svg','.html'}:raise HTTPException(400,'Unsupported text file format')
