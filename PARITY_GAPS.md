@@ -13,7 +13,7 @@ A Python tool capable of creating a file is not evidence of a finished document 
 
 FRIDAY source baseline: `1a0259e` (main, Android 0.25.2); the Android Auto experiments
 through 0.25.4 are tracked separately in [PR #17](https://github.com/distilledoreo/FRIDAY/pull/17).
-This documentation branch does not contain those unmerged Android Auto changes.
+This branch does not contain those unmerged Android Auto changes.
 
 | ID | Previously raised area | User decision / current standing |
 | --- | --- | --- |
@@ -67,10 +67,10 @@ behavior is a usability benchmark rather than an asserted ChatGPT feature.
 
 | ID / priority / scope | Gap and concrete completion check | Evidence |
 | --- | --- | --- |
-| UX001 · P1 · Web | **Streaming takes over scroll position.** The chat animates to the bottom as the transcript grows, without checking whether the user is reading above. Complete when scrolling upward suspends following, a jump-to-latest control appears, and returning to the bottom resumes following. Validate Android independently. | [S3] `ChatPage` scroll effect |
+| UX001 · P1 · Web | **Streaming takes over scroll position.** The chat animates to the bottom as the transcript grows, without checking whether the user is reading above. Complete when scrolling upward suspends following, a jump-to-latest control appears, and returning to the bottom resumes following. Validate Android independently. | [S3] `ChatScreen` scroll effect |
 | UX002 · P1 · Shared/Web | **No explicit desktop send-key workflow.** The shared composer has a multiline TextField and clickable Send, but no app-specific Enter/Shift+Enter or configurable send shortcut. Complete when keyboard sending, multiline entry and IME composition have an explicit tested contract; do not break mobile keyboards. | [S1]; scoped search found no key handlers in shared UI/browser host |
-| UX003 · P1 · Web | **Draft context is not scoped to each chat.** Switching chats preserves the single draft string while clearing attachments; New chat clears the draft. Complete when switching A → B → A restores each unsent draft and its attachments, or explicitly asks before discarding. Session-memory retention is sufficient; offline persistence is not required. | [S2] `select`, `cleared`, `newChat` |
-| UX004 · P1 · Web | **Editing overwrites an unsent draft.** Start editing replaces the draft and clears pending attachments; Cancel editing sets the draft to empty. Complete when cancel restores the pre-edit draft/attachments and saving an edit explains its effect on later messages. | [S2] `startEditing`, `cancelEditing` |
+| UX003 · P1 · Android/Web | **Draft context is not scoped to each chat.** Browser switching previously preserved one draft string while clearing attachments; New chat cleared the draft. Android switching clears the composer and deletes its imported draft attachments. Complete when switching A → B → A restores each unsent draft and its attachments, or explicitly asks before discarding. Session-memory retention is sufficient; offline persistence is not required. | [S2] `select`, `cleared`, `newChat`; [S13] `switchTo`, `resetToNewChat` |
+| UX004 · P1 · Android/Web | **Editing overwrites an unsent draft.** Both hosts replace the unsent draft on Start editing and clear it on Cancel; Android additionally cleans up imported draft attachments. Complete when cancel restores the pre-edit draft/attachments and saving an edit explains its effect on later messages. | [S2], [S13] `startEditing`, `cancelEditing` |
 | UX005 · P1 · Web | **Files enter through the picker only.** No explicit drag/drop or clipboard-image attachment handler was found in the scoped browser/shared source. Complete when dropping multiple files and pasting a screenshot use the same validation/status path as the picker. | [S7] `pickBrowserFiles`; scoped DOM/clipboard handler search |
 | UX006 · P1 · Web | **Uploads have no per-file progress/cancel/retry workflow.** Files are processed sequentially with global busy/error state, and the batch stops at a failure. Complete when each file has queued/uploading/extracting/ready/failed state, actionable limits and retry/cancel without reselecting successful files. Android already has per-attachment status; reuse the portable contract. | [S7], [S2] `upload`; [S13] `DraftAttachment` handling |
 | UX007 · P2 · Shared | **Only the latest answer exposes Canvas, Share and feedback controls.** Older answers can be copied, but these actions disappear once another answer exists. Complete when applicable actions remain available on earlier completed answers and operate on the selected answer. | [S5] `AssistantMessage`, `item.isLatest` guards |
@@ -84,7 +84,7 @@ behavior is a usability benchmark rather than an asserted ChatGPT feature.
 
 | ID / priority / scope | Gap and concrete completion check | Evidence |
 | --- | --- | --- |
-| UX013 · P1 · Shared | **Library has no search, type filters or user-controlled sort.** The screen is a flat list with upload, open and delete. Complete when filename search, file-type filtering and useful sort orders work with clear empty-result states. | [S8] `LibraryScreen`; ChatGPT web search/filters directly observed; [O3] documents search |
+| UX013 · P1 · Shared | **Library has no search, type filters or user-controlled sort.** The screen is a flat list with upload, open and delete; the server returns only the latest 200 files. Search must cover the complete collection, not silently filter that limited subset. Complete when filename search, file-type filtering and useful sort orders work with clear empty-result states. | [S8] `LibraryScreen`, [S14] `/files`; ChatGPT web search/filters directly observed; [O3] documents search |
 | UX014 · P1 · Shared | **No Library-to-composer reuse action.** Existing image references can be selected in image settings, but Library does not offer Add to chat. Complete when a saved file can be attached without downloading/reuploading, with private-chat handling made explicit. | [S8] `LibraryScreen`; [S2] upload/remove attachment paths; documented [O3] |
 | UX015 · P2 · Shared | **No Library folders/favorites or multi-selection.** Library rows support individual open/delete only. Complete when users can organize growing collections and perform appropriate bulk actions with confirmation. Folders/favorites/grid/list selection were observed in ChatGPT web; these are optional organization choices, not prerequisites for file upload. | [S8]; current web UI observation |
 | UX016 · P1 · Web/Shared | **No dedicated generated-document review surface.** Browser artifact opening downloads bytes; shared Library does not render document pages, spreadsheet cells or slides. Complete when supported documents can be inspected before download and feedback identifies a page/slide/range. Android's external file opening remains useful but does not establish in-app review parity. | [S2] `artifact`; [S8]; Work previews documented [O2] |
@@ -159,6 +159,14 @@ They address reading, preserving unsent work, recovering attachments and reusing
 F002/F003 then build on the artifact review/editor work; F004 needs provider/device verification.
 The active goal now authorizes implementation of in-scope entries; their acceptance checks govern closure.
 
+## Implementation progress
+
+| Entry | State | Evidence / remaining work |
+| --- | --- | --- |
+| UX001 | Implemented; automated checks passed; browser smoke pending | Shared [reading-position controller][S15] and Jump to latest are wired into the browser chat. The [Compose interaction regression][S16] passes for scrolling upward, new messages, jumping, continued following and chat change. Both client builds pass. Actual browser wheel/keyboard behavior remains to be checked before closure. Android's existing reverse-layout chat is a separate validation path. |
+| UX003 | Browser implemented; Android remains open | Browser controller keeps per-chat/project session drafts and attachment references, clears caches on Lock, and never caches private drafts. Twenty chat-action regressions pass on JVM and JavaScript, including switches, attachment restoration, project-scoped new chats, project reassignment, accepted sends, private exit and Lock. No offline persistence was introduced. Android needs the same behavior with safe imported-file ownership. |
+| UX004 | Browser implemented; Android remains open | Browser preserves/restores pre-edit text and attachments on cancel and after an accepted edit, and retains edits on failed sends. JVM/JavaScript regressions verify these paths. Inspection found equivalent loss in Android's own view model; its imported-file lifecycle needs a matching fix before this entry can close. |
+
 ## Maintaining the running list
 
 Keep stable IDs. Add a dated audit note when evidence, platform scope or priority changes;
@@ -168,6 +176,7 @@ Android, browser, service and manual verification separately. Move candidates to
 only after source evidence or a reproducible observation; close with the acceptance check.
 No recurring automation or notification schedule is implied by this register.
 
+- **2026-10-13:** First implementation batch added browser draft/edit recovery and a shared scroll-follow controller. Full initial JVM/JS/Android test and build checks passed; final chat-action regressions (20 on each runtime), scroll interaction regression, Android APK build and production browser staging passed. UX003/UX004 scope expanded to Android after verifying its destructive draft cleanup. UX013 now explicitly requires full-collection server search beyond the latest 200 files. The goal remains active; these entries are not closed while platform-specific acceptance checks remain.
 - **2026-10-13:** User activated the implementation goal for interface/app/harness parity, explicitly excluding model intelligence/capability. Earlier deferred and accepted items remain outside the goal.
 - **2026-10-13:** Created the register. Recorded six user scope decisions, 24 source-backed
   UX gaps and 12 validation journeys. ChatGPT web inspection confirmed sidebar pin controls
@@ -204,10 +213,15 @@ No recurring automation or notification schedule is implied by this register.
 [S10]: shared-ui/src/commonMain/kotlin/com/localfirst/assistant/ui/workspace/ModelConnectionFields.kt
 [S12]: desktop/workspace/chat_tools.py
 [S13]: app/src/main/java/com/localfirst/assistant/ui/ChatViewModel.kt
+[S14]: desktop/workspace/workspace.py
+[S15]: shared-ui/src/commonMain/kotlin/com/localfirst/assistant/ui/TranscriptScroll.kt
+[S16]: app/src/test/java/com/localfirst/assistant/ui/TranscriptScrollTest.kt
 
 - [S1 — Shared composer][S1], [S2 — Browser/common workspace controller][S2].
 - [S3 — Workspace, chat, task and project screens][S3], [S4 — Canvas][S4], [S5 — Message actions][S5].
 - [S6 — Shared sidebar][S6], [S7 — Browser file/audio adapters][S7].
 - [S8 — Library, Images, Accounts and Activity screens][S8], [S9 — Task schedule editor][S9].
 - [S10 — Connection fields][S10], [S12 — Chat tool capabilities and outgoing-action gates][S12].
-- [S13 — Android attachment, edit and Canvas orchestration][S13].
+- [S13 — Android attachment, edit and Canvas orchestration][S13], [S14 — File API and collection limit][S14].
+
+- [S15 — Shared reading-position controller][S15], [S16 — Scroll interaction regression][S16].

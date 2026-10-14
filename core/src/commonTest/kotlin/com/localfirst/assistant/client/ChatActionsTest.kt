@@ -17,6 +17,72 @@ class ChatActionsTest {
     private fun TestScope.connected(pc: Pc, ids: () -> String = { "new" }, saved: MutableList<Triple<String, String, ByteArray>> = mutableListOf()) =
         WorkspaceController(WorkspaceRepository(pc), this, ids, { 5 }, save = { n, m, b -> saved += Triple(n, m, b) })
 
+    @Test fun switchingChatsRestoresEachDraftAndItsAttachments() = runTest {
+        val pc = Pc().apply { chat("a"); chat("b", "Other") }; val vm = connected(pc)
+        vm.connect("", "token")!!.join(); vm.select("a")
+        vm.setDraft("Draft A"); vm.upload("a.txt", "text/plain", "A".encodeToByteArray())!!.join()
+        val attachments = vm.state.value.attachments
+        vm.select("b"); assertEquals("", vm.state.value.draft); assertTrue(vm.state.value.attachments.isEmpty())
+        vm.setDraft("Draft B"); vm.selectProject("changed-project"); vm.select("a")
+        assertEquals("Draft A", vm.state.value.draft); assertEquals(attachments, vm.state.value.attachments)
+        vm.select("b"); assertEquals("Draft B", vm.state.value.draft)
+        vm.newChat(); vm.setDraft("Unsent new chat"); vm.select("a"); vm.newChat()
+        assertEquals("Unsent new chat", vm.state.value.draft)
+    }
+
+    @Test fun cancellingOrSendingAnEditRestoresTheOriginalComposer() = runTest {
+        val pc = Pc().apply { chat(messages = conversation) }; val vm = connected(pc)
+        vm.connect("", "token")!!.join(); vm.select("a")
+        vm.setDraft("Next question"); vm.upload("next.txt", "text/plain", "Next".encodeToByteArray())!!.join()
+        val attachments = vm.state.value.attachments
+        vm.startEditing(0); vm.setDraft("Changed first question"); vm.cancelEditing()
+        assertEquals("Next question", vm.state.value.draft); assertEquals(attachments, vm.state.value.attachments)
+        vm.startEditing(2); vm.setDraft("Changed second question"); vm.send()!!.join()
+        assertEquals("Next question", vm.state.value.draft); assertEquals(attachments, vm.state.value.attachments)
+        assertEquals("Changed second question", (chatOf(pc).messages.last() as Message.User).content)
+        assertNull(vm.state.value.editingIndex)
+    }
+
+    @Test fun unfinishedEditsStayWithTheirChatAndPrivateDraftsDoNot() = runTest {
+        val pc = Pc().apply { chat("a", messages = conversation); chat("b") }; val vm = connected(pc)
+        vm.connect("", "token")!!.join(); vm.select("a"); vm.setDraft("Original draft")
+        vm.startEditing(2); vm.setDraft("Unsent edit"); vm.select("b"); vm.select("a")
+        assertEquals("Unsent edit", vm.state.value.draft); assertEquals(2, vm.state.value.editingIndex)
+        vm.cancelEditing(); assertEquals("Original draft", vm.state.value.draft)
+        vm.newIncognito(); assertEquals("", vm.state.value.draft)
+        vm.setDraft("Private draft"); vm.select("a"); assertEquals("Original draft", vm.state.value.draft)
+        vm.newIncognito(); assertEquals("", vm.state.value.draft)
+        vm.newChat(); vm.setDraft("Ordinary draft"); vm.lock(); vm.connect("", "token")!!.join(); vm.newChat()
+        assertEquals("", vm.state.value.draft)
+    }
+
+    @Test fun failedEditsKeepTheirTextAndCanRecoverTheOriginalDraft() = runTest {
+        val pc = Pc().apply { chat(messages = conversation) }; val vm = connected(pc)
+        vm.connect("", "token")!!.join(); vm.select("a"); vm.setDraft("Original unsent question")
+        vm.startEditing(2); vm.setDraft("Attempted edit")
+        pc.routes["POST /workspace/items/a/continue"] = { error("Revision conflict") }
+        vm.send()!!.join()
+        assertEquals("Attempted edit", vm.state.value.draft); assertEquals(2, vm.state.value.editingIndex)
+        assertEquals("Revision conflict", vm.state.value.error)
+        vm.cancelEditing(); assertEquals("Original unsent question", vm.state.value.draft)
+    }
+
+    @Test fun newChatDraftsStayScopedToTheirProject() = runTest {
+        val pc = Pc(); val vm = connected(pc)
+        vm.connect("", "token")!!.join()
+        vm.newChat("p1"); vm.setDraft("Project one")
+        vm.newChat("p2"); assertEquals("", vm.state.value.draft); vm.setDraft("Project two")
+        vm.newChat("p1"); assertEquals("Project one", vm.state.value.draft)
+        vm.newChat("p2"); assertEquals("Project two", vm.state.value.draft)
+    }
+
+    @Test fun acceptedSendDoesNotLeaveAStaleDraftInTheCache() = runTest {
+        val pc = Pc().apply { chat("a"); chat("b") }; val vm = connected(pc)
+        vm.connect("", "token")!!.join(); vm.select("a"); vm.setDraft("Send this")
+        vm.select("b"); vm.select("a"); vm.send()!!.join(); vm.select("b"); vm.select("a")
+        assertEquals("", vm.state.value.draft); assertTrue(vm.state.value.attachments.isEmpty())
+    }
+
     @Test fun editsKeepAttachmentsRegenerateDropsAnswersAndBranchesEndAtAUserMessage() {
         val edited = ChatEdits.edit(conversation, 0, "  Changed  ")!!
         assertEquals(listOf(Message.User("Changed", (conversation[0] as Message.User).attachments)), edited)

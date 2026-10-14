@@ -87,6 +87,27 @@ class WorkspaceController(
     private var memoryStale = false
     private var memoryQuery = ""
     private var groundingAttempted = false
+    private data class ComposerDraft(val text: String = "", val attachments: List<Attachment> = emptyList(), val imageMode: Boolean = false)
+    private data class SavedDraft(val composer: ComposerDraft, val editingIndex: Int?, val beforeEdit: ComposerDraft?)
+    private val drafts = mutableMapOf<Pair<String?, String?>, SavedDraft>()
+    private var beforeEdit: ComposerDraft? = null
+    private fun draftKey(id: String?, project: String?) = id to project.takeIf { id == null }
+    private fun composer(s: WorkspaceState) = ComposerDraft(s.draft, s.attachments, s.imageMode)
+    private fun rememberDraft() {
+        val s = state.value
+        if (!s.incognito) drafts[draftKey(s.activeId, s.projectId)] = SavedDraft(composer(s), s.editingIndex, beforeEdit)
+    }
+    private fun openDraft(id: String?, project: String?) {
+        val saved = drafts[draftKey(id, project)]
+        beforeEdit = saved?.beforeEdit
+        mutable.update { cleared(it).copy(activeId = id, projectId = project,
+            draft = saved?.composer?.text.orEmpty(), attachments = saved?.composer?.attachments.orEmpty(),
+            imageMode = saved?.composer?.imageMode ?: false, editingIndex = saved?.editingIndex) }
+    }
+    private fun sentDraft(old: WorkspaceState) {
+        if (!old.incognito) drafts.remove(draftKey(old.activeId, old.projectId))
+        beforeEdit = null
+    }
     override fun setDraft(text: String) { mutable.update { it.copy(draft = text) } }
     fun search(text: String) { mutable.update { it.copy(query = text) } }
     fun selectProject(id: String?) { mutable.update { it.copy(projectId = id) } }
@@ -110,9 +131,9 @@ class WorkspaceController(
     private fun cleared(s: WorkspaceState) = s.copy(error = null, detachedReply = null, incognito = false, privateChat = null, attachments = emptyList(), streamingText = "",
         activeJob = null, liveEntries = emptyList(), approval = null, editingIndex = null, canvas = null, imageMode = false,
         groundingStatus = null, groundingSources = emptyList(), groundingResearch = null, privateSession = null)
-    override fun newChat(project: String?) { if (canLeave()) { detach(); mutable.update { cleared(it).copy(activeId = null, draft = "", projectId = project) } } }
+    override fun newChat(project: String?) { if (canLeave()) { rememberDraft(); detach(); openDraft(null, project) } }
     /** A private chat; [freshSlate] leaves saved memories out too. */
-    fun newIncognito(freshSlate: Boolean = false) { if (!canLeave()) return; newChat(); repository.gateway.privateMode(true); mutable.update { it.copy(incognito = true, freshSlate = freshSlate) } }
+    fun newIncognito(freshSlate: Boolean = false) { if (!canLeave()) return; newChat(); beforeEdit = null; repository.gateway.privateMode(true); mutable.update { it.copy(incognito = true, freshSlate = freshSlate, draft = "", attachments = emptyList(), editingIndex = null, imageMode = false) } }
     fun removeAttachment(id: String) { mutable.update { it.copy(attachments = it.attachments.filterNot { a -> a.id == id }) } }
     fun upload(name: String, mime: String, bytes: ByteArray, attachToDraft: Boolean = true) = action { identity ->
         require(bytes.size <= 25 * 1024 * 1024) { "File exceeds 25 MB." }
@@ -139,13 +160,15 @@ class WorkspaceController(
     }
     fun reportError(message: String) { mutable.update { it.copy(error = message) } }
     override fun select(id: String) {
-        if (!canLeave()) return
+        if (!canLeave() || (!state.value.incognito && state.value.activeId == id)) return
         val chat = state.value.chats.firstOrNull { it.item.id == id } ?: return
+        rememberDraft()
         detach()
-        mutable.update { cleared(it).copy(activeId = id, projectId = chat.conversation.summary.projectId) }
+        openDraft(id, chat.conversation.summary.projectId)
         adopt(epoch)
     }
     fun lock() {
+        drafts.clear(); beforeEdit = null
         state.value.connection?.let(repository.gateway::closeModelConnection)
         epoch++; memoryQuery = ""; memoryStale = false; operation?.cancel(); generation?.cancel(); watching?.cancel(); repository.gateway.lock(); repository.forget(); mutable.value = WorkspaceState()
     }
@@ -294,17 +317,26 @@ class WorkspaceController(
     fun startEditing(index: Int) {
         val message = state.value.active?.conversation?.messages?.getOrNull(index) as? Message.User ?: return
         if (!state.value.idle) return
-        // The edited message keeps its own attachments; new ones are not added to it.
+        // Preserve unsent work while editing; the edited message keeps its own attachments.
+        if (state.value.editingIndex == null) beforeEdit = composer(state.value)
         mutable.update { it.copy(editingIndex = index, draft = message.content, attachments = emptyList()) }
     }
-    fun cancelEditing() { mutable.update { it.copy(editingIndex = null, draft = "") } }
+    fun cancelEditing() {
+        val previous = beforeEdit ?: ComposerDraft()
+        beforeEdit = null
+        mutable.update { it.copy(editingIndex = null, draft = previous.text, attachments = previous.attachments, imageMode = previous.imageMode) }
+    }
     private fun submit(messages: List<Message>, fromComposer: Boolean) = action { identity ->
         val old = state.value; val now = clock(); val active = old.active
         val first = (messages.firstOrNull() as? Message.User)?.content.orEmpty()
         val conversation = active?.conversation ?: StoredConversation(ConversationSummary(newId(), first.trim().take(70), now, now, old.projectId), emptyList())
         val next = conversation.copy(summary = conversation.summary.copy(updatedAt = now, projectId = old.projectId), messages = messages)
-        fun sent(s: WorkspaceState) = if (fromComposer) s.copy(draft = "", attachments = emptyList(), editingIndex = null, imageMode = false) else s
-        if (old.incognito) mutable.update { sent(it).copy(privateChat = next, activeId = next.summary.id, activeJob = "private", streamingText = "", liveEntries = emptyList()) }
+        val previous = if (old.editingIndex != null) beforeEdit else null
+        fun sent(s: WorkspaceState) = if (fromComposer) s.copy(draft = previous?.text.orEmpty(), attachments = previous?.attachments.orEmpty(), editingIndex = null, imageMode = previous?.imageMode ?: false) else s
+        if (old.incognito) {
+            mutable.update { sent(it).copy(privateChat = next, activeId = next.summary.id, activeJob = "private", streamingText = "", liveEntries = emptyList()) }
+            if (fromComposer) sentDraft(old)
+        }
         val turn = prepareTurn(messages, old)
         if (old.incognito) {
             try {
@@ -339,6 +371,7 @@ class WorkspaceController(
                 recall.isEmpty() -> "No relevant memories needed."
                 else -> "${recall.size} relevant memory sources supplied."
             }) }
+        if (fromComposer) sentDraft(old)
         follow(job.text("id"), identity)
     }
     /**
@@ -413,7 +446,7 @@ class WorkspaceController(
             val now = clock(); val id = newId()
             repository.save(StoredConversation(ConversationSummary(id, ChatEdits.branchTitle(chat.summary.title), now, now, chat.summary.projectId), prefix), 0)
             refreshSnapshot(identity)
-            if (identity == epoch) { detach(); mutable.update { cleared(it).copy(activeId = id, projectId = chat.summary.projectId) } }
+            if (identity == epoch) { rememberDraft(); detach(); openDraft(id, chat.summary.projectId) }
         }
     }
     fun openCanvas(text: String) {
@@ -553,7 +586,7 @@ class WorkspaceController(
     }
     fun delete(id: String? = state.value.activeId) = action { identity ->
         val chat = state.value.chats.firstOrNull { it.item.id == id } ?: return@action
-        repository.delete(chat); refreshSnapshot(identity)
+        repository.delete(chat); drafts.remove(draftKey(id, chat.conversation.summary.projectId)); refreshSnapshot(identity)
     }
     fun preference(key: String, value: JsonPrimitive, expectedRevision: Int? = null) = action { identity -> repository.preference(key, value, state.value.items, expectedRevision); refreshSnapshot(identity) }
     override fun saveMemory(text: String, id: String?, category: String, memoryScope: String, pinned: Boolean) = action { identity ->
