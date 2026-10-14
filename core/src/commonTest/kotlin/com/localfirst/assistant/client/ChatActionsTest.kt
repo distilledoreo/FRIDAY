@@ -76,6 +76,16 @@ class ChatActionsTest {
         vm.newChat("p2"); assertEquals("Project two", vm.state.value.draft)
     }
 
+    @Test fun privateChatsDoNotConsumeAnUnsentNormalNewChat() = runTest {
+        val pc = Pc(); val vm = connected(pc)
+        vm.connect("", "token")!!.join(); vm.newChat(); vm.setDraft("Normal pending draft")
+        vm.upload("normal.txt", "text/plain", "Normal".encodeToByteArray())!!.join()
+        val files = vm.state.value.attachments
+        vm.newIncognito(); assertEquals("", vm.state.value.draft); assertTrue(vm.state.value.attachments.isEmpty())
+        vm.setDraft("Private draft"); vm.newIncognito(); assertEquals("", vm.state.value.draft)
+        vm.newChat(); assertEquals("Normal pending draft", vm.state.value.draft); assertEquals(files, vm.state.value.attachments)
+    }
+
     @Test fun acceptedSendDoesNotLeaveAStaleDraftInTheCache() = runTest {
         val pc = Pc().apply { chat("a"); chat("b") }; val vm = connected(pc)
         vm.connect("", "token")!!.join(); vm.select("a"); vm.setDraft("Send this")

@@ -163,9 +163,9 @@ The active goal now authorizes implementation of in-scope entries; their accepta
 
 | Entry | State | Evidence / remaining work |
 | --- | --- | --- |
-| UX001 | Implemented; automated checks passed; browser smoke pending | Shared [reading-position controller][S15] and Jump to latest are wired into the browser chat. The [Compose interaction regression][S16] passes for scrolling upward, new messages, jumping, continued following and chat change. Both client builds pass. Actual browser wheel/keyboard behavior remains to be checked before closure. Android's existing reverse-layout chat is a separate validation path. |
-| UX003 | Browser implemented; Android remains open | Browser controller keeps per-chat/project session drafts and attachment references, clears caches on Lock, and never caches private drafts. Twenty chat-action regressions pass on JVM and JavaScript, including switches, attachment restoration, project-scoped new chats, project reassignment, accepted sends, private exit and Lock. No offline persistence was introduced. Android needs the same behavior with safe imported-file ownership. |
-| UX004 | Browser implemented; Android remains open | Browser preserves/restores pre-edit text and attachments on cancel and after an accepted edit, and retains edits on failed sends. JVM/JavaScript regressions verify these paths. Inspection found equivalent loss in Android's own view model; its imported-file lifecycle needs a matching fix before this entry can close. |
+| UX001 | Implemented; automated and wheel/jump checks passed; keyboard validation open | Shared [reading-position controller][S15] and Jump to latest are wired into the browser chat. The [Compose interaction regression][S16] passes for scrolling upward, new messages, jumping, continued following and chat change. In Edge against an isolated scripted gateway, wheel scrolling showed older messages during streaming and Jump returned to the end. Page Up after clicking the transcript did not move it; investigate focus/keyboard handling under V012. Android's existing reverse-layout chat is a separate validation path. |
+| UX003 | Implemented across both clients; targeted checks passed | Both hosts use the shared [session draft ownership book][S17] for per-chat/project unsent work. Browser Lock clears parked drafts; private drafts never enter the book. Twenty-one chat-action regressions pass on each JVM/JS runtime. Seven [native recovery regressions][S18] verify imported-image ownership across navigation, late completion, deletion, lifecycle cleanup, cancelled imports, private transitions and dashboard quick-send. Browser A → B → A restored separate text drafts in a scripted gateway smoke check. Real-device/share-intent and non-image import journeys remain under V009; no offline persistence was introduced. |
+| UX004 | Implemented across both clients; targeted checks passed | Both hosts restore the original text/attachments on edit cancellation and after accepting an edit, and retain input on failed preflight. Shared composer explains that sending replaces later messages. Native imported-image lifecycle and common JVM/JS regressions pass; browser right-click → Edit → Cancel visibly restored an existing unsent draft. Device interaction coverage remains in V009/V012. |
 
 ## Maintaining the running list
 
@@ -176,6 +176,7 @@ Android, browser, service and manual verification separately. Move candidates to
 only after source evidence or a reproducible observation; close with the acceptance check.
 No recurring automation or notification schedule is implied by this register.
 
+- **2026-10-13:** Added shared session draft ownership and Android file/job cleanup; seven native regressions and the full preceding Android/JVM/JS test/build matrix passed. Browser fixture checks verified separate chat drafts, edit cancellation, streaming wheel navigation and Jump to latest. V012 now includes an observed keyboard/focus question (Page Up had no effect after clicking the transcript) and an accessibility probe that exposed only the canvas image. These observations require further focus/assistive-technology investigation; they do not establish that every keyboard or screen-reader path fails. No live-server deployment or Android release was performed.
 - **2026-10-13:** First implementation batch added browser draft/edit recovery and a shared scroll-follow controller. Full initial JVM/JS/Android test and build checks passed; final chat-action regressions (20 on each runtime), scroll interaction regression, Android APK build and production browser staging passed. UX003/UX004 scope expanded to Android after verifying its destructive draft cleanup. UX013 now explicitly requires full-collection server search beyond the latest 200 files. The goal remains active; these entries are not closed while platform-specific acceptance checks remain.
 - **2026-10-13:** User activated the implementation goal for interface/app/harness parity, explicitly excluding model intelligence/capability. Earlier deferred and accepted items remain outside the goal.
 - **2026-10-13:** Created the register. Recorded six user scope decisions, 24 source-backed
@@ -216,6 +217,8 @@ No recurring automation or notification schedule is implied by this register.
 [S14]: desktop/workspace/workspace.py
 [S15]: shared-ui/src/commonMain/kotlin/com/localfirst/assistant/ui/TranscriptScroll.kt
 [S16]: app/src/test/java/com/localfirst/assistant/ui/TranscriptScrollTest.kt
+[S17]: core/src/commonMain/kotlin/com/localfirst/assistant/client/SessionDrafts.kt
+[S18]: app/src/test/java/com/localfirst/assistant/ui/NativeDraftRecoveryTest.kt
 
 - [S1 — Shared composer][S1], [S2 — Browser/common workspace controller][S2].
 - [S3 — Workspace, chat, task and project screens][S3], [S4 — Canvas][S4], [S5 — Message actions][S5].

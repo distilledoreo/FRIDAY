@@ -19,6 +19,7 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
 import org.json.JSONObject
 
 /**
@@ -27,7 +28,10 @@ import org.json.JSONObject
  * Documents go to the computer's /extract, which returns their text (or page
  * images for scans).
  */
-class AttachmentImporter(context: Context) {
+class AttachmentImporter(
+    context: Context,
+    private val imageUploader: (suspend (File, String, Boolean, String?) -> String?)? = null,
+) {
     private val app = context.applicationContext
     private val dir = File(app.filesDir, "attachments").apply { mkdirs() }
 
@@ -45,20 +49,34 @@ class AttachmentImporter(context: Context) {
         }
     }.getOrNull() ?: uri.lastPathSegment?.substringAfterLast('/') ?: "file"
 
-    suspend fun importImage(uri: Uri, name: String = displayName(uri), incognito: Boolean = false, ephemeralId: String? = null): Attachment = withContext(Dispatchers.IO) {
-        val dir = if (incognito) File(app.cacheDir, "incognito/attachments").apply { mkdirs() } else this@AttachmentImporter.dir
-        val id = UUID.randomUUID().toString()
-        val out = File(dir, "$id.jpg")
-        val bitmap = decodeScaled(uri) ?: throw IOException("That image couldn't be opened.")
-        out.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it) }
-        bitmap.recycle()
-        val workspace = com.localfirst.assistant.workspace.WorkspaceClient(app) {
-            com.localfirst.assistant.settings.ServerSettingsStore(app).load()
-        }
-        workspace.incognito = incognito
-        workspace.useEphemeralSession(ephemeralId)
-        val remote = runCatching { workspace.upload(out, name) }.getOrNull()
-        Attachment(id = id, kind = AttachmentKind.IMAGE, name = name, mimeType = "image/jpeg", path = out.absolutePath, remoteFileId = remote)
+    suspend fun importImage(uri: Uri, name: String = displayName(uri), incognito: Boolean = false, ephemeralId: String? = null): Attachment {
+        var output: File? = null
+        try {
+            return withContext(Dispatchers.IO) {
+                val dir = if (incognito) File(app.cacheDir, "incognito/attachments").apply { mkdirs() } else this@AttachmentImporter.dir
+                val id = UUID.randomUUID().toString()
+                val out = File(dir, "$id.jpg").also { output = it }
+                val bitmap = decodeScaled(uri) ?: throw IOException("That image couldn't be opened.")
+                try {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    out.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it)) { "Image encoding failed." } }
+                } finally { bitmap.recycle() }
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                val remote = try {
+                    if (imageUploader != null) imageUploader.invoke(out, name, incognito, ephemeralId)
+                    else {
+                        val workspace = com.localfirst.assistant.workspace.WorkspaceClient(app) {
+                            com.localfirst.assistant.settings.ServerSettingsStore(app).load()
+                        }
+                        workspace.incognito = incognito
+                        workspace.useEphemeralSession(ephemeralId)
+                        workspace.upload(out, name)
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                catch (_: Exception) { null }
+                Attachment(id = id, kind = AttachmentKind.IMAGE, name = name, mimeType = "image/jpeg", path = out.absolutePath, remoteFileId = remote)
+            }
+        } catch (e: Exception) { output?.delete(); throw e }
     }
 
     /**

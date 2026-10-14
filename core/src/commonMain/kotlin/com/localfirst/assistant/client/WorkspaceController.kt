@@ -87,25 +87,22 @@ class WorkspaceController(
     private var memoryStale = false
     private var memoryQuery = ""
     private var groundingAttempted = false
-    private data class ComposerDraft(val text: String = "", val attachments: List<Attachment> = emptyList(), val imageMode: Boolean = false)
-    private data class SavedDraft(val composer: ComposerDraft, val editingIndex: Int?, val beforeEdit: ComposerDraft?)
-    private val drafts = mutableMapOf<Pair<String?, String?>, SavedDraft>()
-    private var beforeEdit: ComposerDraft? = null
-    private fun draftKey(id: String?, project: String?) = id to project.takeIf { id == null }
+    private val drafts = SessionDrafts<Attachment>()
+    private var beforeEdit: ComposerDraft<Attachment>? = null
     private fun composer(s: WorkspaceState) = ComposerDraft(s.draft, s.attachments, s.imageMode)
     private fun rememberDraft() {
         val s = state.value
-        if (!s.incognito) drafts[draftKey(s.activeId, s.projectId)] = SavedDraft(composer(s), s.editingIndex, beforeEdit)
+        if (!s.incognito) drafts.put(s.activeId, s.projectId, DraftSnapshot(composer(s), s.editingIndex, beforeEdit))
     }
     private fun openDraft(id: String?, project: String?) {
-        val saved = drafts[draftKey(id, project)]
+        val saved = drafts.take(id, project)
         beforeEdit = saved?.beforeEdit
         mutable.update { cleared(it).copy(activeId = id, projectId = project,
             draft = saved?.composer?.text.orEmpty(), attachments = saved?.composer?.attachments.orEmpty(),
             imageMode = saved?.composer?.imageMode ?: false, editingIndex = saved?.editingIndex) }
     }
     private fun sentDraft(old: WorkspaceState) {
-        if (!old.incognito) drafts.remove(draftKey(old.activeId, old.projectId))
+        if (!old.incognito) drafts.remove(old.activeId, old.projectId)
         beforeEdit = null
     }
     override fun setDraft(text: String) { mutable.update { it.copy(draft = text) } }
@@ -133,7 +130,12 @@ class WorkspaceController(
         groundingStatus = null, groundingSources = emptyList(), groundingResearch = null, privateSession = null)
     override fun newChat(project: String?) { if (canLeave()) { rememberDraft(); detach(); openDraft(null, project) } }
     /** A private chat; [freshSlate] leaves saved memories out too. */
-    fun newIncognito(freshSlate: Boolean = false) { if (!canLeave()) return; newChat(); beforeEdit = null; repository.gateway.privateMode(true); mutable.update { it.copy(incognito = true, freshSlate = freshSlate, draft = "", attachments = emptyList(), editingIndex = null, imageMode = false) } }
+    fun newIncognito(freshSlate: Boolean = false) {
+        if (!canLeave()) return
+        rememberDraft(); detach(); beforeEdit = null
+        repository.gateway.privateMode(true)
+        mutable.update { cleared(it).copy(activeId = null, projectId = null, incognito = true, freshSlate = freshSlate, draft = "") }
+    }
     fun removeAttachment(id: String) { mutable.update { it.copy(attachments = it.attachments.filterNot { a -> a.id == id }) } }
     fun upload(name: String, mime: String, bytes: ByteArray, attachToDraft: Boolean = true) = action { identity ->
         require(bytes.size <= 25 * 1024 * 1024) { "File exceeds 25 MB." }
@@ -586,7 +588,7 @@ class WorkspaceController(
     }
     fun delete(id: String? = state.value.activeId) = action { identity ->
         val chat = state.value.chats.firstOrNull { it.item.id == id } ?: return@action
-        repository.delete(chat); drafts.remove(draftKey(id, chat.conversation.summary.projectId)); refreshSnapshot(identity)
+        repository.delete(chat); drafts.remove(id, chat.conversation.summary.projectId); refreshSnapshot(identity)
     }
     fun preference(key: String, value: JsonPrimitive, expectedRevision: Int? = null) = action { identity -> repository.preference(key, value, state.value.items, expectedRevision); refreshSnapshot(identity) }
     override fun saveMemory(text: String, id: String?, category: String, memoryScope: String, pinned: Boolean) = action { identity ->
