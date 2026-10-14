@@ -19,6 +19,7 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
 import org.json.JSONObject
 
 /**
@@ -27,7 +28,11 @@ import org.json.JSONObject
  * Documents go to the computer's /extract, which returns their text (or page
  * images for scans).
  */
-class AttachmentImporter(context: Context) {
+class AttachmentImporter(
+    context: Context,
+    private val documentExtractor: (suspend (ByteArray, String, String) -> Pair<Int, ByteArray>)? = null,
+    private val fileUploader: (suspend (File, String, Boolean, String?) -> String?)? = null,
+) {
     private val app = context.applicationContext
     private val dir = File(app.filesDir, "attachments").apply { mkdirs() }
 
@@ -45,21 +50,37 @@ class AttachmentImporter(context: Context) {
         }
     }.getOrNull() ?: uri.lastPathSegment?.substringAfterLast('/') ?: "file"
 
-    suspend fun importImage(uri: Uri, name: String = displayName(uri), incognito: Boolean = false, ephemeralId: String? = null): Attachment = withContext(Dispatchers.IO) {
-        val dir = if (incognito) File(app.cacheDir, "incognito/attachments").apply { mkdirs() } else this@AttachmentImporter.dir
-        val id = UUID.randomUUID().toString()
-        val out = File(dir, "$id.jpg")
-        val bitmap = decodeScaled(uri) ?: throw IOException("That image couldn't be opened.")
-        out.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it) }
-        bitmap.recycle()
-        val workspace = com.localfirst.assistant.workspace.WorkspaceClient(app) {
-            com.localfirst.assistant.settings.ServerSettingsStore(app).load()
-        }
-        workspace.incognito = incognito
-        workspace.useEphemeralSession(ephemeralId)
-        val remote = runCatching { workspace.upload(out, name) }.getOrNull()
-        Attachment(id = id, kind = AttachmentKind.IMAGE, name = name, mimeType = "image/jpeg", path = out.absolutePath, remoteFileId = remote)
+    suspend fun importImage(uri: Uri, name: String = displayName(uri), incognito: Boolean = false, ephemeralId: String? = null): Attachment {
+        var output: File? = null
+        try {
+            return withContext(Dispatchers.IO) {
+                val dir = if (incognito) File(app.cacheDir, "incognito/attachments").apply { mkdirs() } else this@AttachmentImporter.dir
+                val id = UUID.randomUUID().toString()
+                val out = File(dir, "$id.jpg").also { output = it }
+                val bitmap = decodeScaled(uri) ?: throw IOException("That image couldn't be opened.")
+                try {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    out.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it)) { "Image encoding failed." } }
+                } finally { bitmap.recycle() }
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                val remote = uploadStoredFile(out, name, incognito, ephemeralId)
+                Attachment(id = id, kind = AttachmentKind.IMAGE, name = name, mimeType = "image/jpeg", path = out.absolutePath, remoteFileId = remote)
+            }
+        } catch (e: Exception) { output?.delete(); throw e }
     }
+
+    private suspend fun uploadStoredFile(file: File, name: String, incognito: Boolean, ephemeralId: String?): String? = try {
+        if (fileUploader != null) fileUploader.invoke(file, name, incognito, ephemeralId)
+        else {
+            val workspace = com.localfirst.assistant.workspace.WorkspaceClient(app) {
+                com.localfirst.assistant.settings.ServerSettingsStore(app).load()
+            }
+            workspace.incognito = incognito
+            workspace.useEphemeralSession(ephemeralId)
+            workspace.upload(file, name)
+        }
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+    catch (_: Exception) { null }
 
     /**
      * Transcribes an audio file with the computer's speech recognition and
@@ -77,6 +98,7 @@ class AttachmentImporter(context: Context) {
             throw IOException("Couldn't decode $name.")
         }
         if (pcm.isEmpty()) throw IOException("No audio found in $name.")
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
         val wav = com.localfirst.assistant.voice.Wav.encode(pcm, AudioDecode.TARGET_RATE)
         val (code, body) = try {
             desktopRequest(baseUrl, apiKey, "POST", "/transcribe", wav, "audio/wav", timeoutMs = 180_000)
@@ -99,64 +121,70 @@ class AttachmentImporter(context: Context) {
         )
     }
 
-    suspend fun importDocument(uri: Uri, baseUrl: String, apiKey: String?, incognito: Boolean = false, ephemeralId: String? = null): Attachment = withContext(Dispatchers.IO) {
-        if (baseUrl.isBlank()) throw IOException("Set the search service address to read documents on your computer.")
-        val name = displayName(uri)
-        val mime = app.contentResolver.getType(uri) ?: "application/octet-stream"
-        val bytes = app.contentResolver.openInputStream(uri)?.use { input ->
-            val buffer = input.readNBytesCompat(MAX_DOCUMENT_BYTES + 1)
-            if (buffer.size > MAX_DOCUMENT_BYTES) throw IOException("$name is larger than 25 MB.")
-            buffer
-        } ?: throw IOException("$name couldn't be opened.")
-        val (code, body) = try {
-            desktopRequest(
-                baseUrl, apiKey, "POST", "/extract", bytes, mime,
-                headers = mapOf("X-Filename" to URLEncoder.encode(name, "UTF-8").replace("+", "%20")),
-                timeoutMs = 120_000,
-            )
-        } catch (e: IOException) {
-            throw IOException("Couldn't reach your computer to read $name.")
-        }
-        val dir = if (incognito) File(app.cacheDir, "incognito/attachments").apply { mkdirs() } else this@AttachmentImporter.dir
-        val original = File(dir, "${UUID.randomUUID()}-${name.replace(Regex("[^A-Za-z0-9._-]"), "_")}")
-        original.writeBytes(bytes)
-        val workspace = com.localfirst.assistant.workspace.WorkspaceClient(app) {
-            com.localfirst.assistant.settings.ServerSettingsStore(app).load()
-        }
-        workspace.incognito = incognito
-        workspace.useEphemeralSession(ephemeralId)
-        val remoteId = runCatching { workspace.upload(original, name) }.getOrNull()
-        val json = runCatching { JSONObject(String(body)) }.getOrNull()
-        if (code != 200 || json == null) {
-            if (remoteId != null) return@withContext Attachment(id = UUID.randomUUID().toString(), kind = AttachmentKind.DOCUMENT,
-                name = name, mimeType = mime, path = original.absolutePath, remoteFileId = remoteId,
-                note = "Use execute_python to read this workspace file; text preview unavailable.")
-            original.delete()
-            throw IOException(json?.optString("detail")?.takeIf { it.isNotBlank() }?.replaceFirstChar(Char::uppercase) ?: "Couldn't read $name (HTTP $code).")
-        }
-        val id = UUID.randomUUID().toString()
-        val images = json.optJSONArray("images")
-        val pages = (0 until (images?.length() ?: 0)).map { i ->
-            val file = File(dir, "$id-p${i + 1}.jpg")
-            file.writeBytes(Base64.decode(images!!.getString(i), Base64.DEFAULT))
-            file.absolutePath
-        }
-        if (json.optString("text").isBlank() && pages.isEmpty()) throw IOException("No readable text or pages found in $name.")
-        val notes = listOfNotNull(
-            json.optString("note").takeIf { it.isNotBlank() },
-            if (json.optBoolean("truncated")) "Text cut at 60,000 characters." else null,
-        )
-        Attachment(
-            id = id,
-            kind = AttachmentKind.DOCUMENT,
-            name = name,
-            mimeType = mime,
-            path = original.absolutePath,
-            remoteFileId = remoteId,
-            text = json.optString("text").takeIf { it.isNotBlank() },
-            pageImages = pages,
-            note = notes.joinToString(" ").ifBlank { null },
-        )
+    suspend fun importDocument(uri: Uri, baseUrl: String, apiKey: String?, incognito: Boolean = false, ephemeralId: String? = null): Attachment {
+        val storedFiles = mutableListOf<File>()
+        try {
+            return withContext(Dispatchers.IO) {
+                if (baseUrl.isBlank()) throw IOException("Set the search service address to read documents on your computer.")
+                val name = displayName(uri)
+                val mime = app.contentResolver.getType(uri) ?: "application/octet-stream"
+                val bytes = app.contentResolver.openInputStream(uri)?.use { input ->
+                    val buffer = input.readNBytesCompat(MAX_DOCUMENT_BYTES + 1)
+                    if (buffer.size > MAX_DOCUMENT_BYTES) throw IOException("$name is larger than 25 MB.")
+                    buffer
+                } ?: throw IOException("$name couldn't be opened.")
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                val (code, body) = try {
+                    if (documentExtractor != null) documentExtractor.invoke(bytes, name, mime) else desktopRequest(
+                        baseUrl, apiKey, "POST", "/extract", bytes, mime,
+                        headers = mapOf("X-Filename" to URLEncoder.encode(name, "UTF-8").replace("+", "%20")),
+                        timeoutMs = 120_000,
+                    )
+                } catch (e: IOException) {
+                    throw IOException("Couldn't reach your computer to read $name.")
+                }
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                val dir = if (incognito) File(app.cacheDir, "incognito/attachments").apply { mkdirs() } else this@AttachmentImporter.dir
+                val original = File(dir, "${UUID.randomUUID()}-${name.replace(Regex("[^A-Za-z0-9._-]"), "_")}")
+                storedFiles += original
+                original.writeBytes(bytes)
+                val remoteId = uploadStoredFile(original, name, incognito, ephemeralId)
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                val json = runCatching { JSONObject(String(body)) }.getOrNull()
+                if (code != 200 || json == null) {
+                    if (remoteId != null) return@withContext Attachment(id = UUID.randomUUID().toString(), kind = AttachmentKind.DOCUMENT,
+                        name = name, mimeType = mime, path = original.absolutePath, remoteFileId = remoteId,
+                        note = "Use execute_python to read this workspace file; text preview unavailable.")
+                    original.delete()
+                    throw IOException(json?.optString("detail")?.takeIf { it.isNotBlank() }?.replaceFirstChar(Char::uppercase) ?: "Couldn't read $name (HTTP $code).")
+                }
+                val id = UUID.randomUUID().toString()
+                val images = json.optJSONArray("images")
+                val pages = (0 until (images?.length() ?: 0)).map { i ->
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    val file = File(dir, "$id-p${i + 1}.jpg")
+                    storedFiles += file
+                    file.writeBytes(Base64.decode(images!!.getString(i), Base64.DEFAULT))
+                    file.absolutePath
+                }
+                if (json.optString("text").isBlank() && pages.isEmpty()) throw IOException("No readable text or pages found in $name.")
+                val notes = listOfNotNull(
+                    json.optString("note").takeIf { it.isNotBlank() },
+                    if (json.optBoolean("truncated")) "Text cut at 60,000 characters." else null,
+                )
+                Attachment(
+                    id = id,
+                    kind = AttachmentKind.DOCUMENT,
+                    name = name,
+                    mimeType = mime,
+                    path = original.absolutePath,
+                    remoteFileId = remoteId,
+                    text = json.optString("text").takeIf { it.isNotBlank() },
+                    pageImages = pages,
+                    note = notes.joinToString(" ").ifBlank { null },
+                )
+            }
+        } catch (e: Exception) { storedFiles.forEach { it.delete() }; throw e }
     }
 
     /** Deletes the stored files of attachments that are no longer needed. */

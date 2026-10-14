@@ -81,6 +81,8 @@ fun SharedComposer(
                     Icon(Icons.Filled.Close, contentDescription = "Cancel editing", modifier = Modifier.size(18.dp))
                 }
             }
+            Text("Sending this edit replaces the messages that follow it.", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 8.dp))
         }
         attachmentContent()
         Surface(

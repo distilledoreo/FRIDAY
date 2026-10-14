@@ -13,6 +13,7 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -172,7 +173,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
                             onBackup = { vm.exportBackup() }, onRestore = { onRestoreBackup?.invoke() }, onImportChatGpt = { page = Page.IMPORT })
                         Page.TASKS -> TasksScreen(vm, state)
                         Page.SETTINGS -> SettingsScreen(vm, state, settingsExtras)
-                        Page.FILES -> features?.let { LibraryScreen(it, { vm.artifact(it) }, onLibraryUpload) }
+                        Page.FILES -> features?.let { LibraryScreen(it, { vm.artifact(it) }, onLibraryUpload, { id -> vm.reuseFile(id) }) }
                         Page.IMAGES -> features?.let { ImagesScreen(it) { vm.artifact(it) } }
                         Page.ACTIVITY -> features?.let { ActivityScreen(it, fridayTask, fridaySession) { report -> vm.newChat(); vm.setDraft("Discuss this report:\n$report"); page = Page.CHAT } }
                         Page.ACCOUNTS -> features?.let { AccountsScreen(it) }
@@ -233,14 +234,16 @@ private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState, code: com
     onAttach: (() -> Unit)?, onDictate: (() -> Unit)?, dictating: Boolean,
     voice: com.localfirst.assistant.voice.VoiceUiState?, voiceControls: VoiceControls?, onShare: ((String) -> Unit)?,
     openFriday: (String?, String?) -> Unit, onDashboard: (() -> Unit)?) {
-    val scroll = rememberLazyListState()
+    val reading = rememberTranscriptScroll(Triple(state.activeId, state.incognito, state.projectId))
+    val scroll = reading.list
+    val scrollScope = rememberCoroutineScope()
     val messages = state.transcript
     val working = state.activeJob != null
     val transcript = remember(messages, working, state.approval != null) { Transcript.items(messages, working && state.approval == null) }
     val clipboard = LocalClipboardManager.current
     val copy: (String) -> Unit = { clipboard.setText(AnnotatedString(it)) }
-    val bottom = transcript.size + listOfNotNull(state.streamingText.takeIf { it.isNotBlank() }, state.approval, state.error).size
-    LaunchedEffect(state.activeId, bottom, state.streamingText.length / 100) { if (bottom > 0) scroll.animateScrollToItem(bottom - 1) }
+    val bottom = transcript.size + listOfNotNull(state.streamingText.takeIf { it.isNotBlank() }, state.approval, state.error, state.detachedReply).size
+    LaunchedEffect(scroll, bottom, state.streamingText.length / 100) { reading.followContent(bottom) }
     val palette = LocalFridayPalette.current
     BoxWithConstraints(Modifier.fillMaxSize()) {
     // As on the phone: FRIDAY's light fills an empty chat and dims behind a conversation, and the composer
@@ -256,7 +259,7 @@ private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState, code: com
                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            LazyColumn(state = scroll, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+            LazyColumn(state = scroll, modifier = Modifier.fillMaxSize().nestedScroll(reading.input), contentPadding = PaddingValues(vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
                 items(transcript, key = { it.key }) { item -> when(item) {
                     is TranscriptItem.User -> SharedUserMessage(item, actionsEnabled = state.idle, onCopy = copy, onEdit = vm::startEditing,
                         onBranch = if (state.incognito) null else ({ index -> vm.branch(index) }))
@@ -284,6 +287,10 @@ private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState, code: com
                 } }
                 state.detachedReply?.let { reply -> item { Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = RoundedCornerShape(12.dp)) { Column(Modifier.padding(16.dp)) { Text("Reply saved separately because the chat changed", style = MaterialTheme.typography.titleSmall); AssistantReply(reply, state.preferences.interactiveAnswers, vm::setDraft) } } } }
             }
+            if (reading.showJump) FilledTonalButton(
+                onClick = { scrollScope.launch { reading.jump(bottom) } },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
+            ) { Text("Jump to latest") }
         }
         // As on the phone: source checking for the latest turn, its sources, and an offer of larger research.
         state.groundingStatus?.let { status ->

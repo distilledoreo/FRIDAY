@@ -113,6 +113,101 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             if job['status'] in {'completed', 'failed', 'paused'}: return job
             await asyncio.sleep(.1)
         self.fail('Job did not finish')
+    async def test_library_search_reaches_older_files_and_pages_complete_collection(self):
+        oldest = self.workspace.put_file(b'old', 'oldest-reference.txt', 'text/plain')
+        for i in range(205): self.workspace.put_file(b'x', f'file-{i:03d}.txt', 'text/plain')
+        legacy = (await self.client.get('/workspace/files')).json()
+        self.assertEqual(len(legacy), 200)
+        self.assertNotIn(oldest['id'], {row['id'] for row in legacy})
+        match = (await self.client.get('/workspace/files', params={'q': 'OLDEST', 'paged': 'true'})).json()
+        self.assertEqual(match['total'], 1)
+        self.assertEqual(match['files'][0]['id'], oldest['id'])
+        ids, offset = [], 0
+        while True:
+            page = (await self.client.get('/workspace/files', params={'paged': 'true', 'limit': 70, 'offset': offset, 'sort': 'name'})).json()
+            ids.extend(row['id'] for row in page['files'])
+            if page['next_offset'] is None: break
+            offset = page['next_offset']
+        self.assertEqual(len(ids), 206)
+        self.assertEqual(len(set(ids)), 206)
+
+    async def test_library_filter_sort_and_unicode_literal_search(self):
+        self.workspace.put_file(b'12345', 'Straße%_report.txt', 'text/plain')
+        image = self.workspace.put_file(b'x', 'image.png', 'image/png')
+        self.workspace.put_file(b'12', 'archive.zip', 'application/zip')
+        docs = (await self.client.get('/workspace/files', params={'kind': 'documents', 'q': 'STRASSE%_', 'paged': 'true'})).json()
+        self.assertEqual(docs['total'], 1)
+        self.assertEqual(docs['files'][0]['name'], 'Straße%_report.txt')
+        pictures = (await self.client.get('/workspace/files', params={'kind': 'images'})).json()
+        self.assertEqual([row['id'] for row in pictures], [image['id']])
+        others = (await self.client.get('/workspace/files', params={'kind': 'other'})).json()
+        self.assertEqual([row['name'] for row in others], ['archive.zip'])
+        sizes = (await self.client.get('/workspace/files', params={'sort': 'size'})).json()
+        self.assertEqual([row['size'] for row in sizes], [5, 2, 1])
+        empty = (await self.client.get('/workspace/files', params={'q': "' OR 1=1 --", 'paged': 'true'})).json()
+        self.assertEqual(empty['total'], 0)
+        self.assertIsNone(empty['next_offset'])
+
+    async def test_library_query_validation_and_auth(self):
+        for params in ({'sort': 'invalid'}, {'kind': 'invalid'}, {'offset': -1}, {'limit': 201}, {'q': 'x' * 501}):
+            response = await self.client.get('/workspace/files', params=params)
+            self.assertEqual(response.status_code, 422)
+        response = await self.client.get('/workspace/files', params={'paged': 'true'}, headers={'Authorization': ''})
+        self.assertEqual(response.status_code, 401)
+
+    async def test_library_reference_returns_attachable_metadata_without_moving_bytes(self):
+        text = self.workspace.put_file(b'Hello reference', 'notes.txt', 'text/plain')
+        image = self.workspace.put_file(b'fake-png-bytes', 'photo.png', 'image/png')
+        binary = self.workspace.put_file(b'\x00\x01\x02binary', 'archive.zip', 'application/zip')
+        before = sorted(p.name for p in self.workspace.files.iterdir())
+        ref = (await self.client.get(f"/workspace/files/{text['id']}/reference")).json()
+        self.assertEqual(ref['id'], text['id'])
+        self.assertEqual(ref['text'], 'Hello reference')
+        self.assertNotIn('note', ref)
+        self.assertNotIn('pageImageIds', ref)
+        img = (await self.client.get(f"/workspace/files/{image['id']}/reference")).json()
+        self.assertEqual(img['mime'], 'image/png')
+        self.assertNotIn('text', img)
+        self.assertNotIn('note', img)
+        other = (await self.client.get(f"/workspace/files/{binary['id']}/reference")).json()
+        self.assertNotIn('text', other)
+        self.assertIn('file tool', other['note'])
+        self.assertEqual(sorted(p.name for p in self.workspace.files.iterdir()), before)
+
+    async def test_library_reference_materializes_scanned_pages_and_reports_truncation(self):
+        import io
+        from pypdf import PdfWriter
+        long_text = 'word ' * 20000
+        buf = io.BytesIO()
+        writer = PdfWriter()
+        writer.add_blank_page(72, 72)
+        writer.write(buf)
+        scan = self.workspace.put_file(buf.getvalue(), 'scan.pdf', 'application/pdf')
+        ref = (await self.client.get(f"/workspace/files/{scan['id']}/reference")).json()
+        self.assertEqual(len(ref['pageImageIds']), 1)
+        self.assertIn('No text layer', ref['note'])
+        self.assertTrue((self.workspace.files / ref['pageImageIds'][0]).is_file())
+        self.assertIn(f"{scan['name']}-page-1.jpg", [row['name'] for row in self.workspace.list_files()])
+        from reportlab.pdfgen.canvas import Canvas
+        buf = io.BytesIO()
+        canvas = Canvas(buf)
+        for i in range(0, len(long_text), 80):
+            canvas.drawString(72, 750 - (i // 80) % 40 * 12, long_text[i:i + 80])
+            if (i // 80) % 40 == 39:
+                canvas.showPage()
+        canvas.save()
+        big = self.workspace.put_file(buf.getvalue(), 'big.pdf', 'application/pdf')
+        clipped = (await self.client.get(f"/workspace/files/{big['id']}/reference")).json()
+        self.assertEqual(len(clipped['text']), 60000)
+        self.assertIn('60,000', clipped['note'])
+
+    async def test_library_reference_unknown_files_and_auth(self):
+        self.assertEqual((await self.client.get('/workspace/files/' + '0' * 32 + '/reference')).status_code, 404)
+        self.assertEqual((await self.client.get('/workspace/files/not-an-id/reference')).status_code, 404)
+        text = self.workspace.put_file(b'x', 'note.txt', 'text/plain')
+        response = await self.client.get(f"/workspace/files/{text['id']}/reference", headers={'Authorization': ''})
+        self.assertEqual(response.status_code, 401)
+
     async def test_auth_required_for_workspace_and_downloads(self):
         r = await self.client.get('/workspace/items', headers={'Authorization': ''})
         self.assertEqual(r.status_code, 401)

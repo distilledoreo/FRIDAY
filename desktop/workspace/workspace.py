@@ -21,13 +21,15 @@ import threading
 import uuid
 from urllib.parse import unquote
 
-from fastapi import APIRouter, HTTPException, Request
+from typing import Literal
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .chat_tools import ChatTools, ToolError, sources as tool_sources
 from . import private_leak
+from .document import extract_document
 
 MAX_FILE = 25 * 1024 * 1024
 MAX_TOTAL = 500 * 1024 * 1024
@@ -174,6 +176,7 @@ class Workspace:
     def db(self):
         db = sqlite3.connect(self.root / 'workspace.sqlite', timeout=10)
         db.row_factory = sqlite3.Row
+        db.create_function('CASEFOLD', 1, lambda value: (value or '').casefold())
         return db
 
     def sync(self, item_id, revision, payload, deleted=False):
@@ -270,12 +273,65 @@ class Workspace:
                 raise
         return {'id': file_id, 'name': name, 'mime': mime, 'size': len(data), 'url': f'assistant://artifact/{file_id}'}
 
+    def list_files(self, q='', kind='all', sort='recent', limit=200, offset=0, paged=False):
+        clauses, values = [], []
+        if q.strip():
+            clauses.append('INSTR(CASEFOLD(name), ?) > 0')
+            values.append(q.strip().casefold())
+        document = "(mime LIKE 'text/%' OR mime IN ('application/pdf','application/msword','application/rtf','application/json') OR mime LIKE 'application/vnd.openxmlformats-officedocument.%' OR mime LIKE 'application/vnd.oasis.opendocument.%' OR mime LIKE 'application/vnd.ms-%')"
+        types = {'images': "mime LIKE 'image/%'", 'documents': document,
+                 'audio': "mime LIKE 'audio/%'", 'video': "mime LIKE 'video/%'",
+                 'other': f"NOT (mime LIKE 'image/%' OR mime LIKE 'audio/%' OR mime LIKE 'video/%' OR {document})"}
+        if kind != 'all': clauses.append(types[kind])
+        where = (' WHERE ' + ' AND '.join(clauses)) if clauses else ''
+        ordering = {'recent': 'created DESC, id DESC', 'name': 'CASEFOLD(name) ASC, id ASC', 'size': 'size DESC, id DESC'}[sort]
+        with self.db() as db:
+            rows = [dict(r) for r in db.execute('SELECT * FROM files' + where + ' ORDER BY ' + ordering + ' LIMIT ? OFFSET ?', [*values, limit, offset])]
+            if not paged: return rows
+            total = db.execute('SELECT COUNT(*) FROM files' + where, values).fetchone()[0]
+        next_offset = offset + len(rows)
+        return {'files': rows, 'total': total, 'offset': offset, 'limit': limit,
+                'next_offset': next_offset if next_offset < total else None}
+
+
     def file(self, file_id):
         with self.db() as db:
             row = db.execute('SELECT * FROM files WHERE id=?', (file_id,)).fetchone()
         if row is None or not (self.files / row['id']).is_file():
             raise HTTPException(404, 'File not found')
         return dict(row)
+
+    def reference(self, file_id):
+        """Attachment metadata for a saved file without moving its bytes: the same text,
+        page images and notes that uploading it again would produce."""
+        if not _is_uuid(file_id):
+            raise HTTPException(404, 'File not found')
+        info = self.file(file_id)
+        result = {'id': info['id'], 'name': info['name'], 'mime': info['mime'], 'size': info['size'],
+                  'url': f'assistant://artifact/{info["id"]}'}
+        if info['mime'].startswith('image/'):
+            if info['size'] > 3 * 1024 * 1024:
+                result['note'] = 'Image exceeds 3 MB and cannot be shown to the model; attach a smaller image or use the file tool.'
+            return result
+        try:
+            extracted = extract_document((self.files / info['id']).read_bytes(), info['name'], info['mime'])
+        except HTTPException:
+            result['note'] = 'Use the file tool to inspect this document.'
+            return result
+        except Exception:
+            result['note'] = 'Use the file tool to inspect this document.'
+            return result
+        result['text'] = extracted.get('text', '')
+        if extracted.get('truncated'):
+            result['note'] = 'Text cut at 60,000 characters.'
+        pages = []
+        for index, page in enumerate(extracted.get('images') or []):
+            pages.append(self.put_file(base64.b64decode(page), f"{info['name']}-page-{index + 1}.jpg", 'image/jpeg')['id'])
+        if pages:
+            result['pageImageIds'] = pages
+            if extracted.get('note'):
+                result['note'] = extracted['note']
+        return result
 
     def sandbox_status(self):
         if time.monotonic() - self._sandbox_check[0] < 15:
@@ -581,9 +637,15 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                                        request.headers.get('Content-Type'))
 
     @router.get('/files')
-    async def files():
-        with workspace.db() as db:
-            return [dict(r) for r in db.execute('SELECT * FROM files ORDER BY created DESC LIMIT 200')]
+    async def files(q: str = Query('', max_length=500),
+                    kind: Literal['all', 'images', 'documents', 'audio', 'video', 'other'] = 'all',
+                    sort: Literal['recent', 'name', 'size'] = 'recent',
+                    limit: int = Query(200, ge=1, le=200), offset: int = Query(0, ge=0), paged: bool = False):
+        return workspace.list_files(q, kind, sort, limit, offset, paged)
+
+    @router.get('/files/{file_id}/reference')
+    async def reference_file(file_id: str):
+        return await asyncio.to_thread(workspace.reference, file_id)
 
     @router.get('/files/{file_id}')
     async def download(file_id: str):

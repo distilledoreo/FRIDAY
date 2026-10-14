@@ -31,6 +31,8 @@ Phone search/page tools retrieve bounded public static passages with source prov
 
 The Kotlin/JS + Compose app in `web/` connects to the same PC gateway as Android and shares history, projects, memory and portable appearance preferences. Build with `./gradlew :web:stageGateway`, install the gateway, and open `/friday/`. Android **0.24.0** uses the shared UI and corresponding preference protocol. See [web client build, sync behavior and validation](web/README.md). The older `/workspace-ui` remains available.
 
+Track remaining capabilities and workflow polish in the [ChatGPT parity and UX register](PARITY_GAPS.md).
+
 ## Layout
 
 ```
