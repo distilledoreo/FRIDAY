@@ -28,7 +28,7 @@ fun main() = onWasmReady {
         val scope = rememberCoroutineScope()
         val gateway = remember { FetchWorkspaceGateway() }
         val vm = remember { WorkspaceController(WorkspaceRepository(gateway), scope, ::randomConversationId, PlatformSystem::currentTimeMillis,
-            save = { name, mime, bytes -> downloadBytes(name, mime, bytes) }, inflate = browserInflate) }
+            save = { name, mime, bytes -> downloadBytes(name, mime, bytes) }, inflate = browserInflate, savedSignIn = BrowserSavedSignIn) }
         val state by vm.state.collectAsState()
         val features = remember { FeatureController(gateway, scope, browserOAuth = true) }
         val briefing = remember { BriefingController(gateway, scope) }
@@ -98,10 +98,14 @@ fun main() = onWasmReady {
             }
         }
         DisposableEffect(vm) {
+            // Leaving clears the token from memory; a remembered sign-in reconnects when the page shows again.
             val leave: (Event) -> Unit = { vm.lock() }
+            val back: (Event) -> Unit = { vm.resumeSavedSignIn() }
             window.addEventListener("pagehide", leave)
-            onDispose { window.removeEventListener("pagehide", leave) }
+            window.addEventListener("pageshow", back)
+            onDispose { window.removeEventListener("pagehide", leave); window.removeEventListener("pageshow", back) }
         }
+        LaunchedEffect(vm) { vm.resumeSavedSignIn() }
         DisposableEffect(Unit) {
             val listener: (Event) -> Unit = { e -> val data = e.asDynamic().data
                 if (data?.kind == "friday-notice" && data.open is String) navigation.tryEmit(data.open as String) }

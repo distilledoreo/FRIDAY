@@ -70,6 +70,13 @@ data class WorkspaceState(
 }
 
 /** Server revisions are the baseline for every write; refresh never touches an unsent draft. */
+/** A client's remembered sign-in (the browser keeps it in local storage when the user asks). */
+interface SavedSignIn {
+    fun load(): Pair<String, String>?
+    fun save(baseUrl: String, token: String)
+    fun clear()
+}
+
 class WorkspaceController(
     private val repository: WorkspaceRepository, private val scope: CoroutineScope,
     private val newId: () -> String, private val clock: () -> Long,
@@ -77,6 +84,8 @@ class WorkspaceController(
     private val save: suspend (name: String, mime: String, bytes: ByteArray) -> Unit = { _, _, _ -> error("Saving files is unavailable on this client") },
     /** Expands compressed backup entries, such as those Android writes. */
     private val inflate: Inflate = Inflate { _, _ -> error("Compressed backups are unavailable on this client") },
+    /** Where this client may keep its sign-in between visits, when the user asks; null keeps it in memory only. */
+    val savedSignIn: SavedSignIn? = null,
 ) : WorkspaceActions {
     private val mutable = MutableStateFlow(WorkspaceState())
     override val state = mutable.asStateFlow()
@@ -215,6 +224,16 @@ class WorkspaceController(
         epoch++; memoryQuery = ""; memoryStale = false; operation?.cancel(); generation?.cancel(); watching?.cancel(); repository.gateway.lock(); repository.forget(); mutable.value = WorkspaceState()
     }
     fun close() { lock(); polling?.cancel() }
+    /** Lock and forget a remembered sign-in: the next visit asks for the token again. */
+    fun signOut() { savedSignIn?.clear(); lock() }
+    /** Reconnects with a remembered sign-in; one the computer refuses is forgotten. */
+    fun resumeSavedSignIn(): Job? {
+        if (state.value.connected) return null
+        val (baseUrl, token) = savedSignIn?.load() ?: return null
+        return connect(baseUrl, token, remember = true)?.also { job -> job.invokeOnCompletion {
+            if (!state.value.connected && state.value.error?.contains("did not accept") == true) savedSignIn?.clear()
+        } }
+    }
     private fun action(quiet: Boolean = false, body: suspend (Int) -> Unit): Job? {
         if (state.value.busy) return null
         // The held background refresh gives way, so it never blocks or interleaves with something the user asked for.
@@ -228,9 +247,11 @@ class WorkspaceController(
             finally { if (identity == epoch) mutable.update { it.copy(busy = false) } }
         }.also { operation = it }
     }
-    fun connect(baseUrl: String, token: String) = action { identity ->
+    fun connect(baseUrl: String, token: String, remember: Boolean = false) = action { identity ->
         repository.gateway.connect(baseUrl, token); repository.forget()
         refreshSnapshot(identity)
+        // Saved only after the computer accepted it; connecting without "remember" forgets an older one.
+        if (identity == epoch) { if (remember) savedSignIn?.save(baseUrl, token) else savedSignIn?.clear() }
         // The computer's models, for choosing one; optional.
         val models = try { (repository.gateway.request("/v1/models") as? JsonObject)?.get("data")?.rows()?.map { it.text("id") }?.filter { it.isNotBlank() }.orEmpty() }
             catch (e: CancellationException) { throw e } catch (e: Exception) { emptyList() }

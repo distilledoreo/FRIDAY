@@ -139,7 +139,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
                             if (features != null) add("Accounts" to { go(Page.ACCOUNTS) })
                             add("Data controls" to { go(Page.DATA) })
                             add("Settings" to { page = Page.SETTINGS })
-                            add("Lock" to { vm.lock() })
+                            add("Lock" to { vm.signOut() })
                         },
                     )
                 }
@@ -215,6 +215,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
 @Composable
 private fun ConnectScreen(vm: WorkspaceController, state: WorkspaceState) {
     var address by remember { mutableStateOf("") }; var token by remember { mutableStateOf("") }
+    var rememberMe by remember { mutableStateOf(false) }
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(24.dp), contentAlignment = Alignment.Center) {
         Column(Modifier.widthIn(max = 440.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text("FRIDAY", style = MaterialTheme.typography.headlineLarge)
@@ -222,9 +223,14 @@ private fun ConnectScreen(vm: WorkspaceController, state: WorkspaceState) {
             Text("Connect to the same computer as your Android app to share history, projects, memory and preferences.", style = MaterialTheme.typography.bodyMedium)
             OutlinedTextField(address, { address = it }, label = { Text("Computer address (optional)") }, modifier = Modifier.fillMaxWidth(), singleLine = true, enabled = !state.busy)
             OutlinedTextField(token, { token = it }, label = { Text("API token") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), singleLine = true, enabled = !state.busy)
-            Button({ vm.connect(address.trim(), token)?.invokeOnCompletion { if (vm.state.value.connected) token = "" } }, enabled = !state.busy && token.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text(if (state.busy) "Connecting…" else "Connect") }
+            if (vm.savedSignIn != null) Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text("Remember on this browser", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                androidx.compose.material3.Switch(rememberMe, { rememberMe = it }, enabled = !state.busy)
+            }
+            Button({ vm.connect(address.trim(), token, rememberMe)?.invokeOnCompletion { if (vm.state.value.connected) token = "" } }, enabled = !state.busy && token.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text(if (state.busy) "Connecting…" else "Connect") }
             state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            Text("Your token stays in this tab’s memory. Lock to disconnect.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+            Text(if (rememberMe) "Your token is saved in this browser until you lock FRIDAY. Anyone using this browser profile can open it; don't use this on a shared computer."
+                else "Your token stays in this tab’s memory. Lock to disconnect.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
         }
     }
 }
@@ -368,7 +374,7 @@ private fun SettingsScreen(vm: WorkspaceController, state: WorkspaceState, extra
             save = { key, value, revision -> vm.preference(key, value, revision) })
         HorizontalDivider()
         extras()
-        OutlinedButton(vm::lock) { Text("Lock this client") }
+        OutlinedButton(vm::signOut) { Text("Lock this client") }
     }
 }
 

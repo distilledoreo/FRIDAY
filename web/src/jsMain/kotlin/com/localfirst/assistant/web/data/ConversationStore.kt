@@ -21,3 +21,19 @@ fun randomConversationId(): String {
     return "${hex.take(8)}-${hex.substring(8,12)}-${hex.substring(12,16)}-${hex.substring(16,20)}-${hex.substring(20,32)}"
 }
 fun removeLegacyToken() { localStorage.removeItem("friday.server.apiKey") }
+
+/** The sign-in the user asked this browser to remember; local storage, cleared by Lock. */
+object BrowserSavedSignIn : SavedSignIn {
+    private const val KEY = "friday.signin"
+    override fun load(): Pair<String, String>? = runCatching {
+        val value = localStorage.getItem(KEY) ?: return null
+        val saved = kotlinx.serialization.json.Json.parseToJsonElement(value) as kotlinx.serialization.json.JsonObject
+        val base = (saved["base"] as? kotlinx.serialization.json.JsonPrimitive)?.content.orEmpty()
+        val token = (saved["token"] as? kotlinx.serialization.json.JsonPrimitive)?.content.orEmpty()
+        if (token.isBlank()) null else base to token
+    }.getOrNull()
+    override fun save(baseUrl: String, token: String) {
+        runCatching { localStorage.setItem(KEY, kotlinx.serialization.json.buildJsonObject { put("base", kotlinx.serialization.json.JsonPrimitive(baseUrl)); put("token", kotlinx.serialization.json.JsonPrimitive(token)) }.toString()) }
+    }
+    override fun clear() { runCatching { localStorage.removeItem(KEY) } }
+}
