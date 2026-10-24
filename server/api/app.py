@@ -72,6 +72,19 @@ async def health():
 
 # ---- chat -----------------------------------------------------------------
 
+def reasoning_turn(body, request: Request):
+    """X-Assistant-Reasoning: the phone's typed chat turns reason first, with the settings saved browser chats use.
+    Settings the client chose itself win."""
+    if request.headers.get("X-Assistant-Reasoning") != "1" or not isinstance(body, dict):
+        return body
+    template = body.get("chat_template_kwargs") or {}
+    if "reasoning_effort" in body or "reasoning" in body or "enable_thinking" in template or "reasoning_effort" in template:
+        return body
+    from workspace.integration import chat_sampling
+    sampling = chat_sampling()
+    return {**sampling, **body, "chat_template_kwargs": {**template, **sampling["chat_template_kwargs"]}}
+
+
 @app.post("/chat", dependencies=auth)
 @app.post("/v1/chat/completions", dependencies=auth, include_in_schema=False)
 async def chat(request: Request):
@@ -80,8 +93,8 @@ async def chat(request: Request):
         # The app's new-chat opening, sent ahead of the first message; nothing is generated.
         if request.headers.get("X-Assistant-Incognito") == "1":
             return JSONResponse({"primed": "ignored"})
-        return JSONResponse({"primed": openings.prime(prompt_cache.stabilize(await request.json()))})
-    body = await prepare_chat(await request.json(), request.headers.get("X-Assistant-Incognito") == "1", prompt_cache, openings)
+        return JSONResponse({"primed": openings.prime(prompt_cache.stabilize(reasoning_turn(await request.json(), request)))})
+    body = await prepare_chat(reasoning_turn(await request.json(), request), request.headers.get("X-Assistant-Incognito") == "1", prompt_cache, openings)
     req = llm.build_request("POST", "/v1/chat/completions", json=body)
     try:
         upstream = await llm.send(req, stream=True)

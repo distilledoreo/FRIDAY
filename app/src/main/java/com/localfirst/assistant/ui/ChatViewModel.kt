@@ -821,8 +821,14 @@ class ChatViewModel(
         val now = ZonedDateTime.now()
         session.systemPrompt = try { openingPrompt(now) }
         catch (e: Exception) { _state.update { it.copy(error = "Couldn't read saved knowledge: ${e.message}", turnMessagesReady = true) }; return }
-        (provider as? com.localfirst.assistant.model.OpenAiCompatibleModelProvider)?.incognito = _state.value.privacy.incognito
+        (provider as? com.localfirst.assistant.model.OpenAiCompatibleModelProvider)?.let {
+            it.incognito = _state.value.privacy.incognito
+            // Typed chats reason first; a spoken reply can't wait for it.
+            it.reasoning = voice?.active != true && !carVoiceSession &&
+                _state.value.conversationId != com.localfirst.assistant.voice.LiveVoiceConversation.ID
+        }
         session.latestUserNote = AssistantPrompts.timeNote(now)
+        session.recallContext = null
         // What the user changed in the last interface reply, so the model knows ("seats = 9").
         session.snapshot().indexOfLast { it is Message.Assistant }.takeIf { it >= 0 }
             ?.let { genUiSessions.noteFor(genUiConversation, it) }
@@ -841,7 +847,7 @@ class ChatViewModel(
                     try {
                         if (!_state.value.privacy.incognito) migrateLegacyMemory()
                         val recalled = JSONObject(client.request("/workspace/memory/context", "POST", JSONObject().put("query", pendingRecallQuery.take(4000)).put("scope", _state.value.projectId.orEmpty()).put("incognito", _state.value.privacy.incognito).put("current_id", _state.value.conversationId?.let { "native-" + it.replace("-", "") }.orEmpty()), timeoutMs = 8000))
-                        session.systemPrompt += recalled.optString("context")
+                        session.recallContext = recalled.optString("context").ifEmpty { null }
                         val sources = recalled.optJSONArray("sources") ?: JSONArray()
                         _state.update { it.copy(recallSources = jsonRows(sources), recallStatus = if (sources.length() == 0) "No relevant memories needed." else "${sources.length()} relevant memory sources supplied.") }
                     } catch (e: CancellationException) { throw e }

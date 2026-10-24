@@ -33,6 +33,8 @@ class ConversationSession(
 
     /** Added to the latest user message when it is sent (not stored), e.g. the current time. */
     var latestUserNote: String? = null
+    /** This turn's recalled memories, sent on the latest user message (not stored) and checked by web privacy. */
+    var recallContext: String? = null
     /** Per-turn network policy; also enforced against unadvertised model calls. */
     var blockedTools: Set<String> = emptySet()
     var confirmedTools: Set<String> = emptySet()
@@ -128,6 +130,7 @@ class ConversationSession(
             blockedTools = blockedTools,
             confirmedTools = confirmedTools,
             capturePhoneScreen = capturePhoneScreen,
+            recallContext = recallContext,
         )
 
     private fun truncateAfter(index: Int) {

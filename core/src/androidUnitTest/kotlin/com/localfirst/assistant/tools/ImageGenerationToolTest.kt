@@ -1,6 +1,7 @@
 package com.localfirst.assistant.tools
 
 import com.localfirst.assistant.conversation.*
+import com.localfirst.assistant.json.JsonCodec
 import com.localfirst.assistant.model.*
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
@@ -8,6 +9,20 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ImageGenerationToolTest {
+    @Test fun sizesSnapToMultiplesOfSixteen() = runBlocking {
+        var posted = ""
+        val gateway = object : WorkspaceGateway {
+            override suspend fun toolRequest(path: String, method: String, body: String?): String {
+                if (method == "POST") posted = body.orEmpty()
+                return """{"status":"completed","artifact":{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}"""
+            }
+        }
+        ImageGenerationTool(gateway) {}.execute(JsonCodec.json.parseToJsonElement("""{"prompt":"poster","width":1920,"height":1080}""").jsonObject)
+        assertTrue(posted, posted.contains("\"width\":1920") && posted.contains("\"height\":1088"))
+        assertEquals(256, snapImageSide(100))
+        assertEquals(2000, snapImageSide(4000))
+    }
+
     @Test fun checkpointsAndReturnsImageToSameConversation() = runBlocking {
         var submissions = 0
         val gateway = object : WorkspaceGateway {

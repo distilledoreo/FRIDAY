@@ -11,11 +11,15 @@ import kotlinx.serialization.json.*
 /** Poll short requests while the GPU changes hands; never hold one long HTTP connection. */
 class ImageGenerationTool(private val client: WorkspaceGateway, private val pause: suspend () -> Unit = { delay(1000) }) : Tool {
     override val name = "generate_image"
-    override val description = "Generate or edit one image using local Qwen Image 2.1. Choose resolution/aspect ratio/steps and relevant uploaded reference_file_ids from the user's request. Defaults 768x768, 8 Euler steps. Dimensions must be multiples of 16, each 256–2000; maximum 2000x2000 at 8 steps, up to 12 steps for smaller images. At most 2 references; they are resized to 512px. A hard 15-minute render limit prevents runaway runs. User manual settings override your choices. Chat pauses while the GPU swaps, then resumes with this same transcript. Link the returned image artifact. Do not claim completion unless status is completed."
+    override val description = "Generate or edit one image using local Qwen Image 2.1. Choose resolution/aspect ratio/steps and relevant uploaded reference_file_ids from the user's request. To change an image from this chat, including one you generated, pass its file id (the id in its assistant://artifact/<id> link) in reference_file_ids and describe the edit, so the rest of the picture stays the same. Defaults 768x768, 8 Euler steps. Dimensions must be multiples of 16, each 256–2000; maximum 2000x2000 at 8 steps, up to 12 steps for smaller images. At most 2 references; they are resized to 512px. A hard 15-minute render limit prevents runaway runs. User manual settings override your choices. Chat pauses while the GPU swaps, then resumes with this same transcript. Link the returned image artifact. Do not claim completion unless status is completed."
     override val inputSchema = JsonCodec.json.parseToJsonElement("""{"type":"object","properties":{"prompt":{"type":"string","maxLength":4000},"width":{"type":"integer","minimum":256,"maximum":2000},"height":{"type":"integer","minimum":256,"maximum":2000},"steps":{"type":"integer","minimum":4,"maximum":12},"seed":{"type":"integer","minimum":0,"maximum":2147483647},"reference_file_ids":{"type":"array","maxItems":2,"items":{"type":"string"}},"transparent":{"type":"boolean"}},"required":["prompt"],"additionalProperties":false}""").jsonObject
     override suspend fun execute(arguments: JsonObject): ToolExecutionResult {
         val id = UUID.randomUUID().toString().replace("-", "")
-        val body = JsonObject(arguments + ("id" to JsonPrimitive(id)))
+        // "16:9 at 1080p" asks for 1080, which the renderer refuses; the nearest multiple of 16 keeps the shape.
+        val sized = listOf("width", "height").mapNotNull { side ->
+            arguments[side]?.jsonPrimitive?.intOrNull?.let { side to JsonPrimitive(snapImageSide(it)) }
+        }
+        val body = JsonObject(arguments + sized + ("id" to JsonPrimitive(id)))
         try {
             // Same client-generated id makes an uncertain submission safe to repeat.
             try { client.toolRequest("/workspace/images", "POST", body.toString()) }
@@ -41,3 +45,6 @@ class ImageGenerationTool(private val client: WorkspaceGateway, private val paus
         }
     }
 }
+
+/** The nearest multiple of 16 within the renderer's 256–2000 range. */
+internal fun snapImageSide(value: Int): Int = (Math.round(value / 16.0) * 16).toInt().coerceIn(256, 2000)
