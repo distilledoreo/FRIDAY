@@ -186,8 +186,17 @@ class ChatTools:
         async def generate_image(args):
             image = uuid.uuid4().hex
             body = dict(args, **self.image, id=image)
+            for side in ('width', 'height'):
+                # "16:9 at 1080p" asks for 1080, which the renderer refuses; the nearest multiple of 16 keeps the shape.
+                if isinstance(body.get(side), int) and not isinstance(body[side], bool):
+                    body[side] = min(2000, max(256, round(body[side] / 16) * 16))
             try:
                 await call('POST', '/workspace/images', body)
+            except ToolError as error:
+                # A refused request (bad settings, busy GPU) was never created: report why rather than "not found".
+                if str(error)[:1] == '4' or str(error).startswith('503'):
+                    raise
+                await call('GET', f'/workspace/images/{image}')
             except Exception:
                 # The same id makes an uncertain submission safe to check instead of repeating.
                 await call('GET', f'/workspace/images/{image}')
@@ -345,7 +354,7 @@ class ChatTools:
                  description='Create a downloadable UTF-8 text, CSV, Markdown, JSON, SVG or HTML file. Use execute_python for binary formats. Link the returned assistant://artifact URL.',
                  parameters=_schema({'name': {'type': 'string'}, 'content': {'type': 'string'}}, ['name', 'content'])),
             dict(name='generate_image', run=generate_image,
-                 description='Generate or edit one image using local Qwen Image 2.1. Choose resolution/aspect ratio/steps and relevant uploaded reference_file_ids from the user\'s request. Defaults 768x768, 8 Euler steps. Dimensions must be multiples of 16, each 256–2000; maximum 2000x2000 at 8 steps, up to 12 steps for smaller images. At most 2 references; they are resized to 512px. A hard 15-minute render limit prevents runaway runs. User manual settings override your choices. Chat pauses while the GPU swaps, then resumes with this same transcript. Link the returned image artifact. Do not claim completion unless status is completed.',
+                 description='Generate or edit one image using local Qwen Image 2.1. Choose resolution/aspect ratio/steps and relevant uploaded reference_file_ids from the user\'s request. To change an image from this chat, including one you generated, pass its file id (the id in its assistant://artifact/<id> link) in reference_file_ids and describe the edit, so the rest of the picture stays the same. Defaults 768x768, 8 Euler steps. Dimensions must be multiples of 16, each 256–2000; maximum 2000x2000 at 8 steps, up to 12 steps for smaller images. At most 2 references; they are resized to 512px. A hard 15-minute render limit prevents runaway runs. User manual settings override your choices. Chat pauses while the GPU swaps, then resumes with this same transcript. Link the returned image artifact. Do not claim completion unless status is completed.',
                  parameters=_schema({'prompt': {'type': 'string', 'maxLength': 4000}, 'width': {'type': 'integer', 'minimum': 256, 'maximum': 2000},
                                      'height': {'type': 'integer', 'minimum': 256, 'maximum': 2000}, 'steps': {'type': 'integer', 'minimum': 4, 'maximum': 12},
                                      'seed': {'type': 'integer', 'minimum': 0, 'maximum': 2147483647},

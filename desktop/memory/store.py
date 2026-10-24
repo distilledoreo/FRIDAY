@@ -8,7 +8,23 @@ import uuid
 from pathlib import Path
 
 STOP = set('a an the i me my you your we our it is are was were be to of for in on and or that this what when where how do does did can could would should please tell about remember know have has had with from'.split())
+# Words that match nearly any memory, so a keyword hit on them alone recalls unrelated personal facts. "friday" is
+# the assistant's name, in most greetings.
+STOP |= set('''am at as by if so up out off into onto over than then there their them they he she his him her its
+    us who whom whose which why also just only very really much many more most some any all each every other another
+    such same own not no yes yeah ok okay hey hi hello thanks thank sure right now today get got make made like want
+    need let lets give go going see look use used way thing things something anything one two first new latest recent
+    good great best better bigger big small little lot kind sort bit friday'''.split())
 CATEGORIES = {'preference', 'personal', 'project', 'decision', 'other'}
+
+def recall_match(tokens):
+    """FTS query for recall: a memory or chat must match both of two content words, or two of three or more. Short
+    numbers ("9.11 or 9.9") match hundreds of chats, so they never count."""
+    tokens = [t for t in tokens if not (t.isdigit() and len(t) < 3)]
+    if len(tokens) < 3:
+        return ' AND '.join('"' + t + '"' for t in tokens)
+    words = tokens[:8]
+    return ' OR '.join(f'("{a}" AND "{b}")' for i, a in enumerate(words) for b in words[i + 1:])
 
 def terms(query):
     return list(dict.fromkeys(t for t in re.findall(r"[^\W_]+", query.lower(), re.UNICODE) if len(t) > 1 and t not in STOP))[:20]
@@ -187,7 +203,7 @@ class MemoryStore:
             db.execute('UPDATE suggestions SET status=? WHERE id=?',('accepted' if accept else 'rejected',sid))
             if not accept:db.execute('INSERT OR IGNORE INTO rejected VALUES(?)',(row['fingerprint'],))
     def context(self,query,scope='',current_id='',include_situations=True,include_history=True):
-        settings=self.settings();tokens=terms(query);match=' OR '.join('"'+t+'"' for t in tokens)
+        settings=self.settings();tokens=terms(query);match=recall_match(tokens)
         recalled=[];paragraphs=[]
         semantic=self.semantic(query,scope,current_id,include_history) if tokens and self.encoder else {'memories':[],'history':[]}
         with self.db() as db:

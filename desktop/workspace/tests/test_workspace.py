@@ -248,13 +248,16 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         r = await self.client.post('/workspace/items/memory-chat/continue', json={'revision': 0, 'payload': {'chat': json.dumps(chat)}})
         with self.workspace.db() as db:
             messages = json.loads(db.execute('SELECT messages FROM jobs WHERE id=?', (r.json()['id'],)).fetchone()[0])
-        self.assertIn('Prefer concise answers', messages[0]['content'])
+        # Recall rides on the latest user turn so the system and tool prefix stays cached.
+        self.assertNotIn('Prefer concise answers', messages[0]['content'])
+        self.assertIn('Prefer concise answers', json.dumps(messages[-1]['content']))
+        self.assertIn('Prefer concise answers', messages[-1]['private_context'])
         self.workspace.memory_store.set_settings({'use_memories': False, 'use_history': False})
         chat['summary']['id'] = 'fresh-chat'
         r = await self.client.post('/workspace/items/fresh-chat/continue', json={'revision': 0, 'payload': {'chat': json.dumps(chat)}})
         with self.workspace.db() as db:
             messages = json.loads(db.execute('SELECT messages FROM jobs WHERE id=?', (r.json()['id'],)).fetchone()[0])
-        self.assertNotIn('Prefer concise answers', messages[0]['content'])
+        self.assertNotIn('Prefer concise answers', json.dumps(messages))
 
     async def test_clients_can_poll_revisions_and_fetch_only_changed_items(self):
         self.workspace.sync('chat-1', 0, {'text': 'one'})
@@ -422,3 +425,54 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.wait_job(jid))['status'], 'completed')
 
 if __name__ == '__main__': unittest.main()
+
+
+class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
+    """A model that repeats a finished call verbatim gets the earlier result back, and the budget ends in an answer."""
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.app = FastAPI()
+        self.searches, self.final_request = 0, None
+        async def model(messages, tools):
+            if not tools:
+                self.final_request = messages
+                return {'role': 'assistant', 'content': 'Answer from the results'}
+            return {'role': 'assistant', 'content': '', 'tool_calls': [{'id': uuid.uuid4().hex, 'type': 'function',
+                'function': {'name': 'web_search', 'arguments': '{"query": "same"}'}}]}
+        async def search(query):
+            self.searches += 1
+            return {'query': query, 'results': [{'url': 'https://example.com'}]}
+        async def fetch(url): return {'markdown': 'Example'}
+        self.workspace = module.install(self.app, [], self.temp.name, model, search, fetch)
+        self.lifespan = self.app.router.lifespan_context(self.app)
+        await self.lifespan.__aenter__()
+        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url='http://test')
+    async def asyncTearDown(self):
+        await self.client.aclose()
+        await self.lifespan.__aexit__(None, None, None)
+        self.temp.cleanup()
+    async def test_repeated_call_runs_once_and_limit_answers(self):
+        r = await self.client.post('/workspace/jobs', json={'prompt': 'Loop'})
+        for _ in range(100):
+            job = next(j for j in self.workspace.jobs() if j['id'] == r.json()['id'])
+            if job['status'] in {'completed', 'failed', 'paused'}: break
+            await asyncio.sleep(.1)
+        self.assertEqual(job['status'], 'completed', job)
+        self.assertEqual(job['result'], 'Answer from the results')
+        self.assertEqual(self.searches, 1)
+        self.assertEqual(self.final_request[-1], {'role': 'user', 'content': module.STEP_LIMIT_NOTE})
+        repeated = [m for m in self.final_request if m['role'] == 'tool' and 'already ran' in m['content']]
+        self.assertEqual(len(repeated), module.STEP_LIMIT - 2)
+
+    def test_sent_note_and_call_identity(self):
+        from datetime import datetime, timezone
+        self.assertEqual(module._sent_note(datetime(2026, 10, 4, 9, 5, tzinfo=timezone.utc)),
+                         '\n\n[Sent Sunday, October 4, 2026, 9:05 AM UTC]')
+        first = {'id': 'a', 'function': {'name': 'execute_python', 'arguments': '{"code": "x", "file_ids": []}'}}
+        same = {'id': 'b', 'function': {'name': 'execute_python', 'arguments': '{"file_ids":[],"code":"x"}'}}
+        poll = {'id': 'c', 'function': {'name': 'get_pc_task', 'arguments': '{}'}}
+        messages = [{'role': 'assistant', 'tool_calls': [first, poll]}, {'role': 'tool', 'tool_call_id': 'a'},
+                    {'role': 'tool', 'tool_call_id': 'c'}]
+        self.assertTrue(module._repeated_call(messages, 0, same))
+        self.assertFalse(module._repeated_call(messages, 1, same))
+        self.assertFalse(module._repeated_call(messages, 0, dict(poll, id='d')))
