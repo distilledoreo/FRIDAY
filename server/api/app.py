@@ -305,7 +305,7 @@ TTS_VOICE = "af_heart"  # Paradee speaks only Kokoro's Heart voice
 
 
 class VoiceModels:
-    """Parakeet TDT 0.6B v3 (int4 encoder, else int8) and Paradee 8M, loaded once in the background and run on the CPU.
+    """CPU Parakeet fallback and Paradee 8M, with optional loopback GPU recognition.
 
     ONNX Runtime's memory arena is off for Parakeet: with it on, the process kept ~1 GB more after a long clip (RAM the
     Strata model and its conversation cache need). Short utterances run at the same speed; a 2-minute clip ~2x slower.
@@ -331,8 +331,12 @@ class VoiceModels:
             # "int*" matches the int4 encoder beside the int8 decoder, or both int8 files
             self.asr = onnx_asr.load_model(
                 "nemo-parakeet-tdt-0.6b-v3", f"{VOICE_MODELS}/{asr_dir}", quantization="int*", sess_options=options)
+            if gpu_asr := os.environ.get("FRIDAY_VOICE_ASR_URL"):
+                from voice_runtime import HybridAsr
+                self.asr = HybridAsr(self.asr, gpu_asr)
             self.tts = Paradee(model_path=f"{VOICE_MODELS}/paradee-8m-v1.0/paradee_int8.onnx",
-                               config_path=f"{VOICE_MODELS}/paradee-8m-v1.0/config.json")
+                               config_path=f"{VOICE_MODELS}/paradee-8m-v1.0/config.json",
+                               threads=max(1, min(16, int(os.environ.get("FRIDAY_TTS_THREADS", "1")))))
             self.error = None
         except Exception as e:  # models missing, Storage drive not mounted, ...
             self.error = f"{e.__class__.__name__}: {e}"
@@ -374,7 +378,8 @@ def decode_audio(body: bytes, content_type: str):
 @app.get("/voice", dependencies=auth)
 async def voice_status():
     voice.require()
-    return {"stt": "parakeet-tdt-0.6b-v3", "tts": "paradee-8m-v1.0", "voices": [TTS_VOICE]}
+    return {"stt": "parakeet-tdt-0.6b-v3", "tts": "paradee-8m-v1.0", "voices": [TTS_VOICE],
+            "stt_backend": getattr(voice.asr, "backend", "cpu")}
 
 
 @app.post("/transcribe", dependencies=auth)
@@ -473,7 +478,7 @@ workspace_store = enable_workspace(app, auth, llm, search, fetch, FetchRequest,
     WorkspacePath(__file__).resolve().parent.parent / "workspace-data")
 
 image_manager = enable_images(app, auth, workspace_store, raw_llm, gpu_gate,
-    WorkspacePath(__file__).resolve().parent / "imagegen" / "config.json")
+    os.environ.get("FRIDAY_IMAGEGEN_CONFIG") or WorkspacePath(__file__).resolve().parent / "imagegen" / "config.json")
 
 from memory.integration import enable as enable_memory
 memory_store = enable_memory(app, auth,

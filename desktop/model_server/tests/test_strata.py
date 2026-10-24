@@ -39,6 +39,17 @@ def request():
 
 
 class PayloadTests(unittest.TestCase):
+    def test_new_identical_turns_have_distinct_request_ids(self):
+        with httpx.Client(base_url='http://fixture') as raw:
+            client = StrataClient(raw)
+            first = client.build_request('POST', '/v1/chat/completions', json=request())
+            second = client.build_request('POST', '/v1/chat/completions', json=request())
+            self.assertTrue(first.headers['x-request-id'])
+            self.assertNotEqual(first.headers['x-request-id'], second.headers['x-request-id'])
+            explicit = client.build_request('POST', '/v1/chat/completions', json=request(),
+                                            headers={'X-Request-ID': 'retry-fixture'})
+            self.assertEqual(explicit.headers['x-request-id'], 'retry-fixture')
+
     def test_tool_history_and_vision_survive(self):
         body = request()
         body['messages'] += [

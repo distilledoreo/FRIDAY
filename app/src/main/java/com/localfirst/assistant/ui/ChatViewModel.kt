@@ -65,6 +65,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
@@ -606,20 +607,29 @@ class ChatViewModel(
 
     // ---- voice -----------------------------------------------------------------
 
+    private var voiceStarting: Job? = null
+
     fun startVoice() {
         if (_state.value.workspaceBusy || !settingsReady()) return
+        if (voiceStarting?.isActive == true) return
+        if (voice?.active == true) { voice.start(); holdForeground(); return }
         _state.update { it.copy(voiceError=null) }
-        viewModelScope.launch {
+        voiceStarting = viewModelScope.launch {
             try {
                 if (app != null) {
                     if (!com.localfirst.assistant.phone.PermissionBroker.ensure(app, android.Manifest.permission.RECORD_AUDIO)) {
                         _state.update { it.copy(voiceError="Microphone permission is needed for voice. Allow it in Android app permissions, then try again.") };return@launch
                     }
+                }
+                prepareLiveVoiceConversation()
+                if (app != null) {
                     VoiceForegroundService.start(app, ::closeVoice)
-                    app?.let(VoiceBubbleService::start)
+                    VoiceBubbleService.start(app)
                 }
                 voice?.start()
                 holdForeground()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 app?.let(VoiceForegroundService::stop)
                 _state.update { it.copy(voiceError = "Voice could not start. Check microphone permission and the selected voice connection.") }
@@ -627,10 +637,27 @@ class ChatViewModel(
         }
     }
 
-    fun closeVoice() { voice?.close(); app?.let(VoiceForegroundService::stop);app?.let(VoiceBubbleService::stop);_state.update { it.copy(voiceError=null) } }
+    private suspend fun prepareLiveVoiceConversation() {
+        if (_state.value.privacy.incognito) return
+        turnJob?.cancel()
+        turnJob?.join()
+        _state.first { !it.workspaceBusy }
+        // Merge the other client's latest voice history before selecting our local/offline copy.
+        if (chatSync != null) runChatSync(automatic = true)?.join()
+        val id = com.localfirst.assistant.voice.LiveVoiceConversation.ID
+        withContext(Dispatchers.IO) {
+            if (conversationStore.load(id) == null) {
+                conversationStore.save(com.localfirst.assistant.voice.LiveVoiceConversation.empty(System.currentTimeMillis()))
+            }
+        }
+        switchConversation(id)
+        _state.update { it.copy(showWorkspace = false) }
+    }
+
+    fun closeVoice() { voiceStarting?.cancel(); voiceStarting = null; voice?.close(); app?.let(VoiceForegroundService::stop);app?.let(VoiceBubbleService::stop);_state.update { it.copy(voiceError=null) } }
     fun pauseVoiceFromChat() { voice?.pause("Voice paused. Resume when you're ready.") }
     fun toggleMicMute() { voice?.muteMic(voice?.state?.value?.micMuted == false) }
-    fun toggleVoice() { if(voice?.active == true) closeVoice() else startVoice() }
+    fun toggleVoice() { if(voice?.active == true || voiceStarting?.isActive == true) closeVoice() else startVoice() }
 
     private var dictationJob: Job? = null
 
@@ -672,7 +699,7 @@ class ChatViewModel(
 
     fun interruptVoice() = voice?.interrupt()
 
-    /** Opened as the phone's assistant (long-press power, headset button): a fresh chat in voice mode. */
+    /** Opened as the phone's assistant: resume the shared live voice conversation. */
     fun startAssistantSession() {
         viewModelScope.launch {
             voice?.close()
@@ -959,18 +986,21 @@ class ChatViewModel(
 
     private fun switchTo(id: String?, newProjectId: String? = null) {
         if (_state.value.workspaceBusy) return
-        viewModelScope.launch {
+        viewModelScope.launch { switchConversation(id, newProjectId) }
+    }
+
+    private suspend fun switchConversation(id: String?, newProjectId: String? = null) {
             turnJob?.cancel()
             turnJob?.join()
             val stored = if (id != null) withContext(Dispatchers.IO) { conversationStore.load(id) } else null
-            if (id != null && stored == null) { refreshConversationList(); return@launch }
+            if (id != null && stored == null) { refreshConversationList(); return }
             parkDraft()
             clearIncognito()
             if (stored == null) {
                 resetToNewChat(preserveDraft = false)
                 _state.update { it.copy(projectId = newProjectId, showWorkspace = false) }
                 restoreDraft(null, newProjectId)
-                return@launch
+                return
             }
             session = newSession(stored.messages)
             newPhoneUseSession()
@@ -978,7 +1008,6 @@ class ChatViewModel(
             _state.update { it.copy(conversationId = id, imageMode = false, projectId = stored.summary.projectId,
                 title = stored.summary.title, messages = stored.messages, draft = "", editingIndex = null, error = null) }
             restoreDraft(id, stored.summary.projectId)
-        }
     }
 
     private fun clearDraftAttachments() {
@@ -1034,6 +1063,7 @@ class ChatViewModel(
     private suspend fun generateTitle() {
         if (!_state.value.privacy.persist) return
         val id = _state.value.conversationId ?: return
+        if (id == com.localfirst.assistant.voice.LiveVoiceConversation.ID) return
         val messages = session.snapshot()
         val firstUser = messages.firstOrNull { it is Message.User } as? Message.User ?: return
         val firstAnswer = messages.firstOrNull { it is Message.Assistant && it.content.isNotBlank() } as? Message.Assistant
@@ -1056,7 +1086,9 @@ class ChatViewModel(
 
     /** The system prompt a turn starts from (before recalled memories), shared with [primeOpening] so they always match. */
     private fun openingPrompt(now: ZonedDateTime): String =
-        AssistantPrompts.system(now, interactiveAnswers = appearance().interactiveAnswers) + (if (_state.value.privacy.freshSlate) "" else knowledgeStore?.context(_state.value.projectId, includeMemories = workspace == null).orEmpty())
+        AssistantPrompts.system(now, interactiveAnswers = appearance().interactiveAnswers) +
+            com.localfirst.assistant.voice.LiveVoiceConversation.instructions(_state.value.conversationId, _state.value.privacy.incognito) +
+            (if (_state.value.privacy.freshSlate) "" else knowledgeStore?.context(_state.value.projectId, includeMemories = workspace == null).orEmpty())
 
     private var primeJob: Job? = null
 

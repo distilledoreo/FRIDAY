@@ -13,7 +13,7 @@ class ReplySpeech {
             if (message !is Message.Assistant) emptyList()
             else {
                 val final = !busy || index < turn.lastIndex
-                chunks.getOrPut(index) { SpeechChunker() }.update(ReplyText.plain(message.content, complete = final), final = final)
+                chunks.getOrPut(index) { SpeechChunker(earlyClauses = true) }.update(ReplyText.plain(message.content, complete = final), final = final)
             }
         }
     }

@@ -32,7 +32,15 @@ def enable(app, auth, workspace, raw_llm, gate, config_path):
 
     @router.get('/health')
     async def health():
-        return {'phase':gate.phase, 'error':gate.error, 'active_chat_requests':gate.readers, 'maintenance_paused':gate.maintenance_paused(), 'model':'Qwen Image 2.1'}
+        missing = [Path(item['path']).name for item in config['files'] if not Path(item['path']).is_file()]
+        if not Path(config['command'][0]).is_file():
+            missing.append(Path(config['command'][0]).name)
+        checkpoint = Path(config['command'][config['command'].index('--diffusion-model') + 1]).stem
+        return {'phase':gate.phase, 'error':gate.error or manager.warm_error,
+                'active_chat_requests':gate.readers, 'maintenance_paused':gate.maintenance_paused(),
+                'model':'Qwen Image 2.1 Turbo' if 'turbo' in checkpoint.lower() else 'Qwen Image 2.1',
+                'checkpoint':checkpoint, 'placement':config.get('placement', 'shared'),
+                'loaded':await manager.runtime.image_ready(), 'runtime_available':not missing, 'missing_files':missing}
 
     @router.get('')
     async def jobs():
@@ -54,7 +62,7 @@ def enable(app, auth, workspace, raw_llm, gate, config_path):
     async def delete(job_id: str):
         job = manager.get(job_id)
         if job['status'] not in manager.TERMINAL:
-            raise HTTPException(409, 'Cancel the image job and wait for chat restoration first')
+            raise HTTPException(409, 'Cancel the image job and wait for it to stop first')
         manager.path(job_id).unlink()
         return {'removed':True}
 

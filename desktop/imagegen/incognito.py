@@ -29,7 +29,7 @@ class EphemeralSessions:
         if shutil.disk_usage(self.ram_root).free<128*1024**2:raise HTTPException(507,'Not enough RAM storage for incognito')
         ident=uuid.uuid4().hex;root=Path(tempfile.mkdtemp(prefix='friday-incognito-',dir=self.ram_root));root.chmod(0o700)
         store=type(self.workspace)(root)
-        images=ImageManager(root/'image-jobs',self.images.gate,self.images.runtime,store)
+        images=ImageManager(root/'image-jobs',self.images.gate,self.images.runtime,store,owns_runtime=False)
         # Only GPU recovery metadata lives on disk. Prompts/artifacts remain on RAM storage.
         images.journal=self.images.journal
         images.worker_task=asyncio.create_task(images.worker())

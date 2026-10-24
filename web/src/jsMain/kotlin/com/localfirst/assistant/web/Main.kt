@@ -140,7 +140,14 @@ fun main() = onWasmReady {
         }) { AssistantTheme(state.preferences) { WorkspaceApp(vm, state, features, code,
             onAttach = { pickBrowserFiles(scope, vm) }, onLibraryUpload = { pickBrowserFiles(scope, vm, false) },
             onDictate = { audio.dictate(vm, voice.active) }, dictating = dictating,
-            voice = voiceState, voiceControls = VoiceControls(toggle = { if (voice.active) voice.close() else { voiceChat = state.activeId; voice.start() } },
+            voice = voiceState, voiceControls = VoiceControls(toggle = { if (voice.active) voice.close() else scope.launch {
+                if (!vm.state.value.incognito) {
+                    vm.openLiveVoice()?.join()
+                    if (vm.state.value.activeId != com.localfirst.assistant.voice.LiveVoiceConversation.ID) return@launch
+                }
+                voiceChat = vm.state.value.activeId
+                voice.start()
+            } },
                 pause = { voice.pause("Voice paused. Resume when you're ready.") }, resume = voice::start, interrupt = { voice.interrupt() },
                 close = voice::close, mute = { voice.muteMic(voiceState?.micMuted != true) }),
             onShare = { text -> shareText(text) { vm.reportError(it) } },

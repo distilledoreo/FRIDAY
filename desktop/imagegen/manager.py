@@ -1,10 +1,11 @@
-"""Own the GPU across chat requests and durable image jobs. No client disconnect owns a swap."""
+"""Own shared GPU handoffs or resident dedicated-GPU image jobs."""
 import asyncio
 import base64
 import contextlib
 import hashlib
 import io
 import json
+import math
 import os
 from pathlib import Path
 import time
@@ -35,6 +36,7 @@ class GpuGate:
         self.error = None
         self.foreground = {}
         self.maintenance_file = None
+        self.image_lock = asyncio.Lock()
 
     def maintenance_paused(self):
         return bool(self.maintenance_file and self.maintenance_file.exists())
@@ -57,7 +59,16 @@ class GpuGate:
             self.condition.notify_all()
 
     @contextlib.asynccontextmanager
-    async def image_lease(self):
+    async def image_lease(self, borrow_chat=True):
+        async with self.image_lock:
+            if not borrow_chat:
+                yield
+                return
+            async with self.shared_image_lease():
+                yield
+
+    @contextlib.asynccontextmanager
+    async def shared_image_lease(self):
         async with self.condition:
             if self.exclusive:
                 raise RuntimeError('Another GPU handoff is active')
@@ -90,7 +101,16 @@ class GatedClient:
     async def post(self, path, **kwargs):
         return await self.wait_send(self.build_request('POST', path, **kwargs))
 
-    async def wait_send(self, request):
+    @contextlib.asynccontextmanager
+    async def stream(self, method, path, **kwargs):
+        """httpx-style streaming for saved browser chats; the lease is held until the stream closes."""
+        response = await self.wait_send(self.build_request(method, path, **kwargs), stream=True)
+        try:
+            yield response
+        finally:
+            await response.aclose()
+
+    async def wait_send(self, request, stream=False):
         deadline = time.monotonic() + 600
         while True:
             if not self.gate.background_allowed():
@@ -98,7 +118,7 @@ class GatedClient:
                 await asyncio.sleep(.25)
                 continue
             try:
-                return await self.send(request)
+                return await self.send(request, stream=stream)
             except HTTPException as error:
                 if error.status_code != 503 or self.gate.phase == "recovery_failed" or time.monotonic() >= deadline:
                     raise
@@ -135,6 +155,14 @@ class SystemRuntime:
         self.config = config
         self.raw_llm = raw_llm
         self.http = httpx.AsyncClient(base_url='http://127.0.0.1:8192', timeout=30)
+        self.dedicated = config.get('placement', 'shared') == 'dedicated'
+        self.loaded = False
+        if config.get('placement', 'shared') not in ('shared', 'dedicated'):
+            raise ValueError('Image placement must be shared or dedicated')
+        if self.dedicated:
+            device = config.get('environment', {}).get('CUDA_VISIBLE_DEVICES', '')
+            if not device.startswith('GPU-') or ',' in device:
+                raise ValueError('Dedicated images require one physical GPU UUID in CUDA_VISIBLE_DEVICES')
 
     async def command(self, *args, timeout=65):
         proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -166,6 +194,8 @@ class SystemRuntime:
             if stat.st_size != c['binary_size'] or stat.st_mtime_ns != c['binary_mtime_ns']:
                 raise RuntimeError('Image runtime changed since verification. Reverify before using it.')
         await asyncio.to_thread(verify)
+        if self.dedicated:
+            return
         # Never stop a directly connected client outside our gateway while it is generating.
         end = time.monotonic() + 600
         while True:
@@ -187,10 +217,21 @@ class SystemRuntime:
             raise RuntimeError('Another GPU compute process is active; image model was not started')
 
     async def load_image(self, cancelled):
+        if self.dedicated:
+            state = (await self.command('systemctl', '--user', 'show', self.IMAGE_UNIT,
+                                        '--property=ActiveState', '--value')).strip()
+            if state in ('active', 'activating'):
+                await self.wait_image(cancelled)
+                return
         command = self.config['command']
+        environment = ['--setenv=' + key + '=' + value for key, value in self.config.get('environment', {}).items()]
         await self.command('systemd-run', '--user', '--unit=assistant-qwen-image', '--collect',
                            '--property=KillMode=control-group', '--property=TimeoutStopSec=30',
-                           '--property=BindsTo=assistant-api.service', '--property=After=assistant-api.service', *command)
+                           '--property=BindsTo=assistant-api.service', '--property=After=assistant-api.service',
+                           *environment, *command)
+        await self.wait_image(cancelled)
+
+    async def wait_image(self, cancelled):
         end = time.monotonic() + MAX_LOAD_SECONDS
         while time.monotonic() < end:
             if cancelled():
@@ -199,13 +240,26 @@ class SystemRuntime:
                 r = await self.http.get('/sdcpp/v1/capabilities', timeout=3)
                 if r.status_code == 200:
                     model = r.json().get('model', {})
-                    if 'qwen_image_2.1-Q8_0' not in str(model):
+                    command = self.config['command']
+                    expected = Path(command[command.index('--diffusion-model') + 1]).stem
+                    if expected not in str(model):
                         raise RuntimeError('Unexpected image model on the managed port')
+                    self.loaded = True
                     return
             except httpx.HTTPError:
                 pass
             await asyncio.sleep(1)
         raise RuntimeError('Qwen Image did not become ready within 90 seconds')
+
+    async def image_ready(self):
+        try:
+            response = await self.http.get('/sdcpp/v1/capabilities', timeout=2)
+            command = self.config['command']
+            expected = Path(command[command.index('--diffusion-model') + 1]).stem
+            self.loaded = response.status_code == 200 and expected in str(response.json().get('model', {}))
+        except (httpx.HTTPError, ValueError):
+            self.loaded = False
+        return self.loaded
 
     async def generate(self, request, cancelled, update):
         prompt = request['prompt']
@@ -215,6 +269,18 @@ class SystemRuntime:
                 'seed': request['seed'], 'batch_count': 1, 'output_format': 'png',
                 'sample_params': {'sample_method': 'euler', 'sample_steps': request['steps'],
                                   'guidance': {'txt_cfg': 4}}}
+        # Distilled models can pin their required schedule and CFG in the local config.
+        body['sample_params'].update(self.config.get('sample_params', {}))
+        if self.config.get('sampling_profile') == 'qwen-image-2.1-lightning':
+            # LightX2V's four-step training schedule: exponential dynamic shift,
+            # 256/8192 sequence anchors, shifts 0.5/0.9, no terminal stretching.
+            sequence = (request['width'] // 16) * (request['height'] // 16)
+            shift = math.exp(0.5 + (sequence - 256) * (0.9 - 0.5) / (8192 - 256))
+            sigmas = [1.0] + [shift / (shift + 1 / t - 1) for t in (0.75, 0.5, 0.25)] + [0.0]
+            body['sample_params'].update(sample_method='euler', sample_steps=4,
+                                         guidance={'txt_cfg':1}, custom_sigmas=sigmas)
+        if self.config.get('lora'):
+            body['lora'] = self.config['lora']
         if request.get('references'):
             body['ref_images'] = request['references']
             body['auto_resize_ref_image'] = False
@@ -247,6 +313,7 @@ class SystemRuntime:
         state = (await self.command('systemctl', '--user', 'show', self.IMAGE_UNIT, '--property=LoadState', '--value')).strip()
         if state != 'not-found':
             await self.command('systemctl', '--user', 'stop', self.IMAGE_UNIT)
+        self.loaded = False
 
     async def restore_chat(self):
         seconds = float(self.config.get('llm_reload_timeout_seconds', 240))
@@ -276,13 +343,17 @@ class SystemRuntime:
 class ImageManager:
     TERMINAL = {'completed', 'failed', 'cancelled'}
 
-    def __init__(self, root, gate, runtime, store):
+    def __init__(self, root, gate, runtime, store, owns_runtime=True):
         self.root = Path(root); self.root.mkdir(parents=True, exist_ok=True)
         self.gate, self.runtime, self.store = gate, runtime, store
         self.worker_task = None
         self.current = None
+        self.current_job_id = None
         self.stopping = False
         self.journal = self.root / 'gpu-state.json'
+        self.dedicated = getattr(runtime, 'dedicated', False)
+        self.owns_runtime = owns_runtime
+        self.warm_error = None
 
     def path(self, job_id):
         try:
@@ -352,11 +423,13 @@ class ImageManager:
         for job in self.jobs():
             if job['status'] == 'running':
                 self.update(job['id'], status='failed', phase='interrupted', error='Server restarted during generation; chat restored. Start a new image request to retry.')
+            elif job['status'] == 'completed' and not job.get('artifact'):
+                self.update(job['id'], status='failed', phase='failed', error='Image generation ended without an image. Start a new image request to retry.')
 
     async def execute(self, job):
         job_id = job['id']
         def update(**fields):
-            if 'phase' in fields:
+            if 'phase' in fields and not self.dedicated:
                 self.gate.phase = fields['phase']
             return self.update(job_id, **fields)
         def cancelled():
@@ -364,19 +437,21 @@ class ImageManager:
         if cancelled():
             update(status='cancelled', phase='cancelled'); return
         result = None; error = None; borrowed = False; was_cancelled = False
-        async with self.gate.image_lease():
+        async with self.gate.image_lease(borrow_chat=not self.dedicated):
             try:
                 update(status='running', phase='preparing')
                 await self.runtime.preflight()
                 if cancelled():
                     raise asyncio.CancelledError()
                 # Persist before the stop command, so a crash always triggers restoration.
-                atomic(self.journal, {'borrowed':True, 'job_id':job_id})
-                borrowed = True
-                update(phase='unloading_chat')
-                await self.runtime.unload_chat()
+                if not self.dedicated:
+                    atomic(self.journal, {'borrowed':True, 'job_id':job_id})
+                    borrowed = True
+                    update(phase='unloading_chat')
+                    await self.runtime.unload_chat()
                 update(phase='loading_image')
                 await self.runtime.load_image(cancelled)
+                self.warm_error = None
                 update(phase='generating')
                 request = dict(job['request'])
                 def references():
@@ -386,19 +461,30 @@ class ImageManager:
                             if image.width * image.height > 32_000_000:
                                 raise ValueError('Reference image is too large')
                             image = image.convert('RGB'); image.thumbnail((512, 512))
+                            # Qwen's VAE requires a 32-pixel grid when runtime resizing is disabled.
+                            size = tuple(max(32, ((side + 16) // 32) * 32) for side in image.size)
+                            if image.size != size:
+                                image = image.resize(size, Image.Resampling.LANCZOS)
                             out = io.BytesIO(); image.save(out, format='PNG')
                             encoded.append(base64.b64encode(out.getvalue()).decode())
                     return encoded
                 request['references'] = await asyncio.to_thread(references)
                 result = await asyncio.wait_for(self.runtime.generate(request, cancelled, update), MAX_RENDER_SECONDS + 5)
-                # Save the file before reloading chat; only advertise completion after restoration.
+                # Save the artifact before advertising completion or restoring shared-card chat.
                 artifact = await asyncio.to_thread(self.store.put_file, result, f'qwen-image-{job_id[:8]}.png', 'image/png')
                 update(artifact=artifact)
             except asyncio.CancelledError:
                 was_cancelled = True
             except Exception as e:
-                error = str(e)[:1000]
+                error = (str(e).strip() or type(e).__name__)[:1000]
             finally:
+                if self.dedicated and (was_cancelled or error):
+                    # Recycle an interrupted/failed renderer without leaving uncertain
+                    # sampler work alive. The next image reloads; chat/ASR stay loaded.
+                    try:
+                        await self.runtime.unload_image()
+                    except Exception as e:
+                        error = f'Image cleanup failed: {e}'
                 if borrowed:
                     update(phase='restoring_chat')
                     try:
@@ -418,6 +504,7 @@ class ImageManager:
         while not self.stopping:
             job = next((j for j in reversed(self.jobs()) if j['status'] == 'queued'), None)
             if job and self.gate.phase != 'recovery_failed' and not self.gate.maintenance_paused():
+                self.current_job_id = job['id']
                 self.current = asyncio.create_task(self.execute(job))
                 try:
                     await self.current
@@ -425,18 +512,46 @@ class ImageManager:
                     self.update(job['id'], status='failed', phase='recovery_failed' if self.gate.phase == 'recovery_failed' else 'failed', error=str(error)[:500])
                 finally:
                     self.current = None
+                    self.current_job_id = None
             await asyncio.sleep(.5)
 
     async def start(self):
         await self.recover()
-        self.worker_task = asyncio.create_task(self.worker())
+        self.worker_task = asyncio.create_task(self.warm_and_work())
+
+    async def warm_and_work(self):
+        if self.dedicated and not self.gate.maintenance_paused():
+            try:
+                async with self.gate.image_lease(borrow_chat=False):
+                    await self.runtime.preflight()
+                    await self.runtime.load_image(lambda: self.stopping)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self.warm_error = str(e)[:500]
+        await self.worker()
 
     async def stop(self):
         self.stopping = True
         if self.current:
+            job_id = self.current_job_id
             self.current.cancel()
-            await self.current  # Restoration must finish before the API exits.
+            try:
+                await self.current  # Restoration must finish before the API exits.
+            except asyncio.CancelledError:
+                # Cancellation while waiting for the image lock has not entered execute's
+                # cleanup block and must not interrupt closing a private session.
+                if job_id:
+                    self.update(job_id, status='cancelled', phase='cancelled')
         if self.worker_task:
             self.worker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.worker_task
+        if self.dedicated:
+            if self.owns_runtime:
+                await self.runtime.unload_image()
+            else:
+                # Native job responses include prompts/images in process memory. Clear
+                # them when a private session ends, after any other session's render.
+                async with self.gate.image_lease(borrow_chat=False):
+                    await self.runtime.unload_image()

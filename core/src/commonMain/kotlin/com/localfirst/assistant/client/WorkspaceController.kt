@@ -3,6 +3,7 @@ package com.localfirst.assistant.client
 import com.localfirst.assistant.backup.ChatBackup
 import com.localfirst.assistant.backup.Inflate
 import com.localfirst.assistant.conversation.*
+import com.localfirst.assistant.voice.LiveVoiceConversation
 import com.localfirst.assistant.grounding.GroundedEvidence
 import com.localfirst.assistant.grounding.GroundingPrecheck
 import com.localfirst.assistant.tools.SourceLink
@@ -129,6 +130,24 @@ class WorkspaceController(
         activeJob = null, liveEntries = emptyList(), approval = null, editingIndex = null, canvas = null, imageMode = false,
         groundingStatus = null, groundingSources = emptyList(), groundingResearch = null, privateSession = null)
     override fun newChat(project: String?) { if (canLeave()) { rememberDraft(); detach(); openDraft(null, project) } }
+    /** Open the same saved voice conversation on every normal session and connected client. */
+    fun openLiveVoice(): Job? {
+        if (!canLeave() || state.value.incognito) return null
+        return action { identity ->
+            refreshSnapshot(identity)
+            if (identity != epoch) return@action
+            if (state.value.chats.none { it.item.id == LiveVoiceConversation.ID }) {
+                val revision = state.value.items.firstOrNull { it.id == LiveVoiceConversation.ID }?.revision ?: 0
+                try { repository.save(LiveVoiceConversation.empty(clock()), revision) }
+                catch (e: WorkspaceException) { if (e.status != 409) throw e }
+                refreshSnapshot(identity)
+            }
+            if (identity != epoch) return@action
+            check(state.value.chats.any { it.item.id == LiveVoiceConversation.ID }) { "Live voice conversation is unavailable. Try again." }
+            rememberDraft(); detach(); openDraft(LiveVoiceConversation.ID, null)
+            adopt(identity)
+        }
+    }
     /** A private chat; [freshSlate] leaves saved memories out too. */
     fun newIncognito(freshSlate: Boolean = false) {
         if (!canLeave()) return
@@ -383,7 +402,9 @@ class WorkspaceController(
             } finally { if (identity == epoch) mutable.update { it.copy(activeJob = null, approval = null, privateSession = null) } }
             return@action
         }
-        val job = repository.continueChat(next, active?.item?.revision ?: 0, if (old.preferences.interactiveAnswers) clientInterfacePrompt() else "", old.imageSettings.overrides(), turn)
+        val interfacePrompt = (if (old.preferences.interactiveAnswers) clientInterfacePrompt() else "") +
+            LiveVoiceConversation.instructions(next.summary.id, old.incognito)
+        val job = repository.continueChat(next, active?.item?.revision ?: 0, interfacePrompt, old.imageSettings.overrides(), turn)
         if (identity != epoch) return@action
         val item = SyncItem(next.summary.id, job.getValue("revision").jsonPrimitive.int, buildJsonObject { put("chat", encodeConversation(next)) })
         val recall = (job["recall"] as? JsonArray)?.rows()

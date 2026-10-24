@@ -59,6 +59,22 @@ handoff, the reload hook prepares the opening under the exclusive GPU lease, bef
 - Keep Strata's disk session saving, request tracing and MCP tools off: FRIDAY runs tools through the gateway and
   OpenCode's approval flow. The sample unit keeps Strata's temporary image files in its private runtime directory.
 
+### Selecting a card on a multi-GPU PC
+
+Check the negotiated PCIe width before selecting a card for a CPU-offloaded model:
+
+```sh
+nvidia-smi --query-gpu=index,uuid,pci.bus_id,pcie.link.width.current --format=csv
+```
+
+Identical GPUs can occupy slots with different bandwidth. Compare the same model, context and voice workload on each card; do not assume a fourfold link-width difference produces a fourfold inference gain.
+
+For an Orchid-wrapped Strata service, configure both the parent process and its native children. Set the parent unit's `CUDA_DEVICE_ORDER=PCI_BUS_ID` and `CUDA_VISIBLE_DEVICES=GPU-<selected-uuid>`. Strata's local JSON config also selects physical cards through `gpu`/`gpus`; its launcher can overwrite inherited visibility. Set the matching physical card in that config, or explicitly set the same UUID in its `env` mapping. Verify the actual processes with `nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name --format=csv` after reloading.
+
+Wrapped runtimes can also override prefill and caching settings. Inspect the child process's effective arguments/environment before concluding a config change took effect. Keep local card UUIDs and customized runtime configs outside this public repository.
+
+Orchid's small context selector can use a different card by giving the parent service its own GPU UUID while retaining the native response GPU in the child config. Its CPU-parking policy still applies. See [live voice runtime](../voice_runtime/README.md) for this placement and GPU speech recognition.
+
 ## Known Strata issue: the prefix pin and Qwen3.8's template
 
 Strata (through 0.1.42) renders a `{"messages": K}` prefix on its own to find where it ends, and Qwen3.8's chat

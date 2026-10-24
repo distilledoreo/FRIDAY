@@ -12,6 +12,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import uuid
 
 import httpx
 
@@ -56,7 +57,12 @@ class StrataClient:
 
     def build_request(self, method, url, **kwargs):
         if str(url).split('?')[0].endswith('/v1/chat/completions') and 'json' in kwargs:
-            kwargs = dict(kwargs, json=strata_payload(kwargs['json']))
+            # Orchid can replay identical bodies as retries. A newly submitted
+            # turn needs a fresh identity even if a deleted chat is recreated.
+            headers = httpx.Headers(kwargs.get('headers'))
+            if 'x-request-id' not in headers:
+                headers['x-request-id'] = uuid.uuid4().hex
+            kwargs = dict(kwargs, json=strata_payload(kwargs['json']), headers=headers)
         return self.client.build_request(method, url, **kwargs)
 
     async def send(self, request, **kwargs):
