@@ -21,7 +21,7 @@ for module in $MODULES; do
   rsync -a --delete --exclude tests --exclude __pycache__ --exclude config.json "$APP_REPO/desktop/$module/" "$DEST/api/$module/"
 done
 cp "$HERE"/compose.yml "$HERE"/test.sh "$DEST/"
-cp "$HERE"/maintenance/memory-backup.py "$DEST/maintenance/"
+cp "$HERE"/maintenance/memory-backup.py "$HERE"/maintenance/api-watchdog.py "$DEST/maintenance/"
 cp "$HERE"/llama/start-server.sh "$DEST/llama/"
 [ -f "$DEST/llama/llama.env" ] || cp "$HERE/llama/llama.env.example" "$DEST/llama/llama.env"
 [ -f "$DEST/api/imagegen/config.json" ] || cp "$HERE/imagegen/config.example.json" "$DEST/api/imagegen/config.json"
@@ -56,4 +56,4 @@ systemctl --user daemon-reload
 echo "Installed to $DEST. To pick up code changes on a running install: systemctl --user restart assistant-api."
 echo "First install only: Next: fill llama/llama.env and api/imagegen/config.json, set VOICE_MODELS in .env,"
 MODEL_UNIT=llama-qwen38-mtp; [ "$BACKEND" = strata ] && MODEL_UNIT=assistant-strata
-echo "then: (cd $DEST && docker compose up -d) and systemctl --user enable --now $MODEL_UNIT assistant-api friday-memory-backup.timer"
+echo "then: (cd $DEST && docker compose up -d) and systemctl --user enable --now $MODEL_UNIT assistant-api friday-memory-backup.timer friday-api-watchdog.timer"

@@ -1,0 +1,6 @@
+[Unit]
+Description=Restore the FRIDAY gateway if it stops answering
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/assistant-server/maintenance/api-watchdog.py
