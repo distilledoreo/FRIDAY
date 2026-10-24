@@ -271,6 +271,12 @@ class Workspace:
                                            'deleted': bool(old['deleted']) if old else False})
             db.execute('INSERT OR REPLACE INTO items(id,revision,payload,deleted,seq) VALUES(?,?,?,?,'
                        '(SELECT COALESCE(MAX(seq),0)+1 FROM items))', (item_id, actual + 1, encoded, int(deleted)))
+        # A deleted chat leaves recall too; it was still being quoted into later prompts as a past chat.
+        if self.memory_store is not None and deleted and _is_uuid(item_id):
+            try:
+                self.memory_store.delete_source('native-' + uuid.UUID(item_id).hex)
+            except Exception:
+                logging.getLogger(__name__).exception('Deleted chat could not be removed from recall')
         # The workspace commit remains successful if secondary recall indexing is unavailable.
         if self.memory_store is not None and not deleted and 'chat' in payload:
             try:

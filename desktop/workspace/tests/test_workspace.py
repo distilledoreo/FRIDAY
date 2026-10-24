@@ -239,6 +239,17 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         r = await self.client.post('/workspace/items/bad/continue', json={'revision': 0, 'payload': {'chat': '{}'}})
         self.assertEqual(r.status_code, 400)
         self.assertEqual(self.workspace.items(), [])
+    async def test_deleted_chat_leaves_recall(self):
+        from desktop.memory.store import MemoryStore
+        self.workspace.memory_store = MemoryStore(Path(self.temp.name) / 'memory')
+        cid = str(uuid.uuid4())
+        chat = {'version': 1, 'summary': {'id': cid, 'title': 'Zanzibar trip', 'createdAt': 1, 'updatedAt': 1},
+                'messages': [{'role': 'user', 'content': 'Plan my Zanzibar snorkeling trip'}]}
+        self.workspace.sync(cid, 0, {'chat': json.dumps(chat)})
+        self.assertIn('Zanzibar', self.workspace.memory_store.context('Zanzibar snorkeling')['context'])
+        self.workspace.sync(cid, 1, {}, True)
+        self.assertNotIn('Zanzibar', self.workspace.memory_store.context('Zanzibar snorkeling')['context'])
+
     async def test_browser_recall_obeys_shared_memory_settings(self):
         from desktop.memory.store import MemoryStore
         self.workspace.memory_store = MemoryStore(Path(self.temp.name) / 'memory')
