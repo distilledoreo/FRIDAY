@@ -26,7 +26,9 @@ class ChatToolTests(unittest.IsolatedAsyncioTestCase):
         self.models = []
         async def auth(authorization: str = Header(default='')):
             if authorization != 'Bearer synthetic': raise HTTPException(401)
-        async def model(messages, tools, model_id=None):
+        self.private = []
+        async def model(messages, tools, model_id=None, private=False):
+            self.private.append(private)
             self.inputs.append((json.loads(json.dumps(messages)), tools))
             self.models.append(model_id)
             return self.script.pop(0)
@@ -246,6 +248,7 @@ class ChatToolTests(unittest.IsolatedAsyncioTestCase):
         await self.until(job_id, 'completed')
         self.assertEqual(self.calls[0][1], '/grounding')
         self.assertIn('IDENTIFYING or OK', self.inputs[1][0][0]['content'])
+        self.assertEqual(self.private[1], True)  # The privacy check quotes private details.
 
     async def test_no_search_requests_block_web_tools_and_turn_notes_are_never_saved(self):
         self.script = [self.call('web_search', {'query': 'tea'}), {'role': 'assistant', 'content': 'Offline answer.'}]

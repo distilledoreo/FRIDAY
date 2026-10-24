@@ -287,3 +287,15 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PrivateRequestTests(unittest.TestCase):
+    def test_private_requests_ask_the_gateway_not_to_record_them(self):
+        import httpx
+        from desktop.model_server.strata import StrataClient
+        client = StrataClient(httpx.AsyncClient(base_url='http://model'))
+        private = client.build_request('POST', '/v1/chat/completions', json={'messages': [], 'cache_prompt': False})
+        normal = client.build_request('POST', '/v1/chat/completions', json={'messages': []})
+        self.assertEqual(private.headers.get('x-memory-private'), '1')
+        self.assertIsNone(normal.headers.get('x-memory-private'))
+        self.assertNotIn(b'cache_prompt', private.content)

@@ -62,6 +62,9 @@ class StrataClient:
             headers = httpx.Headers(kwargs.get('headers'))
             if 'x-request-id' not in headers:
                 headers['x-request-id'] = uuid.uuid4().hex
+            # A private (incognito) request: the ORCHID gateway keeps nothing of it in its event store.
+            if isinstance(kwargs['json'], dict) and kwargs['json'].get('cache_prompt') is False:
+                headers['x-memory-private'] = '1'
             kwargs = dict(kwargs, json=strata_payload(kwargs['json']), headers=headers)
         return self.client.build_request(method, url, **kwargs)
 

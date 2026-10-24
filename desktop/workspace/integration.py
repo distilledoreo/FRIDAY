@@ -22,7 +22,7 @@ def chat_sampling(level='high'):
 
 
 def enable(app, auth, llm, search, fetch, fetch_request_type, data_dir):
-    async def model(messages, tools, model_id=None):
+    async def model(messages, tools, model_id=None, private=False):
         model_id = model_id or os.environ.get('ASSISTANT_MODEL')
         if not model_id:
             response = await llm.get('/v1/models')
@@ -32,11 +32,12 @@ def enable(app, auth, llm, search, fetch, fetch_request_type, data_dir):
             'model': model_id, 'messages': messages, 'tools': tools, 'stream': False,
             'temperature': 0.3, 'max_tokens': 2048, 'chat_template_kwargs': {'enable_thinking': False},
             'id_slot': 1,  # background slot: keeps the phone chat's cache intact
+            **({'cache_prompt': False} if private else {}),
         })
         response.raise_for_status()
         return response.json()['choices'][0]['message']
 
-    async def stream_model(messages, tools, report, model_id=None, thinking='high'):
+    async def stream_model(messages, tools, report, model_id=None, thinking='high', private=False):
         model_id = model_id or os.environ.get('ASSISTANT_MODEL')
         if not model_id:
             response = await llm.get('/v1/models'); response.raise_for_status()
@@ -45,6 +46,8 @@ def enable(app, auth, llm, search, fetch, fetch_request_type, data_dir):
         calls = {}
         async with llm.stream('POST', '/v1/chat/completions', json={
             'model': model_id, 'messages': messages, 'tools': tools, 'stream': True, **chat_sampling(thinking), 'id_slot': 1,
+            # A private chat: nothing of it is cached or recorded by the model server.
+            **({'cache_prompt': False} if private else {}),
         }) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():

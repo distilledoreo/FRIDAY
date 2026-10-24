@@ -810,13 +810,14 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
     # The running job's message list, so its stream can show tool steps as they happen.
     live = {}
 
-    async def generate(messages, available_tools, report, model_id=None, connection=None, job_id=None, reasoning=None):
+    async def generate(messages, available_tools, report, model_id=None, connection=None, job_id=None, reasoning=None, private=False):
         if connection:
             return await connections.generate(connection, messages, available_tools, report, job=job_id)
         chosen = {'model_id': model_id} if model_id else {}
         stream = getattr(model, 'stream', None)
         if stream is not None:
-            return await stream(messages, available_tools, report, **chosen, **({'thinking': reasoning} if reasoning else {}))
+            return await stream(messages, available_tools, report, **chosen, **({'thinking': reasoning} if reasoning else {}),
+                                **({'private': True} if private else {}))
         answer = await model(messages, available_tools, **chosen)
         await report(answer.get('content') or '')
         return answer
@@ -928,7 +929,7 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                     for step in range(STEP_LIMIT):
                         last = step == STEP_LIMIT - 1
                         request = _for_model(messages) + ([{'role': 'user', 'content': STEP_LIMIT_NOTE}] if last else [])
-                        answer = await asyncio.wait_for(generate(request, [] if last else available, report, body.model, body.connection, reasoning=body.reasoning), 900)
+                        answer = await asyncio.wait_for(generate(request, [] if last else available, report, body.model, body.connection, reasoning=body.reasoning, private=True), 900)
                         messages.append(answer)
                         calls = answer.get('tool_calls') or []
                         if not calls:
@@ -1075,7 +1076,8 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
         ]]
 
     async def judge(messages):
-        answer = await asyncio.wait_for(model(messages, []), 20)
+        # The privacy check quotes private details; like private chats, it is never cached or recorded.
+        answer = await asyncio.wait_for(model(messages, [], private=True), 20)
         return answer.get('content') or ''
 
     async def approval_needed(toolkit, call, messages, decisions, options):
