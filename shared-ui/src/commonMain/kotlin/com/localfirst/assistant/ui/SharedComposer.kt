@@ -32,6 +32,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 
 @Composable
 fun SharedComposer(
@@ -55,6 +57,8 @@ fun SharedComposer(
     onExitImageMode: () -> Unit = {},
     onDictate: (() -> Unit)? = null,
     dictating: Boolean = false,
+    thinking: com.localfirst.assistant.settings.ThinkingLevel? = null,
+    onThinking: ((com.localfirst.assistant.settings.ThinkingLevel) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val palette = com.localfirst.assistant.ui.theme.LocalFridayPalette.current
@@ -102,6 +106,7 @@ fun SharedComposer(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Column {
+                val showThinking = thinking != null && onThinking != null && !editing && !imageMode
                 if (imageMode && !editing) {
                     InputChip(shape = MaterialTheme.shapes.small,
                         selected = true, onClick = onImageSettings, enabled = !busy,
@@ -109,7 +114,7 @@ fun SharedComposer(
                         trailingIcon = { IconButton(onClick = onExitImageMode, enabled = !busy, modifier = Modifier.size(48.dp)) { Icon(Icons.Filled.Close, "Exit image mode", Modifier.size(16.dp)) } },
                         modifier = Modifier.padding(start = 14.dp, top = 8.dp),
                     )
-                }
+                } else if (showThinking) ThinkingChip(thinking!!, !busy, onThinking!!)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -183,6 +188,40 @@ fun SharedComposer(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/** The reasoning level for typed replies, like ChatGPT's thinking picker. Changing it mid-chat costs one full re-read. */
+@Composable
+private fun ThinkingChip(level: com.localfirst.assistant.settings.ThinkingLevel, enabled: Boolean,
+                         onChange: (com.localfirst.assistant.settings.ThinkingLevel) -> Unit) {
+    var open by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    Box(Modifier.padding(start = 10.dp, top = 4.dp)) {
+        androidx.compose.material3.TextButton(onClick = { open = true }, enabled = enabled,
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+            modifier = Modifier.semantics { contentDescription = "Thinking level: ${level.label}. Change thinking level" }) {
+            Text("Thinking · ${level.label}", style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        androidx.compose.material3.DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            for (option in com.localfirst.assistant.settings.ThinkingLevel.entries) {
+                androidx.compose.material3.DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(option.label, style = MaterialTheme.typography.bodyMedium)
+                            Text(when (option) {
+                                com.localfirst.assistant.settings.ThinkingLevel.OFF -> "Fastest; answers straight away"
+                                com.localfirst.assistant.settings.ThinkingLevel.LOW -> "A quick check before answering"
+                                com.localfirst.assistant.settings.ThinkingLevel.MEDIUM -> "Balanced"
+                                com.localfirst.assistant.settings.ThinkingLevel.HIGH -> "Most careful; best for hard problems"
+                            }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    },
+                    trailingIcon = { if (option == level) Text("✓", color = MaterialTheme.colorScheme.primary) },
+                    onClick = { open = false; if (option != level) onChange(option) },
+                )
             }
         }
     }

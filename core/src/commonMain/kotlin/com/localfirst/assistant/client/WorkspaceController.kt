@@ -439,7 +439,7 @@ class WorkspaceController(
         }
         val block = g.blocksWeb(query)
         if (block) note += g.OPT_OUT_NOTE
-        return TurnOptions(note, block, old.model, old.connection)
+        return TurnOptions(note, block, old.model, old.connection, old.preferences.thinking.wire)
     }
     /** After a reply that used public sources, checks which of its links match pages actually read. */
     private fun finishGrounding() {

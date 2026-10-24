@@ -487,3 +487,20 @@ class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(module._repeated_call(messages, 0, same))
         self.assertFalse(module._repeated_call(messages, 1, same))
         self.assertFalse(module._repeated_call(messages, 0, dict(poll, id='d')))
+
+
+class ThinkingLevelTests(unittest.TestCase):
+    def test_levels_map_to_template_effort_and_off_disables(self):
+        from desktop.workspace.integration import chat_sampling
+        self.assertEqual(chat_sampling('low')['chat_template_kwargs'], {'enable_thinking': True, 'reasoning_effort': 'low'})
+        self.assertEqual(chat_sampling('high')['chat_template_kwargs']['reasoning_effort'], 'xhigh')
+        self.assertEqual(chat_sampling(True), chat_sampling('high'))
+        self.assertEqual(chat_sampling('off')['chat_template_kwargs'], {'enable_thinking': False})
+        self.assertEqual(chat_sampling(False), chat_sampling('off'))
+
+    def test_thinking_is_a_shared_preference(self):
+        with tempfile.TemporaryDirectory() as root:
+            w = module.Workspace(root)
+            w.sync('preferences-thinking', 0, {'preferences': json.dumps({'value': 'MEDIUM'})})
+            with self.assertRaises(HTTPException):
+                w.sync('preferences-thinking', 1, {'preferences': json.dumps({'value': 'EXTREME'})})

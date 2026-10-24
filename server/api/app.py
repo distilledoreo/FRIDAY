@@ -73,15 +73,17 @@ async def health():
 # ---- chat -----------------------------------------------------------------
 
 def reasoning_turn(body, request: Request):
-    """X-Assistant-Reasoning: the phone's typed chat turns reason first, with the settings saved browser chats use.
-    Settings the client chose itself win."""
-    if request.headers.get("X-Assistant-Reasoning") != "1" or not isinstance(body, dict):
+    """X-Assistant-Reasoning: the phone's chosen thinking level (off, low, medium, high; "1" from 0.25.6 is high), with
+    the settings saved browser chats use. Settings the client chose itself win."""
+    level = request.headers.get("X-Assistant-Reasoning", "")
+    level = "high" if level == "1" else level
+    if level not in ("off", "low", "medium", "high") or not isinstance(body, dict):
         return body
     template = body.get("chat_template_kwargs") or {}
     if "reasoning_effort" in body or "reasoning" in body or "enable_thinking" in template or "reasoning_effort" in template:
         return body
     from workspace.integration import chat_sampling
-    sampling = chat_sampling()
+    sampling = chat_sampling(level)
     return {**sampling, **body, "chat_template_kwargs": {**template, **sampling["chat_template_kwargs"]}}
 
 

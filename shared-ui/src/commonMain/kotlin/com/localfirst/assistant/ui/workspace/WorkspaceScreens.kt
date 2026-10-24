@@ -319,6 +319,8 @@ private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState, code: com
             SharedComposer(state.draft, busy = working, editing = state.editingIndex != null,
                 onDraftChange = vm::setDraft, onSend = { vm.send() }, onStop = { vm.stop() },
                 onCancelEdit = vm::cancelEditing, onVoice = voiceControls?.toggle, voiceActive = voice != null, onDictate = onDictate, dictating = dictating,
+                thinking = state.preferences.thinking,
+                onThinking = { vm.preference("thinking", kotlinx.serialization.json.JsonPrimitive(it.name)) },
                 onAttach = { menu = true }.takeUnless { state.busy || state.editingIndex != null }, hasAttachments = state.attachments.isNotEmpty(),
                 attachmentContent = { AttachmentStrip(state.attachments, !state.busy && state.activeJob == null, vm::removeAttachment) }, sendEnabled = state.canSend,
                 editingHasAttachments = editingHasAttachments,

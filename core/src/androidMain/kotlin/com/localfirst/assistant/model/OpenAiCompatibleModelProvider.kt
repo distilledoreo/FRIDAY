@@ -28,10 +28,10 @@ class OpenAiCompatibleModelProvider(
 ) : ModelProvider {
     @Volatile var incognito: Boolean = false
     /**
-     * Asks FRIDAY's PC gateway to let the model reason before a streamed chat reply (X-Assistant-Reasoning). Other
-     * servers ignore the header. One-shot helper calls (titles, privacy checks) never reason.
+     * The thinking level FRIDAY's PC gateway applies to streamed chat replies (off, low, medium, high), sent as
+     * X-Assistant-Reasoning. Other servers ignore the header. One-shot helper calls (titles, privacy checks) never reason.
      */
-    @Volatile var reasoning: Boolean = true
+    @Volatile var reasoning: String = "high"
     override suspend fun sendConversation(
         messages: List<Message>,
         tools: List<ToolDefinition>,
@@ -162,7 +162,7 @@ class OpenAiCompatibleModelProvider(
                     setRequestProperty("Content-Type", "application/json; charset=utf-8")
                     setRequestProperty("X-Assistant-Prime", "1")
                     // The opening is cached as the turn will send it; reasoning changes the rendered system prompt.
-                    if (reasoning) setRequestProperty(REASONING_HEADER, "1")
+                    setRequestProperty(REASONING_HEADER, reasoning)
                     config.apiKey?.trim()?.takeIf { it.isNotEmpty() }?.let { setRequestProperty("Authorization", "Bearer $it") }
                 }
                 connection.outputStream.use { it.write(payload(messages, tools, stream = true).toByteArray()) }
@@ -206,11 +206,11 @@ class OpenAiCompatibleModelProvider(
             requestMethod = "POST"
             connectTimeout = config.connectTimeoutMillis
             // A reasoning reply with tools arrives whole, after the model has thought and answered.
-            readTimeout = if (stream && reasoning) maxOf(config.readTimeoutMillis, REASONING_READ_TIMEOUT_MILLIS) else config.readTimeoutMillis
+            readTimeout = if (stream && reasoning != "off") maxOf(config.readTimeoutMillis, REASONING_READ_TIMEOUT_MILLIS) else config.readTimeoutMillis
             doOutput = true
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
             if (incognito) setRequestProperty("X-Assistant-Incognito", "1")
-            if (stream && reasoning) setRequestProperty(REASONING_HEADER, "1")
+            if (stream) setRequestProperty(REASONING_HEADER, reasoning)
             setRequestProperty("Accept", if (stream) "text/event-stream" else "application/json")
             val key = config.apiKey?.trim().orEmpty()
             if (key.isNotEmpty()) {

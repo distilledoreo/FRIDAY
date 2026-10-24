@@ -255,6 +255,7 @@ class Workspace:
                     'reduced_motion': lambda v: isinstance(v, bool),
                     'display_name': lambda v: isinstance(v, str) and len(v) <= 60,
                     'interactive_answers': lambda v: isinstance(v, bool),
+                    'thinking': lambda v: v in ('OFF', 'LOW', 'MEDIUM', 'HIGH'),
                 }
                 if key not in valid or not valid[key](value): raise ValueError()
             except (KeyError, ValueError, TypeError):
@@ -554,6 +555,8 @@ class TurnOptions(BaseModel):
     # One of the gateway's /v1/models; empty uses its default.
     model: str | None = Field(default=None, pattern=MODEL_ID)
     connection: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')
+    # The user's thinking level for this reply (ThinkingLevel.kt); live voice always answers without reasoning.
+    reasoning: Literal['off', 'low', 'medium', 'high'] | None = None
 
 
 class ContinueItem(SyncItem, TurnOptions):
@@ -807,13 +810,13 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
     # The running job's message list, so its stream can show tool steps as they happen.
     live = {}
 
-    async def generate(messages, available_tools, report, model_id=None, connection=None, job_id=None, fast=False):
+    async def generate(messages, available_tools, report, model_id=None, connection=None, job_id=None, reasoning=None):
         if connection:
             return await connections.generate(connection, messages, available_tools, report, job=job_id)
         chosen = {'model_id': model_id} if model_id else {}
         stream = getattr(model, 'stream', None)
         if stream is not None:
-            return await stream(messages, available_tools, report, **chosen, **({'thinking': False} if fast else {}))
+            return await stream(messages, available_tools, report, **chosen, **({'thinking': reasoning} if reasoning else {}))
         answer = await model(messages, available_tools, **chosen)
         await report(answer.get('content') or '')
         return answer
@@ -925,7 +928,7 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                     for step in range(STEP_LIMIT):
                         last = step == STEP_LIMIT - 1
                         request = _for_model(messages) + ([{'role': 'user', 'content': STEP_LIMIT_NOTE}] if last else [])
-                        answer = await asyncio.wait_for(generate(request, [] if last else available, report, body.model, body.connection), 900)
+                        answer = await asyncio.wait_for(generate(request, [] if last else available, report, body.model, body.connection, reasoning=body.reasoning), 900)
                         messages.append(answer)
                         calls = answer.get('tool_calls') or []
                         if not calls:
@@ -1052,7 +1055,7 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
         if body.connection: connections.lease(body.connection, job_id)
         image = body.image_settings.model_dump(exclude_none=True) if body.image_settings else None
         options = {key: value for key, value in {'image': image, 'block_web': body.block_web or None, 'model': body.model, 'connection': body.connection,
-                                                 'fast': item_id == LIVE_VOICE_ID or None}.items() if value}
+                                                 'reasoning': 'off' if item_id == LIVE_VOICE_ID else body.reasoning}.items() if value}
         with workspace.db() as db:
             db.execute('UPDATE jobs SET messages=?,item_id=?,base_revision=?,chat=?,initial_count=?,options=? WHERE id=?',
                        (json.dumps(messages), item_id, item['revision'], json.dumps(chat), len(messages),
@@ -1214,7 +1217,7 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                     async def report(text): progress[job['id']] = text[:64000]
                     request = _for_model(messages) + ([{'role': 'user', 'content': STEP_LIMIT_NOTE}] if last else [])
                     answer = await asyncio.wait_for(generate(request, [] if last else available, report, options.get('model'), options.get('connection'), job['id'],
-                                                             options.get('fast', False)), timeout=900)
+                                                             options.get('reasoning')), timeout=900)
                     if status() != 'running':
                         if status() == 'cancelled':
                             keep_partial(job, messages, answer.get('content') or progress.get(job['id'], ''))

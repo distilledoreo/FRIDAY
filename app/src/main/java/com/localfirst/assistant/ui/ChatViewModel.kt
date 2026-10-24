@@ -823,9 +823,10 @@ class ChatViewModel(
         catch (e: Exception) { _state.update { it.copy(error = "Couldn't read saved knowledge: ${e.message}", turnMessagesReady = true) }; return }
         (provider as? com.localfirst.assistant.model.OpenAiCompatibleModelProvider)?.let {
             it.incognito = _state.value.privacy.incognito
-            // Typed chats reason first; a spoken reply can't wait for it.
-            it.reasoning = voice?.active != true && !carVoiceSession &&
-                _state.value.conversationId != com.localfirst.assistant.voice.LiveVoiceConversation.ID
+            // Typed chats reason at the chosen level; a spoken reply can't wait for it.
+            val spoken = voice?.active == true || carVoiceSession ||
+                _state.value.conversationId == com.localfirst.assistant.voice.LiveVoiceConversation.ID
+            it.reasoning = if (spoken) "off" else appearance().thinking.wire
         }
         session.latestUserNote = AssistantPrompts.timeNote(now)
         session.recallContext = null

@@ -159,6 +159,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
         com.localfirst.assistant.genui.UiBindings.from(state.messages)
     }
     val appearance = com.localfirst.assistant.ui.theme.LocalAppearance.current
+    val saveAppearance = com.localfirst.assistant.ui.theme.LocalSaveAppearance.current
     val genUi = remember(state.conversationId, state.privacy.incognito, bindings, appearance.interactiveAnswers) { viewModel.genUiHost(bindings) }
     val chatPcIds = remember(state.messages) { viewModel.chatPcIds() }
     LaunchedEffect(chatPcIds.joinToString(",")) {
@@ -395,6 +396,8 @@ fun ChatScreen(viewModel: ChatViewModel) {
                             imageSummary = if (state.imageSettings.automatic) "Auto" else "${state.imageSettings.width}×${state.imageSettings.height}",
                             onImageSettings = { imageOptions = true },
                             onExitImageMode = { viewModel.setImageMode(false) },
+                            thinking = appearance.thinking,
+                            onThinking = { level -> saveAppearance(appearance.copy(thinking = level)) },
                             onStop = viewModel::stop,
                             onCancelEdit = viewModel::cancelEditing,
                             onVoice = viewModel::toggleVoice,

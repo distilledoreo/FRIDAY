@@ -5,13 +5,20 @@ from pathlib import Path
 from .workspace import install
 
 
-def chat_sampling(thinking=True):
+# The user's thinking level (ThinkingLevel.kt) and the Qwen template's reasoning effort for it.
+REASONING_EFFORT = {'low': 'low', 'medium': 'medium', 'high': 'xhigh'}
+
+
+def chat_sampling(level='high'):
     """Settings for a chat turn the user reads. Reasoning catches the trick questions, miscounts and repeated tool
-    calls the model makes without it; it streams separately and is not saved. FRIDAY_CHAT_THINKING=0 turns it off."""
-    if not thinking or os.environ.get('FRIDAY_CHAT_THINKING', '1') == '0':
+    calls the model makes without it; it streams separately and is not saved. `level` is off, low, medium or high
+    (True/False are accepted as high/off). FRIDAY_CHAT_THINKING=0 turns it off everywhere."""
+    level = 'high' if level is True else 'off' if level is False else level
+    if level not in REASONING_EFFORT or os.environ.get('FRIDAY_CHAT_THINKING', '1') == '0':
         return {'temperature': .3, 'max_tokens': 4096, 'chat_template_kwargs': {'enable_thinking': False}}
     # Qwen's recommended sampling for thinking mode; greedy-ish decoding makes it loop.
-    return {'temperature': .6, 'top_p': .95, 'top_k': 20, 'max_tokens': 12288, 'chat_template_kwargs': {'enable_thinking': True}}
+    return {'temperature': .6, 'top_p': .95, 'top_k': 20, 'max_tokens': 12288,
+            'chat_template_kwargs': {'enable_thinking': True, 'reasoning_effort': REASONING_EFFORT[level]}}
 
 
 def enable(app, auth, llm, search, fetch, fetch_request_type, data_dir):
@@ -29,7 +36,7 @@ def enable(app, auth, llm, search, fetch, fetch_request_type, data_dir):
         response.raise_for_status()
         return response.json()['choices'][0]['message']
 
-    async def stream_model(messages, tools, report, model_id=None, thinking=True):
+    async def stream_model(messages, tools, report, model_id=None, thinking='high'):
         model_id = model_id or os.environ.get('ASSISTANT_MODEL')
         if not model_id:
             response = await llm.get('/v1/models'); response.raise_for_status()
