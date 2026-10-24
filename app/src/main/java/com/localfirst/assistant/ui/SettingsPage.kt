@@ -395,15 +395,20 @@ private fun CarSection(
         Column(modifier = Modifier.weight(1f)) {
             Text("Android Auto", style = MaterialTheme.typography.bodyLarge)
             Text(
-                text = "While connected, the assistant appears as a conversation in Android Auto. Reply from the car to ask something; " +
-                    "the answer is read aloud. Android Auto uses the car's microphone for replies. Because this app isn't from the " +
-                    "Play Store, turn on Unknown sources in Android Auto's developer settings first.",
+                text = "Experimental: open FRIDAY voice in Android Auto’s media apps. Select the voice item or Play to start/resume; use the microphone action to talk and interrupt a reply. Pause and Stop control the voice session. " +
+                    "This needs the computer voice service. " +
+                    "If Android blocks microphone startup, prepare car voice on the phone while parked. " +
+                    "The notification Reply button still uses the car microphone. Enable Unknown sources in Android Auto's developer settings for this sideloaded app.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         Switch(checked = androidAuto, onCheckedChange = onAndroidAutoChange)
     }
+    if (androidAuto) OutlinedButton(onClick = {
+        context.startActivity(Intent(context, com.localfirst.assistant.MainActivity::class.java)
+            .setAction("com.localfirst.assistant.CAR_VOICE").addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP))
+    }) { Text("Prepare car voice") }
 }
 
 private fun isDefaultAssistant(context: Context): Boolean {

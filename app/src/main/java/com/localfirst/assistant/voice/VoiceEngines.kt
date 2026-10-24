@@ -14,14 +14,15 @@ class VoiceEngines(context: Context) {
     private var computer: Pair<String, VoiceIo>? = null
     @Volatile private var latest = ServerSettings()
 
-    suspend fun select(settings: ServerSettings): VoiceSelection {
+    suspend fun select(settings: ServerSettings, forcePhoneMic: Boolean = false): VoiceSelection {
         latest = settings
-        if (settings.voiceEngine != ServerSettings.VOICE_COMPUTER) return VoiceSelection(phone)
+        if (!forcePhoneMic && settings.voiceEngine != ServerSettings.VOICE_COMPUTER) return VoiceSelection(phone)
         val base = settings.searchBaseUrl.trim()
         if (base.isEmpty()) {
+            check(!forcePhoneMic) { "Set the search service address on your phone to use the phone mic in Android Auto." }
             return VoiceSelection(phone, "${VoiceController.FALLBACK_PREFIX}: set the search service address to use your computer's voice.")
         }
-        val key = listOf(base, settings.searchApiKey, settings.voiceName).joinToString("|")
+        val key = listOf(base, settings.searchApiKey, settings.voiceName, forcePhoneMic.toString()).joinToString("|")
         val io = computer?.takeIf { it.first == key }?.second
             ?: computerVoiceIo(
                 app,
@@ -29,8 +30,10 @@ class VoiceEngines(context: Context) {
                 settings.voiceName,
                 bargeInEnabled = { latest.voiceBargeIn },
                 phoneMicDevices = { latest.voicePhoneMicDevices },
+                forcePhoneMic = forcePhoneMic,
             ).also { computer = key to it }
         if (io.speaker.prepare()) return VoiceSelection(io)
+        check(!forcePhoneMic) { "The computer voice service is unreachable. Check the connection on your phone." }
         return VoiceSelection(phone, "${VoiceController.FALLBACK_PREFIX}: your computer's voice service isn't reachable.")
     }
 }

@@ -62,6 +62,7 @@ class MainActivity : ComponentActivity() {
     /** Opened as the phone's assistant or from a headset's voice button: start a voice chat. */
     private fun handleLaunch(intent: Intent?) {
         when (intent?.action) {
+            "com.localfirst.assistant.CAR_VOICE" -> viewModel.startCarVoice(fromCar = false)
             Intent.ACTION_VIEW -> { viewModel.handleAccountCallback(intent.data); intent.data = null }
             "com.localfirst.assistant.BRIEF" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.BRIEF)
             "com.localfirst.assistant.ACTIVITY" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.ACTIVITY)
