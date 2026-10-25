@@ -48,6 +48,7 @@ fun main() = onWasmReady {
             onDispose { window.removeEventListener("message", listener); oauthWindow?.close() }
         }
         val images = remember { BrowserImages(gateway) }
+        val videos = remember { BrowserVideos(gateway) }
         val audio = remember { BrowserVoiceIo(gateway, scope) }
         // The same voice loop as the phone: streamed sentences, talking over FRIDAY, and spoken approvals.
         var voiceEngine by remember { mutableStateOf(DeviceChoices.voiceEngine) }
@@ -125,7 +126,7 @@ fun main() = onWasmReady {
             override fun get(id: String) = values[id]
             override fun set(id: String, json: String) { if (json.length <= 200000 && values.size < 40) values[id] = json }
         } }
-        LaunchedEffect(state.connected) { if (!state.connected) { voice.close(); audio.close(); images.clear(); features.reset(); briefing.reset(); code.reset(); oauthWindow?.close(); oauthWindow = null } }
+        LaunchedEffect(state.connected) { if (!state.connected) { voice.close(); audio.close(); images.clear(); videos.clear(); features.reset(); briefing.reset(); code.reset(); oauthWindow?.close(); oauthWindow = null } }
         // Voice belongs to one conversation; leaving it ends voice mode.
         var voiceChat by remember { mutableStateOf<String?>(null) }
         LaunchedEffect(state.activeId, state.incognito) { if (voice.active && voiceChat != null && state.activeId != voiceChat) voice.close(); voiceChat = state.activeId }
@@ -135,7 +136,7 @@ fun main() = onWasmReady {
             document.addEventListener("visibilitychange", listener)
             onDispose { voice.shutdown(); audio.close(); features.reset(); code.reset(); document.removeEventListener("visibilitychange", listener); vm.close() }
         }
-        CompositionLocalProvider(LocalOAuthLauncher provides { url -> oauthWindow = window.open(url, "friday-account-sign-in", "popup,width=600,height=750") }, LocalFeatureImages provides images::path, LocalReplyImages provides images, LocalReplyApps provides apps, LocalUriHandler provides object : UriHandler {
+        CompositionLocalProvider(LocalOAuthLauncher provides { url -> oauthWindow = window.open(url, "friday-account-sign-in", "popup,width=600,height=750") }, LocalFeatureImages provides images::path, LocalFeatureVideos provides { path -> videos.url(path) }, LocalReplyImages provides images, LocalReplyApps provides apps, LocalUriHandler provides object : UriHandler {
             override fun openUri(uri: String) {
                 val artifact = Regex("^assistant://artifact/([a-f0-9]{32})$").matchEntire(uri)
                 if (artifact != null) vm.artifact(artifact.groupValues[1])

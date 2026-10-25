@@ -16,7 +16,7 @@ class NoticePlanner(
     private val seen: MutableMap<String, String>,
     private val clock: () -> Long,
 ) {
-    /** [open] names where the notice leads: "tasks", "activity", "code", "brief" or "chat:<id>". */
+    /** [open] names where the notice leads: "tasks", "activity", "code", "brief", "videos" or "chat:<id>". */
     data class Notice(val key: String, val title: String, val text: String, val open: String)
 
     private fun JsonObject.text(key: String) = (this[key] as? JsonPrimitive)?.contentOrNull.orEmpty()
@@ -71,6 +71,17 @@ class NoticePlanner(
                 else -> "Task failed. Open FRIDAY for details."
             }, "activity"))
             seen[key] = signature
+        }
+
+        // Videos render for minutes to tens of minutes: say when one is ready, or couldn't be made.
+        for (video in optional("/workspace/videos")?.rows().orEmpty()) {
+            val status = video.text("status")
+            if (status !in listOf("completed", "failed")) continue
+            val key = "video-${video.text("id")}"
+            if (seen[key] == status) continue
+            announce(Notice(key, if (status == "completed") "Your video is ready" else "Your video couldn't be made",
+                video.text("prompt").take(120), "videos"))
+            seen[key] = status
         }
 
         val pc = optional("/workspace/pc/status") as? JsonObject

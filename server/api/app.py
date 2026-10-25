@@ -495,6 +495,14 @@ workspace_store = enable_workspace(app, auth, llm, search, fetch, FetchRequest,
 image_manager = enable_images(app, auth, workspace_store, raw_llm, gpu_gate,
     os.environ.get("FRIDAY_IMAGEGEN_CONFIG") or WorkspacePath(__file__).resolve().parent / "imagegen" / "config.json")
 
+# ---- local video generation (optional; needs a private config naming the LTX runtime and both GPUs) ----
+try:
+    from videogen.integration import enable as enable_videos
+except ImportError:  # an install without the videogen module
+    enable_videos = None
+video_manager = enable_videos and enable_videos(app, auth, workspace_store, gpu_gate, image_manager,
+    os.environ.get("FRIDAY_VIDEOGEN_CONFIG") or WorkspacePath(__file__).resolve().parent / "videogen" / "config.json")
+
 from memory.integration import enable as enable_memory
 memory_store = enable_memory(app, auth,
     WorkspacePath(__file__).resolve().parent.parent / 'workspace-data' / 'memory',

@@ -26,7 +26,7 @@ val LocalFeatureImages = staticCompositionLocalOf<suspend (String) -> ImageBitma
 @Composable
 private fun ServiceScreen(title: String, vm: FeatureController, initialTask: String? = null, initialSession: String? = null, content: LazyListScope.(FeatureState) -> Unit) {
     val state by vm.state.collectAsState()
-    LaunchedEffect(title, initialTask, initialSession) { vm.open(when(title) { "Library" -> "files"; "Images" -> "images"; "Accounts" -> "accounts"; else -> "activity" }, initialTask, initialSession) }
+    LaunchedEffect(title, initialTask, initialSession) { vm.open(when(title) { "Library" -> "files"; "Images" -> "images"; "Videos" -> "videos"; "Accounts" -> "accounts"; else -> "activity" }, initialTask, initialSession) }
     FridayVisibleEffect(title) { if (title != "Library") while (true) { delay(3000); vm.refresh() } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item(key = "service-header") { Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -147,6 +147,76 @@ fun ImagesScreen(vm: FeatureController, open: (String) -> Unit) {
         }
     }
     if (picking) ReferencePicker(state.files, references, onDone = { references = it; picking = false }, onDismiss = { picking = false })
+}
+
+@Composable
+fun VideosScreen(vm: FeatureController, open: (String) -> Unit) {
+    var prompt by remember { mutableStateOf("") }
+    var seconds by remember { mutableStateOf(4) }; var aspect by remember { mutableStateOf("16:9") }; var quality by remember { mutableStateOf(0) }
+    var seed by remember { mutableStateOf("") }
+    var inputs by remember { mutableStateOf(mapOf<String, String>()) }
+    var picking by remember { mutableStateOf<String?>(null) }; var viewing by remember { mutableStateOf<String?>(null) }
+    val state by vm.state.collectAsState()
+    val options = state.videoOptions
+    fun generate() {
+        vm.change("/workspace/videos", body = buildJsonObject {
+            put("prompt", prompt.trim()); put("duration_seconds", seconds); put("aspect", aspect); put("quality", quality)
+            put("seed", seed.toIntOrNull() ?: kotlin.random.Random.nextInt(Int.MAX_VALUE))
+            put("inputs", JsonArray(inputs.map { (kind, id) -> buildJsonObject { put("kind", kind); put("file_id", id) } }))
+        })
+        prompt = ""; inputs = emptyMap()
+    }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val columns = ((maxWidth - 40.dp) / 168.dp).toInt().coerceIn(2, 6)
+        ServiceScreen("Videos", vm) { state ->
+            val available = options?.flag("available") == true
+            if (options != null && !available) item(key = "videos-unavailable") {
+                Column(Modifier.fillMaxWidth().padding(vertical = 48.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Video isn't set up on this computer", style = MaterialTheme.typography.titleMedium)
+                    Text(options.string("detail").ifBlank { "It needs the LTX video runtime and a video config on the PC." },
+                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            if (available) {
+                item(key = "videos-composer") {
+                    VideoComposer(options!!, prompt, { prompt = it }, seconds, { seconds = it }, aspect, { aspect = it },
+                        quality, { quality = it }, seed, { seed = it }, inputs, { picking = it }, { kind -> inputs = inputs - kind }, state.busy, ::generate)
+                }
+                if (state.videos.isEmpty()) item(key = "videos-empty") {
+                    Column(Modifier.fillMaxWidth().padding(vertical = 48.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("No videos yet", style = MaterialTheme.typography.titleMedium)
+                        Text("Describe one above, or ask FRIDAY for one in any chat.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                items(state.videos.chunked(columns), key = { row -> "videos-" + row.first().string("id") }) { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        row.forEach { job -> VideoTile(job, Modifier.weight(1f)) { viewing = job.string("id") } }
+                        repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
+                    }
+                }
+            }
+        }
+        viewing?.let { id ->
+            val job = state.videos.firstOrNull { it.string("id") == id }
+            if (job == null) viewing = null
+            else VideoViewer(job, state.busy, onClose = { viewing = null }, onSave = open,
+                onReuse = {
+                    prompt = job.string("prompt")
+                    (job["request"] as? JsonObject)?.let { r ->
+                        r["duration_seconds"]?.jsonPrimitive?.intOrNull?.let { seconds = it }
+                        r["aspect"]?.jsonPrimitive?.contentOrNull?.let { aspect = it }
+                        r["quality"]?.jsonPrimitive?.intOrNull?.let { quality = it }
+                    }
+                    viewing = null
+                },
+                onCancel = { vm.change("/workspace/videos/$id/cancel") },
+                onDelete = { vm.change("/workspace/videos/$id", "DELETE"); viewing = null })
+        }
+    }
+    picking?.let { kind ->
+        ReferencePicker(state.files, listOfNotNull(inputs[kind]), onDone = { chosen -> inputs = if (chosen.isEmpty()) inputs - kind else inputs + (kind to chosen.first()); picking = null },
+            onDismiss = { picking = null }, limit = 1, title = kind.replace('_', ' ').replaceFirstChar { it.uppercase() }, hint = "Pick one image.")
+    }
 }
 
 @Composable

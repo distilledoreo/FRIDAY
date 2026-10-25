@@ -244,6 +244,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     onActivity = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.ACTIVITY) } },
                     onFiles = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.FILES) } },
                     onImages = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.IMAGES) } },
+                    onVideos = { closeDrawerThen { viewModel.openWorkspace(WorkspaceDestination.VIDEOS) } },
                     onCode = { closeDrawerThen { viewModel.openCode() } },
                     currentId = state.conversationId,
                     onNewChat = { closeDrawerThen(viewModel::newChat) },

@@ -35,7 +35,7 @@ import com.localfirst.assistant.ui.theme.FridaySpacing
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 
-private enum class Page(val label: String) { CHAT("Chat"), PROJECTS("Projects"), MEMORY("Memory"), TASKS("Tasks"), FILES("Library"), IMAGES("Images"), ACTIVITY("FRIDAY"), ACCOUNTS("Accounts"), SETTINGS("Settings"),
+private enum class Page(val label: String) { CHAT("Chat"), PROJECTS("Projects"), MEMORY("Memory"), TASKS("Tasks"), FILES("Library"), IMAGES("Images"), VIDEOS("Videos"), ACTIVITY("FRIDAY"), ACCOUNTS("Accounts"), SETTINGS("Settings"),
     IMPORT("Import ChatGPT"), REVIEW("Review memories"), ARCHIVE("Archive"), SOURCE("Source chat"), CONTEXT("Recall context"), DATA("Data controls"), BRIEF("Dashboard") }
 
 /** Voice mode's controls, supplied by a host that can run spoken conversations. */
@@ -50,7 +50,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
     onShare: ((String) -> Unit)? = null,
     onImportChatGpt: (() -> Unit)? = null, onRestoreBackup: (() -> Unit)? = null,
     briefing: DashboardActions? = null,
-    /** Where a notification leads: "tasks", "activity", "code", "brief" or "chat:<id>". */
+    /** Where a notification leads: "tasks", "activity", "code", "brief", "videos" or "chat:<id>". */
     navigation: kotlinx.coroutines.flow.Flow<String>? = null,
     settingsExtras: @Composable ColumnScope.() -> Unit = {}) {
     var projectPage by remember { mutableStateOf<String?>(null) }
@@ -70,6 +70,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
                 target == "activity" -> { fridayTask = null; fridaySession = null; page = if (features != null) Page.ACTIVITY else Page.TASKS }
                 target == "code" -> code?.open()
                 target == "brief" -> page = Page.BRIEF
+                target == "videos" -> if (features != null && !state.incognito) page = Page.VIDEOS
                 target.startsWith("chat:") -> { vm.select(target.removePrefix("chat:")); page = Page.CHAT }
             }
         }
@@ -82,7 +83,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
         val wide = maxWidth >= 900.dp
         val idle = !state.busy && state.activeJob == null
         fun go(target: Page) {
-            if (target in listOf(Page.FILES, Page.IMAGES, Page.ACTIVITY, Page.ACCOUNTS, Page.TASKS, Page.IMPORT, Page.ARCHIVE, Page.SOURCE, Page.DATA) && state.incognito) { if (!idle) return; vm.newChat() }
+            if (target in listOf(Page.FILES, Page.IMAGES, Page.VIDEOS, Page.ACTIVITY, Page.ACCOUNTS, Page.TASKS, Page.IMPORT, Page.ARCHIVE, Page.SOURCE, Page.DATA) && state.incognito) { if (!idle) return; vm.newChat() }
             if (target == Page.ACTIVITY && page != Page.CHAT) { fridayTask = null; fridaySession = null }
             page = target; scope.launch { drawer.close() }
         }
@@ -108,6 +109,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
                 onActivity = features?.let { { fridayTask = null; fridaySession = null; go(Page.ACTIVITY) } },
                 onFiles = features?.let { { go(Page.FILES) } },
                 onImages = features?.let { { go(Page.IMAGES) } },
+                onVideos = features?.let { { go(Page.VIDEOS) } },
                 destinations = buildList { addAll(listOf(
                     DrawerDestination("Memory", LineIcons.Memory, page == Page.MEMORY) { go(Page.MEMORY) },
                     DrawerDestination("Tasks", LineIcons.Clock, page == Page.TASKS) { go(Page.TASKS) },
@@ -175,6 +177,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
                         Page.SETTINGS -> SettingsScreen(vm, state, settingsExtras)
                         Page.FILES -> features?.let { LibraryScreen(it, { vm.artifact(it) }, onLibraryUpload, { id -> vm.reuseFile(id) }) }
                         Page.IMAGES -> features?.let { ImagesScreen(it) { vm.artifact(it) } }
+                        Page.VIDEOS -> features?.let { VideosScreen(it) { vm.artifact(it) } }
                         Page.ACTIVITY -> features?.let { ActivityScreen(it, fridayTask, fridaySession) { report -> vm.newChat(); vm.setDraft("Discuss this report:\n$report"); page = Page.CHAT } }
                         Page.ACCOUNTS -> features?.let { AccountsScreen(it) }
                         Page.BRIEF -> briefing?.let { com.localfirst.assistant.ui.dashboard.BriefSettingsScreen(it, state.projectId.orEmpty(), state.incognito, state.busy, "browser",

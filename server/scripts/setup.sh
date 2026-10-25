@@ -9,9 +9,9 @@ APP_REPO="$(cd "$HERE/.." && pwd)"
 DEST="${SERVER_DIR:-$HOME/assistant-server}"
 BACKEND="${FRIDAY_LLM_BACKEND:-llama}"
 case "$BACKEND" in llama|strata) ;; *) echo "FRIDAY_LLM_BACKEND must be llama or strata" >&2; exit 1 ;; esac
-MODULES="${FRIDAY_SETUP_MODULES:-agent memory workspace imagegen model_server voice_runtime}"
+MODULES="${FRIDAY_SETUP_MODULES:-agent memory workspace imagegen videogen model_server voice_runtime}"
 for module in $MODULES; do
-  case "$module" in agent|memory|workspace|imagegen|model_server|voice_runtime) ;; *) echo "Unknown setup module: $module" >&2; exit 1 ;; esac
+  case "$module" in agent|memory|workspace|imagegen|videogen|model_server|voice_runtime) ;; *) echo "Unknown setup module: $module" >&2; exit 1 ;; esac
 done
 mkdir -p "$DEST/api" "$DEST/searxng/config" "$DEST/maintenance" "$DEST/llama" "$DEST/slot-cache" "$HOME/.config/systemd/user"
 

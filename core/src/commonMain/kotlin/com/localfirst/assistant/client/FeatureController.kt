@@ -12,6 +12,8 @@ fun JsonElement.rows(): List<JsonObject> = (this as? JsonArray)?.mapNotNull { it
 data class FeatureState(
     val page: String = "files", val busy: Boolean = false, val error: String? = null,
     val files: List<JsonObject> = emptyList(), val images: List<JsonObject> = emptyList(),
+    /** Video jobs, and the computer's video options (sizes and times per duration); null until first loaded. */
+    val videos: List<JsonObject> = emptyList(), val videoOptions: JsonObject? = null,
     val fileQuery: String = "", val fileKind: String = "all", val fileSort: String = "recent",
     val fileLoading: Boolean = false, val fileTotal: Int = 0, val fileNextOffset: Int? = null,
     val tasks: List<JsonObject> = emptyList(), val task: JsonObject? = null, val events: List<JsonObject> = emptyList(),
@@ -92,6 +94,12 @@ class FeatureController(val gateway: WorkspaceGateway, private val scope: Corout
         when (old.page) {
             "files" -> { if (identity == epoch) requestFiles()?.join(); return }
             "images" -> next = old.copy(images = gateway.request("/workspace/images").rows(), files = gateway.request("/workspace/files").rows())
+            "videos" -> {
+                // The options table only changes with the computer's setup: read it once per connection (until it's available).
+                val options = old.videoOptions?.takeIf { it.flag("available") } ?: try { gateway.request("/workspace/videos/capabilities").jsonObject } catch (e: CancellationException) { throw e } catch (e: Exception) { buildJsonObject { put("available", false); put("detail", e.message ?: "Video service unavailable") } }
+                next = old.copy(videoOptions = options, videos = if (options.flag("available")) gateway.request("/workspace/videos").rows() else emptyList(),
+                    files = if ((options["inputs"] as? JsonArray).isNullOrEmpty()) old.files else gateway.request("/workspace/files").rows())
+            }
             "activity" -> {
                 val tasks = gateway.request("/workspace/agent/tasks").rows()
                 val health = gateway.request("/workspace/agent/health").jsonObject

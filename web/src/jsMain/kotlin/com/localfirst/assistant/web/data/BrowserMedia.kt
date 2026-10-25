@@ -16,6 +16,23 @@ import kotlinx.coroutines.channels.Channel
 import com.localfirst.assistant.voice.*
 import kotlin.math.*
 
+/** Saved videos as blob URLs for the page's <video> player: the gateway needs the sign-in token, which a plain src can't send. */
+class BrowserVideos(private val gateway: FetchWorkspaceGateway) {
+    private val cache = linkedMapOf<String, String>()
+    fun clear() { cache.values.forEach { org.w3c.dom.url.URL.revokeObjectURL(it) }; cache.clear() }
+    suspend fun url(path: String): String {
+        cache[path]?.let { return it }
+        val bytes = gateway.bytes(path)
+        // A Kotlin/JS ByteArray is an Int8Array underneath, so the Blob takes it without copying byte by byte.
+        val blob = org.w3c.files.Blob(arrayOf(bytes.unsafeCast<org.khronos.webgl.Int8Array>()), org.w3c.files.BlobPropertyBag(type = "video/mp4"))
+        val url = org.w3c.dom.url.URL.createObjectURL(blob)
+        // A few recent videos stay ready to replay; older ones release their memory.
+        if (cache.size >= 4) cache.remove(cache.keys.first())?.let { org.w3c.dom.url.URL.revokeObjectURL(it) }
+        cache[path] = url
+        return url
+    }
+}
+
 class BrowserImages(private val gateway: FetchWorkspaceGateway) : GenUiImages {
     private val cache = linkedMapOf<String, ImageBitmap>()
     fun clear() { cache.clear() }

@@ -221,23 +221,24 @@ internal fun ImageViewer(job: JsonObject, busy: Boolean, onClose: () -> Unit, on
         dismissButton = { TextButton({ confirmDelete = false }) { Text("Cancel") } })
 }
 
-/** Choose up to two images to edit from: your uploads and earlier results, newest first. */
+/** Choose images from your uploads and earlier results, newest first: up to two to edit from, or one for a video. */
 @Composable
-internal fun ReferencePicker(files: List<JsonObject>, selected: List<String>, onDone: (List<String>) -> Unit, onDismiss: () -> Unit) {
+internal fun ReferencePicker(files: List<JsonObject>, selected: List<String>, onDone: (List<String>) -> Unit, onDismiss: () -> Unit,
+                             limit: Int = 2, title: String = "Edit from an image", hint: String = "Pick up to two. FRIDAY keeps what you don't ask to change.") {
     var chosen by remember { mutableStateOf(selected) }
     val images = files.filter { it.string("mime").startsWith("image/") }
-    AlertDialog(onDismissRequest = onDismiss, title = { FridayDialogWindow(); Text("Edit from an image") },
+    AlertDialog(onDismissRequest = onDismiss, title = { FridayDialogWindow(); Text(title) },
         text = {
             if (images.isEmpty()) Text("No images yet. Upload one in a chat, or create one first.")
             else Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Pick up to two. FRIDAY keeps what you don't ask to change.", style = MaterialTheme.typography.bodySmall)
+                Text(hint, style = MaterialTheme.typography.bodySmall)
                 LazyVerticalGrid(GridCells.Adaptive(96.dp), Modifier.heightIn(max = 420.dp), horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     items(images, key = { it.string("id") }) { file ->
                         val id = file.string("id"); val on = id in chosen
                         Box(Modifier.aspectRatio(1f).clip(RoundedCornerShape(10.dp))
                             .then(if (on) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(10.dp)) else Modifier)
-                            .clickable(enabled = on || chosen.size < 2) { chosen = if (on) chosen - id else chosen + id }) {
+                            .clickable(enabled = on || chosen.size < limit || limit == 1) { chosen = if (on) chosen - id else if (limit == 1) listOf(id) else chosen + id }) {
                             ImageThumb("/workspace/files/$id", file.string("name"), Modifier.fillMaxSize())
                             if (on) Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(22.dp)) {
                                 Box(contentAlignment = Alignment.Center) { Text("${chosen.indexOf(id) + 1}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onPrimary) }
@@ -252,7 +253,7 @@ internal fun ReferencePicker(files: List<JsonObject>, selected: List<String>, on
 }
 
 @Composable
-private fun choiceChipColors() = FilterChipDefaults.filterChipColors(
+internal fun choiceChipColors() = FilterChipDefaults.filterChipColors(
     selectedContainerColor = com.localfirst.assistant.ui.theme.LocalFridayPalette.current.accent.copy(alpha = .22f),
     selectedLabelColor = MaterialTheme.colorScheme.onSurface)
 

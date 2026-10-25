@@ -32,7 +32,7 @@ enum class WorkspaceDestination(val title: String) {
     SETTINGS("Settings"), COMPUTER_ACCESS("Computer access"), APPEARANCE("Appearance"), BRIEF("Dashboard"), ACCOUNTS("Accounts"), MEMORY("Memory"), ACTIVITY("FRIDAY"), PROJECTS("Projects"), PROJECT("Project"),
 
     EDIT_PROJECT("Project settings"), TASKS("Tasks"), TASK("Task"), NEW_TASK("New task"),
-    FILES("Library"), DATA("Data controls"), NEW_MEMORY("Add memory"), IMAGES("Images"), IMPORT_CHATGPT("Import ChatGPT"), MEMORY_REVIEW("Review memories"), MEMORY_ARCHIVE("PC archive"), MEMORY_SOURCE("Source chat"), MEMORY_CONTEXT("Recall context")
+    FILES("Library"), DATA("Data controls"), NEW_MEMORY("Add memory"), IMAGES("Images"), VIDEOS("Videos"), IMPORT_CHATGPT("Import ChatGPT"), MEMORY_REVIEW("Review memories"), MEMORY_ARCHIVE("PC archive"), MEMORY_SOURCE("Source chat"), MEMORY_CONTEXT("Recall context")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -101,7 +101,8 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                 Column(Modifier.fillMaxSize().padding(padding)) {
                     if (state.workspaceBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
                     state.workspaceStatus?.takeIf { it.isNotBlank() && !it.startsWith("Computer online") }?.let { Text(it, Modifier.padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall) }
-                    CompositionLocalProvider(com.localfirst.assistant.ui.workspace.LocalFeatureImages provides vm::loadFeatureImage) {
+                    CompositionLocalProvider(com.localfirst.assistant.ui.workspace.LocalFeatureImages provides vm::loadFeatureImage,
+                        com.localfirst.assistant.ui.workspace.LocalFeatureVideos provides vm::loadFeatureVideo) {
                     when (page) {
                         WorkspaceDestination.COMPUTER_ACCESS -> PcSettingsPage(state,vm)
                         WorkspaceDestination.APPEARANCE -> AppearancePage()
@@ -109,6 +110,7 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                         WorkspaceDestination.ACCOUNTS -> AccountsPage(state, vm)
                         WorkspaceDestination.ACTIVITY -> AgentActivity(state, vm)
                         WorkspaceDestination.IMAGES -> ImageJobs(state, vm)
+                        WorkspaceDestination.VIDEOS -> com.localfirst.assistant.ui.workspace.VideosScreen(vm.features) { vm.openArtifact("assistant://artifact/$it") }
                         WorkspaceDestination.SETTINGS -> ScreenList {
                             item { SectionLabel("Personalization") }
                             item { SettingsRow("Appearance", "Theme, accent, proactivity and motion") { parent = page; page = WorkspaceDestination.APPEARANCE } }

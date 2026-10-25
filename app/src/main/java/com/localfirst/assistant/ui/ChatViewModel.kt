@@ -247,6 +247,9 @@ class ChatViewModel(
             path.startsWith("/workspace/files/") -> loadImage(path.substringAfterLast('/'))
             path == "/workspace/pc/screenshot" -> (workspace ?: error("Computer unavailable")).downloadPcScreenshot(File(app?.cacheDir ?: error("Preview unavailable"), "pc-preview.png"))
             path.startsWith("/workspace/agent/tasks/") -> loadAgentScreenshot(path.split('/')[4], path.substringAfterLast('/'))
+            Regex("/workspace/videos/[a-f0-9]{32}/poster").matches(path) -> File(app?.cacheDir ?: error("Preview unavailable"), "video-posters/${path.split('/')[3]}.jpg").also { file ->
+                if (!file.isFile) (workspace ?: error("Computer unavailable")).downloadPath(path, file, 4 * 1024 * 1024)
+            }
             else -> return@withContext null
         }
         // The Images gallery shows many at once; decode no larger than 2048 px on the long side.
@@ -255,6 +258,13 @@ class ChatViewModel(
         var sample = 1
         while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 2048) sample *= 2
         android.graphics.BitmapFactory.decodeFile(file.absolutePath, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
+    }
+    /** A saved video as a cached file the platform player can open; videos are never part of an incognito chat. */
+    internal suspend fun loadFeatureVideo(path: String): String? = withContext(Dispatchers.IO) {
+        val id = Regex("/workspace/files/([a-f0-9]{32})").matchEntire(path)?.groupValues?.get(1) ?: return@withContext null
+        val file = File(app?.cacheDir ?: error("Playback unavailable"), "videos/$id.mp4")
+        if (!file.isFile) (workspace ?: error("Computer unavailable")).download(id, file)
+        android.net.Uri.fromFile(file).toString()
     }
     /** The Code workspace: GitHub repositories on the PC, kept apart from chat state. */
     val code = com.localfirst.assistant.ui.code.CodeWorkspace(viewModelScope,

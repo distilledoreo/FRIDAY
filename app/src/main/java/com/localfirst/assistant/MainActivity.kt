@@ -68,6 +68,7 @@ class MainActivity : ComponentActivity() {
             "com.localfirst.assistant.ACTIVITY" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.ACTIVITY)
             "com.localfirst.assistant.CODE" -> viewModel.openCode(intent.getStringExtra("task")?.takeIf { it.matches(Regex("[a-f0-9]{12}")) })
             "com.localfirst.assistant.TASKS" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.TASKS)
+            "com.localfirst.assistant.VIDEOS" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.VIDEOS)
             Intent.ACTION_ASSIST, Intent.ACTION_VOICE_COMMAND,
             com.localfirst.assistant.voice.WakeWordService.WAKE_ACTION,
             -> viewModel.startAssistantSession()

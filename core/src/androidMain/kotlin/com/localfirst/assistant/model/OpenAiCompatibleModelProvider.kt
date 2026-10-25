@@ -17,6 +17,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Talks to any server that implements the OpenAI chat-completions HTTP API,
@@ -126,6 +128,11 @@ class OpenAiCompatibleModelProvider(
 
     private fun httpError(code: Int, connection: HttpURLConnection): ModelProviderException {
         val text = connection.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+        // A video rendering on both GPUs pauses chat for many minutes; say so plainly rather than retrying.
+        if (code == 503 && connection.getHeaderField("X-Assistant-GPU-Busy") == "video") {
+            val message = runCatching { ((JsonCodec.json.parseToJsonElement(text) as JsonObject)["detail"] as JsonObject)["message"]!!.jsonPrimitive.content }.getOrNull()
+            return ModelProviderException(message ?: "Chat is paused while a video renders on both GPUs. Your chat is saved; try again when it finishes.")
+        }
         val detail = snippet(text)
         val suffix = if (detail.isEmpty()) "" else " $detail"
         return ModelProviderException("The model server returned HTTP $code.$suffix")

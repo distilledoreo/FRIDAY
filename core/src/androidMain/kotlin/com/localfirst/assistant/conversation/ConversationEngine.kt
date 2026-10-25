@@ -468,7 +468,7 @@ class ConversationEngine(
          * Tools whose identical repeat in one turn can't learn anything new. Phone, device and status tools read live
          * state that changes between calls (re-reading the screen is how phone actions are checked), so they repeat freely.
          */
-        private val REPEAT_GUARDED_TOOLS = setOf("web_search", "fetch_page", "execute_python", "create_file", "generate_image", "search_memory", "search_history")
+        private val REPEAT_GUARDED_TOOLS = setOf("web_search", "fetch_page", "execute_python", "create_file", "generate_image", "generate_video", "search_memory", "search_history")
 
         /** Arguments with sorted keys, so {"a":1,"b":2} and {"b":2,"a":1} are the same call. */
         private fun canonicalArguments(json: String): String = try {

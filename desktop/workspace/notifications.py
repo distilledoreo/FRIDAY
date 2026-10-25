@@ -97,6 +97,10 @@ class PushNotifications:
                         if text: add('watch-' + origin, hashlib.sha256(text.encode()).hexdigest(), 'FRIDAY found a watched change', 'activity')
                         continue
                 add('agent-' + task['id'], str(task.get('status')) + ':' + str(task.get('updated')), 'FRIDAY has a task update', 'activity')
+        for video in await self.optional('/workspace/videos') or []:
+            # Videos take minutes to tens of minutes; say when one is ready (or couldn't be made).
+            if video.get('status') in ('completed', 'failed'):
+                add('video-' + video['id'], video['status'], 'Your video is ready' if video['status'] == 'completed' else 'Your video couldn\'t be made', 'videos')
         sessions = await self.optional('/workspace/pc/sessions') or []
         coding = {s['id'] for s in sessions if s.get('agent') == 'friday-code'}
         approvals = await self.optional('/workspace/pc/approvals') or {}

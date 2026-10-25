@@ -38,6 +38,8 @@ class GpuGate:
         self.foreground = {}
         self.maintenance_file = None
         self.image_lock = asyncio.Lock()
+        # While a video renders on both cards, when chat is expected back (wall-clock seconds).
+        self.video_until = None
 
     def maintenance_paused(self):
         return bool(self.maintenance_file and self.maintenance_file.exists())
@@ -48,6 +50,12 @@ class GpuGate:
 
     async def acquire_chat(self):
         async with self.condition:
+            if self.exclusive and self.phase == 'video':
+                # Not the brief handoff clients wait through: a different flag, so they report it instead of retrying.
+                minutes = max(1, round(((self.video_until or time.time()) - time.time()) / 60))
+                raise HTTPException(503, {'code': 'gpu_video', 'phase': self.phase, 'minutes_left': minutes,
+                                         'message': f'Chat is paused while a video renders on both GPUs, back in about {minutes} min.'},
+                                    headers={'Retry-After': '60', 'X-Assistant-GPU-Busy': 'video'})
             if self.exclusive:
                 raise HTTPException(503, {'code': 'gpu_busy', 'phase': self.phase,
                                          'message': 'GPU is generating an image or restoring chat. Retry shortly.'},
@@ -506,6 +514,20 @@ class ImageManager:
                 update(status='cancelled' if was_cancelled else 'failed' if error else 'completed',
                        phase='cancelled' if was_cancelled else 'failed' if error else 'completed', error=error)
                 self.gate.phase = 'chat_ready'
+
+    async def rewarm(self):
+        """Reload the resident image model after something else borrowed its card (a video render)."""
+        if not self.dedicated or self.stopping or self.gate.maintenance_paused():
+            return
+        try:
+            async with self.gate.image_lease(borrow_chat=False):
+                await self.runtime.preflight()
+                await self.runtime.load_image(lambda: self.stopping)
+            self.warm_error = None
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.warm_error = str(e)[:500]
 
     async def worker(self):
         while not self.stopping:

@@ -322,9 +322,10 @@ class Workspace:
             return [dict(id=r['id'], revision=r['revision'], deleted=bool(r['deleted']))
                     for r in db.execute('SELECT id,revision,deleted FROM items ORDER BY id')]
 
-    def put_file(self, data, name, mime=None):
-        if len(data) > MAX_FILE:
-            raise HTTPException(413, 'File exceeds 25 MB')
+    def put_file(self, data, name, mime=None, limit=MAX_FILE):
+        # Generated videos pass a larger limit; uploads and other artifacts keep 25 MB.
+        if len(data) > limit:
+            raise HTTPException(413, f'File exceeds {limit // (1024 * 1024)} MB')
         name = Path(unquote(name).replace('\\', '/')).name[:160] or 'file'
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
