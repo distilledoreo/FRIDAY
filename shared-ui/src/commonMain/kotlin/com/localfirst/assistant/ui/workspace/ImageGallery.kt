@@ -22,6 +22,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
@@ -157,7 +159,8 @@ internal fun ImageViewer(job: JsonObject, busy: Boolean, onClose: () -> Unit, on
         // Taps on the backdrop stay here instead of reaching the gallery underneath.
         .clickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null) {}) {
         Surface(Modifier.fillMaxSize(), color = Color(0xFF0D0D0F), contentColor = Color.White) {
-            Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            // Clear of the status and navigation bars (Android draws edge to edge), so the buttons are never under them.
+            Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Image", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                     IconButton(onClose) { Icon(LineIcons.Close, "Close", tint = Color.White) }
@@ -166,7 +169,9 @@ internal fun ImageViewer(job: JsonObject, busy: Boolean, onClose: () -> Unit, on
                     if (artifact != null) ImageThumb("/workspace/files/$artifact", job.string("prompt").take(120), Modifier.fillMaxSize(), ContentScale.Fit)
                     else ImageTile(job, Modifier.widthIn(max = 280.dp).fillMaxWidth()) {}
                 }
-                SelectionContainer { Text(job.string("prompt"), style = MaterialTheme.typography.bodyMedium, maxLines = 6, overflow = TextOverflow.Ellipsis) }
+                // A long prompt scrolls in its own space instead of pushing the buttons off the screen.
+                Column(Modifier.heightIn(max = 140.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                SelectionContainer { Text(job.string("prompt"), style = MaterialTheme.typography.bodyMedium) }
                 request?.let { r ->
                     val details = listOfNotNull(
                         "${r.int("width")}×${r.int("height")}".takeIf { r.int("width") > 0 },
@@ -178,6 +183,7 @@ internal fun ImageViewer(job: JsonObject, busy: Boolean, onClose: () -> Unit, on
                     Text(details.joinToString(" · "), style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = .7f))
                 }
                 job.string("error").takeIf { it.isNotBlank() }?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (artifact != null) {
                         Button({ onSave(artifact) }) { Text("Save") }
