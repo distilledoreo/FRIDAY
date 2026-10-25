@@ -276,6 +276,10 @@ class SystemRuntime:
             # 256/8192 sequence anchors, shifts 0.5/0.9, no terminal stretching.
             sequence = (request['width'] // 16) * (request['height'] // 16)
             shift = math.exp(0.5 + (sequence - 256) * (0.9 - 0.5) / (8192 - 256))
+            # A fixed shift for a model the adapter wasn't trained on: on Qwen Image 2.1 Turbo at partial
+            # strength, 3 keeps detail without the over-sharpening and stray objects of the default at every size.
+            if isinstance(self.config.get('lightning_shift'), (int, float)) and self.config['lightning_shift'] > 0:
+                shift = float(self.config['lightning_shift'])
             sigmas = [1.0] + [shift / (shift + 1 / t - 1) for t in (0.75, 0.5, 0.25)] + [0.0]
             body['sample_params'].update(sample_method='euler', sample_steps=4,
                                          guidance={'txt_cfg':1}, custom_sigmas=sigmas)

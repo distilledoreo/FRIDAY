@@ -187,9 +187,10 @@ class ChatTools:
             image = uuid.uuid4().hex
             body = dict(args, **self.image, id=image)
             for side in ('width', 'height'):
-                # "16:9 at 1080p" asks for 1080, which the renderer refuses; the nearest multiple of 16 keeps the shape.
+                # The renderer works in multiples of 32 (it rounds 1008 up to 1024), so snap first: the size asked
+                # for is the size made, and "16:9 at 1080p" still keeps its shape.
                 if isinstance(body.get(side), int) and not isinstance(body[side], bool):
-                    body[side] = min(2000, max(256, round(body[side] / 16) * 16))
+                    body[side] = min(1984, max(256, round(body[side] / 32) * 32))
             try:
                 await call('POST', '/workspace/images', body)
             except ToolError as error:

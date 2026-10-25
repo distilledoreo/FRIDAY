@@ -20,7 +20,8 @@ class ImageGenerationToolTest {
         ImageGenerationTool(gateway) {}.execute(JsonCodec.json.parseToJsonElement("""{"prompt":"poster","width":1920,"height":1080}""").jsonObject)
         assertTrue(posted, posted.contains("\"width\":1920") && posted.contains("\"height\":1088"))
         assertEquals(256, snapImageSide(100))
-        assertEquals(2000, snapImageSide(4000))
+        assertEquals(1984, snapImageSide(4000))
+        assertEquals(1024, snapImageSide(1008))
     }
 
     @Test fun checkpointsAndReturnsImageToSameConversation() = runBlocking {

@@ -15,7 +15,7 @@ class ImageGenerationTool(private val client: WorkspaceGateway, private val paus
     override val inputSchema = JsonCodec.json.parseToJsonElement("""{"type":"object","properties":{"prompt":{"type":"string","maxLength":4000},"width":{"type":"integer","minimum":256,"maximum":2000},"height":{"type":"integer","minimum":256,"maximum":2000},"steps":{"type":"integer","minimum":4,"maximum":12},"seed":{"type":"integer","minimum":0,"maximum":2147483647},"reference_file_ids":{"type":"array","maxItems":2,"items":{"type":"string"}},"transparent":{"type":"boolean"}},"required":["prompt"],"additionalProperties":false}""").jsonObject
     override suspend fun execute(arguments: JsonObject): ToolExecutionResult {
         val id = UUID.randomUUID().toString().replace("-", "")
-        // "16:9 at 1080p" asks for 1080, which the renderer refuses; the nearest multiple of 16 keeps the shape.
+        // The renderer works in multiples of 32 (it rounds 1008 up to 1024): snap so the size asked for is the size made.
         val sized = listOf("width", "height").mapNotNull { side ->
             arguments[side]?.jsonPrimitive?.intOrNull?.let { side to JsonPrimitive(snapImageSide(it)) }
         }
@@ -46,5 +46,5 @@ class ImageGenerationTool(private val client: WorkspaceGateway, private val paus
     }
 }
 
-/** The nearest multiple of 16 within the renderer's 256–2000 range. */
-internal fun snapImageSide(value: Int): Int = (Math.round(value / 16.0) * 16).toInt().coerceIn(256, 2000)
+/** The nearest multiple of 32 within the renderer's 256–2000 range (1984 is the largest). */
+internal fun snapImageSide(value: Int): Int = (Math.round(value / 32.0) * 32).toInt().coerceIn(256, 1984)

@@ -367,6 +367,8 @@ class ImageToolTests(unittest.IsolatedAsyncioTestCase):
             return {'status': 'queued'} if method == 'POST' else {'status': 'completed', 'artifact': {'id': 'f' * 32}}
         tools = ChatTools(None, call, None, None, pause=lambda: asyncio.sleep(0))
         job = await tools.run('generate_image', {'prompt': 'poster', 'width': 1920, 'height': 1080})
+        big = await tools.run('generate_image', {'prompt': 'poster', 'width': 2000, 'height': 1008})
+        self.assertEqual((calls[-2][2]['width'], calls[-2][2]['height']), (1984, 1024))
         self.assertEqual(job['status'], 'completed')
         self.assertEqual((calls[0][2]['width'], calls[0][2]['height']), (1920, 1088))
         calls.clear()

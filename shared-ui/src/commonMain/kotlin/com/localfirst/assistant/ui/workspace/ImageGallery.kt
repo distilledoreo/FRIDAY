@@ -35,7 +35,6 @@ import kotlinx.serialization.json.*
 
 /** Sizes the image model renders well; each side a multiple of 16, within its 2000x2000 at 8 steps limit. */
 internal val IMAGE_ASPECTS = listOf(Triple("Square", 1024, 1024), Triple("Landscape", 1344, 768), Triple("Portrait", 768, 1344))
-internal val IMAGE_STEPS = listOf(4 to "Fast", 8 to "Standard", 12 to "Detailed")
 
 /** What a gallery tile shows for a job: its finished image id, or how far along it is. */
 internal fun JsonObject.artifactId(): String? = (this["artifact"] as? JsonObject)?.string("id")?.takeIf { it.isNotBlank() }
@@ -64,7 +63,6 @@ internal fun ImageThumb(path: String, label: String, modifier: Modifier = Modifi
 internal fun ImageComposer(
     prompt: String, onPrompt: (String) -> Unit,
     aspect: Int, onAspect: (Int) -> Unit,
-    steps: Int, onSteps: (Int) -> Unit,
     seed: String, onSeed: (String) -> Unit,
     transparent: Boolean, onTransparent: (Boolean) -> Unit,
     references: List<String>, onRemoveReference: (String) -> Unit, onAddReference: () -> Unit,
@@ -102,10 +100,6 @@ internal fun ImageComposer(
                 TextButton({ more = !more }) { Text(if (more) "Fewer options" else "More options") }
             }
             if (more) Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Quality", style = MaterialTheme.typography.labelLarge)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    IMAGE_STEPS.forEach { (value, label) -> FilterChip(steps == value, { onSteps(value) }, label = { Text("$label · $value steps") }, colors = choiceChipColors()) }
-                }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(seed, { onSeed(it.filter(Char::isDigit).take(10)) }, Modifier.weight(1f), singleLine = true,
                         label = { Text("Seed (blank = random)") }, isError = !seedValid)
@@ -175,7 +169,6 @@ internal fun ImageViewer(job: JsonObject, busy: Boolean, onClose: () -> Unit, on
                 request?.let { r ->
                     val details = listOfNotNull(
                         "${r.int("width")}×${r.int("height")}".takeIf { r.int("width") > 0 },
-                        r.int("steps").takeIf { it > 0 }?.let { "$it steps" },
                         r["seed"]?.jsonPrimitive?.longOrNull?.let { "seed $it" },
                         "transparent".takeIf { r["transparent"]?.jsonPrimitive?.booleanOrNull == true },
                         r["reference_file_ids"]?.jsonArray?.size?.takeIf { it > 0 }?.let { "edited from $it image" + if (it > 1) "s" else "" },

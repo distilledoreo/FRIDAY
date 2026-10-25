@@ -136,6 +136,27 @@ class ReloadTests(unittest.IsolatedAsyncioTestCase):
                 for actual,want in zip(params['custom_sigmas'],expected,strict=True):
                     self.assertAlmostEqual(actual,want,places=8)
 
+    async def test_configured_lightning_shift_is_used_at_every_size(self):
+        bodies=[]
+        def respond(request):
+            if request.method=='POST':
+                bodies.append(json.loads(request.content))
+                return httpx.Response(200,json={'id':'image-job'})
+            body=bodies[-1];png=io.BytesIO()
+            Image.new('RGB',(body['width'],body['height'])).save(png,format='PNG')
+            return httpx.Response(200,json={'status':'completed','result':{'images':[{
+                'b64_json':base64.b64encode(png.getvalue()).decode()}]}})
+        await self.runtime.http.aclose()
+        self.runtime.http=httpx.AsyncClient(base_url='http://renderer',transport=httpx.MockTransport(respond))
+        adapter=[{'path':'lightning.safetensors','multiplier':0.35}]
+        self.runtime.config.update(sampling_profile='qwen-image-2.1-lightning',lora=adapter,lightning_shift=3.0)
+        for dimensions in [(1024,1024),(1984,1984)]:
+            await self.runtime.generate({'prompt':'mug','width':dimensions[0],'height':dimensions[1],
+                                         'steps':8,'seed':42},lambda:False,lambda **fields:None)
+            for actual,want in zip(bodies[-1]['sample_params']['custom_sigmas'],[1,0.9,0.75,0.5,0],strict=True):
+                self.assertAlmostEqual(actual,want,places=8)
+            self.assertEqual(bodies[-1]['lora'],adapter)
+
     async def test_custom_budget_allows_a_larger_cold_model(self):
         self.runtime.config['llm_reload_timeout_seconds'] = 900
         self.raw.get.return_value = httpx.Response(200, json={'loaded':True})
