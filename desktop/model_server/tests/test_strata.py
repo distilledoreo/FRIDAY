@@ -67,10 +67,11 @@ class PayloadTests(unittest.TestCase):
         self.assertNotIn('id_slot', adapted)
         self.assertEqual(body, original)
 
-    def test_incognito_disables_parking_and_prefix(self):
-        body = dict(request(), cache_prompt=False, strata_checkpoint=True, strata_prefix={'messages': 1})
+    def test_incognito_drops_the_prefix_but_never_disables_checkpoints(self):
+        # Strata's no-checkpoint mode garbled answers; privacy comes from the gateway's x-memory-private path.
+        body = dict(request(), cache_prompt=False, strata_prefix={'messages': 1})
         result = strata_payload(body)
-        self.assertFalse(result['strata_checkpoint'])
+        self.assertNotIn('strata_checkpoint', result)
         self.assertNotIn('strata_prefix', result)
         self.assertNotIn('cache_prompt', result)
 
@@ -263,9 +264,10 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(response.json()['loaded'])
 
     async def test_background_transport_does_not_disable_tool_free_foreground_cache(self):
-        received = []
+        received, private_headers = [], []
         async def transport(req):
             received.append(json.loads(req.content))
+            private_headers.append(req.headers.get('x-memory-private'))
             self.assertEqual(int(req.headers['content-length']), len(req.content))
             self.assertEqual(req.headers['authorization'], 'Bearer fixture')
             self.assertIn('timeout', req.extensions)
@@ -280,9 +282,10 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             await client.send(req, stream=False)
             await client.post('/v1/chat/completions', json=body,
                               headers={'Authorization': 'Bearer fixture'})
-        self.assertNotIn('strata_checkpoint', received[0])
-        self.assertFalse(received[1]['strata_checkpoint'])
-        self.assertFalse(received[2]['strata_checkpoint'])
+        # Foreground streams keep checkpoints; tool-free background calls go private, never no-checkpoint.
+        self.assertTrue(all('strata_checkpoint' not in body for body in received))
+        self.assertIsNone(private_headers[0])
+        self.assertEqual(private_headers[1:], ['1', '1'])
 
 
 if __name__ == '__main__':

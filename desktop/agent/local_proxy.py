@@ -39,8 +39,8 @@ def local_payload(value):
         # thinking cap. Explicit zero also overrides any backend default budget.
         value['reasoning_budget_tokens'] = 0
         value.pop('id_slot', None)
+        # Strata's no-checkpoint mode (strata_checkpoint false) garbled answers; a one-off turn is simply not reused.
         if value.pop('cache_prompt', None) is False:
-            value['strata_checkpoint'] = False
             value.pop('strata_prefix', None)
     return value
 
