@@ -140,6 +140,16 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(m.get(job['id'])['status'], 'cancelled')
         self.assertIn('start asr.service', self.events)
 
+    async def test_a_queued_video_cancels_at_once_and_never_runs_after_waiting_for_the_gpu(self):
+        m = self.manager()
+        job = m.create(self.request())
+        async with m.gate.image_lock:  # An image job holds the GPU.
+            task = asyncio.create_task(m.execute(job)); await asyncio.sleep(.01)
+            self.assertEqual(m.cancel(job['id'])['status'], 'cancelled')
+        await task
+        self.assertEqual(self.events, [])
+        self.assertEqual(m.get(job['id'])['status'], 'cancelled')
+
     async def test_failed_restore_blocks_chat_and_the_queue(self):
         m = self.manager('restore')
         job = m.create(self.request(quality=4))

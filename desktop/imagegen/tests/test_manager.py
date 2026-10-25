@@ -52,6 +52,13 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(e.exception.headers['X-Assistant-GPU-Busy'],'1')
         await gate.release_chat();await task
         self.assertFalse(gate.exclusive)
+    async def test_a_queued_job_cancels_at_once_and_never_runs_after_waiting_for_the_gpu(self):
+        m=self.manager(dedicated=True);j=m.create(self.request())
+        async with m.gate.image_lock:  # Another job (a video) holds the GPU.
+            task=asyncio.create_task(m.execute(j));await asyncio.sleep(.01)
+            self.assertEqual(m.cancel(j['id'])['status'],'cancelled')  # Terminal at once, not when the GPU frees.
+        await task
+        self.assertNotIn('generate',m.runtime.events);self.assertEqual(m.get(j['id'])['status'],'cancelled')
     async def test_success_restores_before_completion_and_is_idempotent(self):
         m=self.manager();j=m.create(self.request());self.assertEqual(j,m.create(self.request()))
         await m.execute(j)

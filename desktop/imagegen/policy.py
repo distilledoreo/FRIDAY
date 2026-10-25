@@ -1,6 +1,7 @@
 """Conservative P100 envelope. The model chooses parameters; this policy is authoritative."""
 MAX_RENDER_SECONDS = 15 * 60
-MAX_LOAD_SECONDS = 90
+# Cold starts take 100-150 s (the prompt reader loads onto the RX 580, then the model onto the P100).
+MAX_LOAD_SECONDS = 300
 MAX_PIXELS = 2000 * 2000
 MAX_WORK = 2000 * 2000 * 8
 MAX_REFERENCES = 2

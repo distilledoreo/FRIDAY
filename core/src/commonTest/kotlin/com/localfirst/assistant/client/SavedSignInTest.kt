@@ -41,4 +41,33 @@ class SavedSignInTest {
         assertFalse(vm.state.value.connected)
         assertNull(store.saved)
     }
+
+    private class Drafts : DraftRecovery {
+        val saved = mutableMapOf<String, String>()
+        override fun load(key: String) = saved[key]
+        override fun save(key: String, text: String?) { if (text == null) saved.remove(key) else saved[key] = text }
+        override fun clear() { saved.clear() }
+    }
+
+    @Test fun anUnsentDraftSurvivesAReloadWhileTheSignInIsRemembered() = runTest {
+        val store = Memory(); val drafts = Drafts()
+        val vm = WorkspaceController(WorkspaceRepository(Pc()), this, { "new" }, { 5 }, savedSignIn = store, draftRecovery = drafts)
+        vm.connect("", "token", remember = true)!!.join()
+        vm.setDraft("QA UNSENT DRAFT 731")
+        assertEquals(mapOf("new:" to "QA UNSENT DRAFT 731"), drafts.saved)
+        // A reload: a new page (a new controller) reconnects with the remembered sign-in.
+        val reloaded = WorkspaceController(WorkspaceRepository(Pc()), this, { "new" }, { 5 }, savedSignIn = store, draftRecovery = drafts)
+        reloaded.resumeSavedSignIn()!!.join()
+        assertEquals("QA UNSENT DRAFT 731", reloaded.state.value.draft)
+        reloaded.signOut()
+        assertTrue(drafts.saved.isEmpty())
+    }
+
+    @Test fun withoutARememberedSignInDraftsStayInMemory() = runTest {
+        val drafts = Drafts()
+        val vm = WorkspaceController(WorkspaceRepository(Pc()), this, { "new" }, { 5 }, savedSignIn = Memory(), draftRecovery = drafts)
+        vm.connect("", "token")!!.join()
+        vm.setDraft("Shared computer")
+        assertTrue(drafts.saved.isEmpty())
+    }
 }

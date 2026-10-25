@@ -443,7 +443,7 @@ class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.app = FastAPI()
-        self.searches, self.final_request, self.impl = 0, None, None
+        self.searches, self.final_request, self.impl, self.search_impl = 0, None, None, None
         async def model(messages, tools):
             if self.impl:
                 return await self.impl(messages, tools)
@@ -453,6 +453,8 @@ class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
             return {'role': 'assistant', 'content': '', 'tool_calls': [{'id': uuid.uuid4().hex, 'type': 'function',
                 'function': {'name': 'web_search', 'arguments': '{"query": "same"}'}}]}
         async def search(query):
+            if self.search_impl:
+                return await self.search_impl(query)
             self.searches += 1
             return {'query': query, 'results': [{'url': 'https://example.com'}]}
         async def fetch(url): return {'markdown': 'Example'}
@@ -479,6 +481,9 @@ class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
 
     def workspace_model(self, impl):
         self.impl = impl
+
+    def workspace_search(self, impl):
+        self.search_impl = impl
 
     async def run_job(self, prompt):
         r = await self.client.post('/workspace/jobs', json={'prompt': prompt})
@@ -537,6 +542,34 @@ class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
         job = await self.run_job('Sum the sales.')
         self.assertEqual(job['result'], 'The total is 173.85.')
         self.assertEqual(len(runs), 1)
+
+    async def run_research(self, answer):
+        page = 'https://www.python.org/downloads/release/python-3130/'
+        async def search(query):
+            return {'query': query, 'evidence': [{'url': page, 'title': 'Python 3.13.0', 'status': 'unavailable',
+                                                  'detail': 'Static page could not be retrieved safely.'},
+                                                 {'url': 'https://peps.python.org/pep-0719/', 'title': 'PEP 719', 'status': 'retrieved',
+                                                  'passages': ['3.13.0 final: 2024-10-01']}]}
+        self.workspace_search(search)
+        steps = iter([('web_search', {'query': 'python 3.13 release'})])
+        async def model(messages, tools):
+            step = next(steps, None)
+            if step:
+                return {'role': 'assistant', 'content': '', 'tool_calls': [{'id': uuid.uuid4().hex, 'type': 'function',
+                    'function': {'name': step[0], 'arguments': json.dumps(step[1])}}]}
+            return {'role': 'assistant', 'content': answer}
+        self.workspace_model(model)
+        return await self.run_job('When was Python 3.13.0 released? Cite python.org.')
+
+    async def test_a_cited_page_that_was_never_read_is_called_out(self):
+        # Assessment R01: the release page couldn't be retrieved, yet the answer said "This page states ...".
+        job = await self.run_research('Released October 7, 2024. The page https://www.python.org/downloads/release/python-3130/ states it.')
+        self.assertIn("_Note: I didn't read the full page at https://www.python.org/downloads/release/python-3130/", job['result'])
+        self.assertIn('from search snippets, not the page itself', job['result'])
+
+    async def test_pages_that_were_read_get_no_note(self):
+        job = await self.run_research('Released in October 2024 per https://peps.python.org/pep-0719/.')
+        self.assertNotIn('Note:', job['result'])
 
     def test_attached_files_are_found_newest_first(self):
         messages = [{'role': 'user', 'content': 'File a.csv; file_id=' + 'a' * 32},

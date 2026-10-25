@@ -262,6 +262,44 @@ async def _plain_answer(answer, request, regenerate, tools=True):
             (' The last result was:\n\n```\n' + str(last)[:4000] + '\n```' if last else '')}
 
 
+URL = re.compile(r'https?://[^\s<>()\[\]"\'`*]+')
+
+
+def _url_key(url):
+    return url.rstrip('.,;:!?)').rstrip('/').lower()
+
+
+def _unread_note(messages, start, text):
+    """A note for each page the answer cites that no tool read this message: found by a search but not retrieved, or a
+    fetch that failed. Models cite such pages as if they'd read them; the note says plainly that they didn't."""
+    read, unread = set(), {}
+    calls = {c.get('id'): c for m in messages[start:] if m.get('role') == 'assistant' for c in m.get('tool_calls') or []}
+    for message in messages[start:]:
+        if message.get('role') != 'tool':
+            continue
+        for source in message.get('sources') or []:
+            key = _url_key(str(source.get('url', '')))
+            if source.get('contentRead'):
+                read.add(key)
+            else:
+                unread.setdefault(key, source['url'])
+        call = calls.get(message.get('tool_call_id')) or {}
+        if (call.get('function') or {}).get('name') == 'fetch_page' and '"error"' in str(message.get('content', ''))[:200]:
+            try:
+                url = json.loads(call['function'].get('arguments') or '{}').get('url', '')
+            except ValueError:
+                url = ''
+            if url:
+                unread.setdefault(_url_key(url), url)
+    cited = [unread[_url_key(u)] for u in dict.fromkeys(URL.findall(text or '')) if _url_key(u) in unread and _url_key(u) not in read]
+    if not cited:
+        return ''
+    one = len(set(cited)) == 1
+    pages = ', '.join(dict.fromkeys(cited))
+    return (f'\n\n_Note: I didn\'t read the full {"page" if one else "pages"} at {pages}, so anything attributed to '
+            f'{"it" if one else "them"} above comes from search snippets, not the {"page itself" if one else "pages themselves"}._')
+
+
 def _unanswered(messages):
     """Tool calls of the latest assistant message that have no result yet (after a pause or restart)."""
     for index in range(len(messages) - 1, -1, -1):
@@ -1002,6 +1040,8 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                         answer = await _plain_answer(answer, request, lambda retry, with_tools: asyncio.wait_for(
                             generate(retry, _step_tools(available, messages, initial) if with_tools else [], report, body.model,
                                      body.connection, reasoning=body.reasoning, private=True), 900), tools=not last)
+                        if not answer.get('tool_calls'):
+                            answer = dict(answer, content=(answer.get('content') or '') + _unread_note(messages, initial, answer.get('content')))
                         messages.append(answer)
                         calls = answer.get('tool_calls') or []
                         if not calls:
@@ -1300,6 +1340,8 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                         if status() == 'cancelled':
                             keep_partial(job, messages, answer.get('content') or progress.get(job['id'], ''))
                         return
+                    if not answer.get('tool_calls'):
+                        answer = dict(answer, content=(answer.get('content') or '') + _unread_note(messages, start, answer.get('content')))
                     messages.append(answer)
                     progress[job['id']] = ''
                     if not answer.get('tool_calls'):

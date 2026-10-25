@@ -28,7 +28,7 @@ fun main() = onWasmReady {
         val scope = rememberCoroutineScope()
         val gateway = remember { FetchWorkspaceGateway() }
         val vm = remember { WorkspaceController(WorkspaceRepository(gateway), scope, ::randomConversationId, PlatformSystem::currentTimeMillis,
-            save = { name, mime, bytes -> downloadBytes(name, mime, bytes) }, inflate = browserInflate, savedSignIn = BrowserSavedSignIn) }
+            save = { name, mime, bytes -> downloadBytes(name, mime, bytes) }, inflate = browserInflate, savedSignIn = BrowserSavedSignIn, draftRecovery = BrowserDraftRecovery) }
         val state by vm.state.collectAsState()
         val features = remember { FeatureController(gateway, scope, browserOAuth = true) }
         val briefing = remember { BriefingController(gateway, scope) }

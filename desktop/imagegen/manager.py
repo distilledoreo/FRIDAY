@@ -260,7 +260,7 @@ class SystemRuntime:
             except httpx.HTTPError:
                 pass
             await asyncio.sleep(1)
-        raise RuntimeError('Qwen Image did not become ready within 90 seconds')
+        raise RuntimeError(f'Qwen Image did not become ready within {MAX_LOAD_SECONDS // 60} minutes')
 
     async def image_ready(self):
         try:
@@ -418,9 +418,12 @@ class ImageManager:
         return job
 
     def cancel(self, job_id):
+        """A job that hasn't started is cancelled at once; a running one stops at its next check."""
         job = self.get(job_id)
         if job['status'] in self.TERMINAL:
             return job
+        if job['status'] == 'queued':
+            return self.update(job_id, cancel_requested=True, status='cancelled', phase='cancelled')
         return self.update(job_id, cancel_requested=True)
 
     async def recover(self):
@@ -453,6 +456,9 @@ class ImageManager:
             update(status='cancelled', phase='cancelled'); return
         result = None; error = None; borrowed = False; was_cancelled = False
         async with self.gate.image_lease(borrow_chat=not self.dedicated):
+            if cancelled():
+                # Cancelled while it waited for the GPU (cancel() already marked it): nothing ran.
+                update(status='cancelled', phase='cancelled'); return
             try:
                 update(status='running', phase='preparing')
                 await self.runtime.preflight()

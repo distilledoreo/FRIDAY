@@ -129,9 +129,12 @@ class VideoManager:
         return job
 
     def cancel(self, job_id):
+        """A job that hasn't started is cancelled at once; a running one stops at its next check."""
         job = self.get(job_id)
         if job['status'] in self.TERMINAL:
             return job
+        if job['status'] == 'queued':
+            return self.update(job_id, cancel_requested=True, status='cancelled', phase='cancelled')
         return self.update(job_id, cancel_requested=True)
 
     def delete(self, job_id):
@@ -222,6 +225,9 @@ class VideoManager:
         error = None; was_cancelled = False
         work = self.work / job_id
         async with self.gate.image_lock:
+            if cancelled():
+                # Cancelled while it waited for the GPU (cancel() already marked it): nothing ran.
+                update(status='cancelled', phase='cancelled'); return
             try:
                 update(status='running', phase='preparing', started=time.time())
                 await self.runtime.preflight()

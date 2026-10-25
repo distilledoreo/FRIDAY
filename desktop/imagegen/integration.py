@@ -36,11 +36,13 @@ def enable(app, auth, workspace, raw_llm, gate, config_path):
         if not Path(config['command'][0]).is_file():
             missing.append(Path(config['command'][0]).name)
         checkpoint = Path(config['command'][config['command'].index('--diffusion-model') + 1]).stem
-        return {'phase':gate.phase, 'error':gate.error or manager.warm_error,
+        loaded = await manager.runtime.image_ready()
+        # A warm-up error is history once the model is loaded.
+        return {'phase':gate.phase, 'error':gate.error or (None if loaded else manager.warm_error),
                 'active_chat_requests':gate.readers, 'maintenance_paused':gate.maintenance_paused(),
                 'model':'Qwen Image 2.1 Turbo' if 'turbo' in checkpoint.lower() else 'Qwen Image 2.1',
                 'checkpoint':checkpoint, 'placement':config.get('placement', 'shared'),
-                'loaded':await manager.runtime.image_ready(), 'runtime_available':not missing, 'missing_files':missing}
+                'loaded':loaded, 'runtime_available':not missing, 'missing_files':missing}
 
     @router.get('')
     async def jobs():

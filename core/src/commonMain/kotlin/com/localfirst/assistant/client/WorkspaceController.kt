@@ -77,6 +77,14 @@ interface SavedSignIn {
     fun clear()
 }
 
+/** Where a client keeps unsent draft text across a page reload, by chat ("chat:<id>", or "new:<project>"). Only used
+ *  while a sign-in is remembered, never for incognito, and cleared on sign-out. Attachments don't survive a reload. */
+interface DraftRecovery {
+    fun load(key: String): String?
+    fun save(key: String, text: String?)
+    fun clear()
+}
+
 class WorkspaceController(
     private val repository: WorkspaceRepository, private val scope: CoroutineScope,
     private val newId: () -> String, private val clock: () -> Long,
@@ -86,6 +94,7 @@ class WorkspaceController(
     private val inflate: Inflate = Inflate { _, _ -> error("Compressed backups are unavailable on this client") },
     /** Where this client may keep its sign-in between visits, when the user asks; null keeps it in memory only. */
     val savedSignIn: SavedSignIn? = null,
+    private val draftRecovery: DraftRecovery? = null,
 ) : WorkspaceActions {
     private val mutable = MutableStateFlow(WorkspaceState())
     override val state = mutable.asStateFlow()
@@ -107,15 +116,24 @@ class WorkspaceController(
     private fun openDraft(id: String?, project: String?) {
         val saved = drafts.take(id, project)
         beforeEdit = saved?.beforeEdit
+        // After a page reload the in-memory drafts are gone; the recovered text stands in for them.
+        val recovered = if (saved == null && !state.value.incognito) recovery()?.load(draftKey(id, project)) else null
         mutable.update { cleared(it).copy(activeId = id, projectId = project,
-            draft = saved?.composer?.text.orEmpty(), attachments = saved?.composer?.attachments.orEmpty(),
+            draft = saved?.composer?.text ?: recovered.orEmpty(), attachments = saved?.composer?.attachments.orEmpty(),
             imageMode = saved?.composer?.imageMode ?: false, editingIndex = saved?.editingIndex) }
     }
     private fun sentDraft(old: WorkspaceState) {
-        if (!old.incognito) drafts.remove(old.activeId, old.projectId)
+        if (!old.incognito) { drafts.remove(old.activeId, old.projectId); recovery()?.save(draftKey(old.activeId, old.projectId), null) }
         beforeEdit = null
     }
-    override fun setDraft(text: String) { mutable.update { it.copy(draft = text) } }
+    private fun draftKey(id: String?, project: String?) = if (id != null) "chat:$id" else "new:${project.orEmpty()}"
+    /** Drafts outlive a reload only where the sign-in does: a remembered one. */
+    private fun recovery() = draftRecovery?.takeIf { savedSignIn?.load() != null }
+    override fun setDraft(text: String) {
+        mutable.update { it.copy(draft = text) }
+        val s = state.value
+        if (!s.incognito && s.editingIndex == null) recovery()?.save(draftKey(s.activeId, s.projectId), text.takeIf { it.isNotBlank() })
+    }
     fun search(text: String) { mutable.update { it.copy(query = text) } }
     fun selectProject(id: String?) { mutable.update { it.copy(projectId = id) } }
     fun dismissError() { mutable.update { it.copy(error = null) } }
@@ -225,7 +243,7 @@ class WorkspaceController(
     }
     fun close() { lock(); polling?.cancel() }
     /** Lock and forget a remembered sign-in: the next visit asks for the token again. */
-    fun signOut() { savedSignIn?.clear(); lock() }
+    fun signOut() { savedSignIn?.clear(); draftRecovery?.clear(); lock() }
     /** Reconnects with a remembered sign-in; one the computer refuses is forgotten. */
     fun resumeSavedSignIn(): Job? {
         if (state.value.connected) return null
@@ -256,6 +274,10 @@ class WorkspaceController(
         val models = try { (repository.gateway.request("/v1/models") as? JsonObject)?.get("data")?.rows()?.map { it.text("id") }?.filter { it.isNotBlank() }.orEmpty() }
             catch (e: CancellationException) { throw e } catch (e: Exception) { emptyList() }
         if (identity == epoch) mutable.update { it.copy(connected = true, models = models, model = it.model?.takeIf { m -> m in models }) }
+        // A reload lands on a new chat: bring back what was being typed there.
+        if (identity == epoch && state.value.activeId == null && state.value.draft.isEmpty() && !state.value.incognito) {
+            recovery()?.load(draftKey(null, state.value.projectId))?.let { text -> mutable.update { it.copy(draft = text) } }
+        }
     }
     /** Keeps one held request open while visible and idle; the gateway answers it when another client changes something. */
     fun startPolling(visible: () -> Boolean) {

@@ -23,6 +23,28 @@ fun randomConversationId(): String {
 fun removeLegacyToken() { localStorage.removeItem("friday.server.apiKey") }
 
 /** The sign-in the user asked this browser to remember; local storage, cleared by Lock. */
+/** Unsent draft text kept across a page reload while the sign-in is remembered (see DraftRecovery). */
+object BrowserDraftRecovery : DraftRecovery {
+    private const val KEY = "friday.drafts"
+    private fun all(): MutableMap<String, String> = runCatching {
+        val saved = kotlinx.serialization.json.Json.parseToJsonElement(localStorage.getItem(KEY) ?: return mutableMapOf()) as kotlinx.serialization.json.JsonObject
+        saved.mapValues { (it.value as kotlinx.serialization.json.JsonPrimitive).content }.toMutableMap()
+    }.getOrElse { mutableMapOf() }
+    override fun load(key: String): String? = all()[key]
+    override fun save(key: String, text: String?) {
+        val drafts = all()
+        drafts.remove(key)
+        if (text != null) drafts[key] = text.take(20000)  // re-added last: the newest
+        // The newest 50 drafts at most.
+        val kept = drafts.entries.toList().takeLast(50)
+        runCatching {
+            if (kept.isEmpty()) localStorage.removeItem(KEY)
+            else localStorage.setItem(KEY, kotlinx.serialization.json.JsonObject(kept.associate { it.key to kotlinx.serialization.json.JsonPrimitive(it.value) }).toString())
+        }
+    }
+    override fun clear() { runCatching { localStorage.removeItem(KEY) } }
+}
+
 object BrowserSavedSignIn : SavedSignIn {
     private const val KEY = "friday.signin"
     override fun load(): Pair<String, String>? = runCatching {
