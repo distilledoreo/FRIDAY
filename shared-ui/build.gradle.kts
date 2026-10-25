@@ -20,7 +20,7 @@ kotlin {
             implementation(compose.ui)
             implementation(libs.markdown.renderer.m3)
         }
-        androidMain.dependencies { implementation(libs.androidx.core.ktx) }
+        androidMain.dependencies { implementation(libs.androidx.core.ktx); implementation(libs.androidx.activity.compose) }
         commonTest.dependencies { implementation(libs.kotlin.test) }
         androidUnitTest.dependencies { implementation(libs.junit) }
     }

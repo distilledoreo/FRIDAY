@@ -87,39 +87,61 @@ fun ServiceImage(path: String, label: String, modifier: Modifier = Modifier) {
 @Composable
 fun ImagesScreen(vm: FeatureController, open: (String) -> Unit) {
     var prompt by remember { mutableStateOf("") }
-    var width by remember { mutableStateOf("768") }; var height by remember { mutableStateOf("768") }
-    var steps by remember { mutableStateOf("8") }; var seed by remember { mutableStateOf("") }
-    var transparent by remember { mutableStateOf(false) }; var references by remember { mutableStateOf(setOf<String>()) }
-    val valid = width.toIntOrNull()?.let { it in 256..2000 && it % 16 == 0 } == true && height.toIntOrNull()?.let { it in 256..2000 && it % 16 == 0 } == true && steps.toIntOrNull() in 4..12 && (seed.isBlank() || seed.toIntOrNull()?.let { it >= 0 } == true) && (width.toLongOrNull() ?: 0) * (height.toLongOrNull() ?: 0) * (steps.toLongOrNull() ?: 0) <= 2000L * 2000 * 8
-    ServiceScreen("Images", vm) { state ->
-        item { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(prompt, { prompt = it.take(4000) }, Modifier.fillMaxWidth(), label = { Text("Describe an image") })
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Square" to (768 to 768), "Landscape" to (1024 to 576), "Portrait" to (576 to 1024)).forEach { (label, size) -> TextButton({ width = size.first.toString(); height = size.second.toString() }) { Text(label) } } }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(width, { width = it.take(4) }, Modifier.weight(1f), label = { Text("Width") })
-                OutlinedTextField(height, { height = it.take(4) }, Modifier.weight(1f), label = { Text("Height") })
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(steps, { steps = it.take(2) }, Modifier.weight(1f), label = { Text("Steps (4–12)") })
-                OutlinedTextField(seed, { seed = it.take(10) }, Modifier.weight(1f), label = { Text("Seed (optional)") })
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) { Text("Transparent background", Modifier.weight(1f)); Switch(transparent, { transparent = it }) }
-            Text("Reference images · ${references.size}/2", style = MaterialTheme.typography.labelLarge)
-            state.files.filter { it.string("mime").startsWith("image/") }.forEach { file -> Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(file.string("id") in references, { checked -> references = if (checked) references + file.string("id") else references - file.string("id") }, enabled = file.string("id") in references || references.size < 2); Text(file.string("name"))
-            } }
-            Button({ vm.change("/workspace/images", body = buildJsonObject { put("prompt", prompt); put("width", width.toInt()); put("height", height.toInt()); put("steps", steps.toInt()); put("seed", seed.toIntOrNull() ?: kotlin.random.Random.nextInt(Int.MAX_VALUE)); put("transparent", transparent); put("reference_file_ids", JsonArray(references.map(::JsonPrimitive))) }) }, enabled = valid && prompt.isNotBlank() && !state.busy) { Text("Generate image") }
-            if (!valid) Text("Use dimensions 256–2000 in multiples of 16, 4–12 steps, and a non-negative seed. Large images allow fewer steps.")
-        } }
-        if (state.images.isEmpty()) item { Text("No generated images yet.") }
-        items(state.images, key = { it.string("id") }) { job -> FridayCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(job.string("prompt"), style = MaterialTheme.typography.titleSmall); Text(job.string("phase").ifBlank { job.string("status") }.replace('_', ' '))
-            (job["artifact"] as? JsonObject)?.let { artifact -> ServiceImage("/workspace/files/${artifact.string("id")}", "Generated image", Modifier.fillMaxWidth()); TextButton({ open(artifact.string("id")) }) { Text("Open or save image") } }
-            job.string("error").takeIf { it.isNotBlank() }?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            if (job.string("status") !in listOf("completed", "failed", "cancelled")) TextButton({ vm.change("/workspace/images/${job.string("id")}/cancel") }, enabled = !state.busy) { Text("Cancel") }
-            else TextButton({ vm.change("/workspace/images/${job.string("id")}", "DELETE") }, enabled = !state.busy) { Text("Remove from image history") }
-        } } }
+    var aspect by remember { mutableStateOf(0) }; var steps by remember { mutableStateOf(8) }
+    var seed by remember { mutableStateOf("") }; var transparent by remember { mutableStateOf(false) }
+    var references by remember { mutableStateOf(listOf<String>()) }
+    var picking by remember { mutableStateOf(false) }; var viewing by remember { mutableStateOf<String?>(null) }
+    val state by vm.state.collectAsState()
+    fun generate() {
+        val (_, width, height) = IMAGE_ASPECTS[aspect]
+        vm.change("/workspace/images", body = buildJsonObject {
+            put("prompt", prompt.trim()); put("width", width); put("height", height); put("steps", steps)
+            put("seed", seed.toIntOrNull() ?: kotlin.random.Random.nextInt(Int.MAX_VALUE)); put("transparent", transparent)
+            put("reference_file_ids", JsonArray(references.map(::JsonPrimitive)))
+        })
+        prompt = ""; references = emptyList()
     }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        // Newest first, in rows of squares sized to the window: two on a phone, up to six on a wide screen.
+        val columns = ((maxWidth - 40.dp) / 168.dp).toInt().coerceIn(2, 6)
+        ServiceScreen("Images", vm) { state ->
+            item(key = "images-composer") {
+                ImageComposer(prompt, { prompt = it }, aspect, { aspect = it }, steps, { steps = it }, seed, { seed = it },
+                    transparent, { transparent = it }, references, { id -> references = references - id }, { picking = true },
+                    state.busy, ::generate)
+            }
+            if (state.images.isEmpty()) item(key = "images-empty") {
+                Column(Modifier.fillMaxWidth().padding(vertical = 48.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("No images yet", style = MaterialTheme.typography.titleMedium)
+                    Text("Describe one above, or ask FRIDAY for one in any chat.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            items(state.images.chunked(columns), key = { row -> "images-" + row.first().string("id") }) { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    row.forEach { job -> ImageTile(job, Modifier.weight(1f)) { viewing = job.string("id") } }
+                    repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+        }
+        viewing?.let { id ->
+            val job = state.images.firstOrNull { it.string("id") == id }
+            if (job == null) viewing = null
+            else ImageViewer(job, state.busy, onClose = { viewing = null }, onSave = open,
+                onEdit = { artifact -> references = listOf(artifact); prompt = ""; viewing = null },
+                onReuse = {
+                    prompt = job.string("prompt")
+                    (job["request"] as? JsonObject)?.let { r ->
+                        val size = r["width"]?.jsonPrimitive?.intOrNull to r["height"]?.jsonPrimitive?.intOrNull
+                        IMAGE_ASPECTS.indexOfFirst { (_, w, h) -> w to h == size }.takeIf { it >= 0 }?.let { aspect = it }
+                        r["steps"]?.jsonPrimitive?.intOrNull?.takeIf { s -> IMAGE_STEPS.any { it.first == s } }?.let { steps = it }
+                    }
+                    viewing = null
+                },
+                onCancel = { vm.change("/workspace/images/$id/cancel") },
+                onDelete = { vm.change("/workspace/images/$id", "DELETE"); viewing = null })
+        }
+    }
+    if (picking) ReferencePicker(state.files, references, onDone = { references = it; picking = false }, onDismiss = { picking = false })
 }
 
 @Composable

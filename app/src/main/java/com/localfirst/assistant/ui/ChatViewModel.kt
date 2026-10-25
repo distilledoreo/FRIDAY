@@ -249,7 +249,12 @@ class ChatViewModel(
             path.startsWith("/workspace/agent/tasks/") -> loadAgentScreenshot(path.split('/')[4], path.substringAfterLast('/'))
             else -> return@withContext null
         }
-        android.graphics.BitmapFactory.decodeFile(file.absolutePath)?.let { it.asImageBitmap() }
+        // The Images gallery shows many at once; decode no larger than 2048 px on the long side.
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeFile(file.absolutePath, bounds)
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 2048) sample *= 2
+        android.graphics.BitmapFactory.decodeFile(file.absolutePath, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
     }
     /** The Code workspace: GitHub repositories on the PC, kept apart from chat state. */
     val code = com.localfirst.assistant.ui.code.CodeWorkspace(viewModelScope,
