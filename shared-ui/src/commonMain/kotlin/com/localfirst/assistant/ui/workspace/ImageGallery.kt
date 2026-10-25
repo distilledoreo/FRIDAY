@@ -33,8 +33,25 @@ import com.localfirst.assistant.ui.FridayDialogWindow
 import com.localfirst.assistant.ui.LineIcons
 import kotlinx.serialization.json.*
 
-/** Sizes the image model renders well; each side a multiple of 16, within its 2000x2000 at 8 steps limit. */
-internal val IMAGE_ASPECTS = listOf(Triple("Square", 1024, 1024), Triple("Landscape", 1344, 768), Triple("Portrait", 768, 1344))
+/** Shapes as width:height, and sizes by the longest side; the renderer works in multiples of 32 up to 1984. */
+internal val IMAGE_ASPECTS = listOf(1 to 1, 4 to 3, 3 to 4, 3 to 2, 2 to 3, 16 to 9, 9 to 16)
+internal val IMAGE_LONGEST = listOf(1024, 1344, 1536, 1984)
+internal const val DEFAULT_LONGEST = 1344
+
+/** Width and height for a shape at a longest side, the short side snapped to a multiple of 32. */
+internal fun imageSize(aspect: Pair<Int, Int>, longest: Int): Pair<Int, Int> {
+    val (w, h) = aspect
+    val short = (kotlin.math.round(longest.toDouble() * minOf(w, h) / maxOf(w, h) / 32) * 32).toInt().coerceAtLeast(256)
+    return if (w >= h) longest to short else short to longest
+}
+
+/** A rough time on this PC's P100, measured 2026-10-24: ~30 s to read a new prompt, steps that grow faster than the
+ *  pixels (attention), and decoding in proportion to them. */
+internal fun imageTimeLabel(width: Int, height: Int): String {
+    val mp = width * height / 1_048_576.0
+    val seconds = 30 + 17 * mp + 9 * mp * mp + 11 * mp
+    return if (seconds < 90) "about ${(seconds / 5).toInt() * 5 + 5} s" else "about ${kotlin.math.round(seconds / 30) / 2.0} min".replace(".0 min", " min")
+}
 
 /** What a gallery tile shows for a job: its finished image id, or how far along it is. */
 internal fun JsonObject.artifactId(): String? = (this["artifact"] as? JsonObject)?.string("id")?.takeIf { it.isNotBlank() }
@@ -63,6 +80,7 @@ internal fun ImageThumb(path: String, label: String, modifier: Modifier = Modifi
 internal fun ImageComposer(
     prompt: String, onPrompt: (String) -> Unit,
     aspect: Int, onAspect: (Int) -> Unit,
+    longest: Int, onLongest: (Int) -> Unit,
     seed: String, onSeed: (String) -> Unit,
     transparent: Boolean, onTransparent: (Boolean) -> Unit,
     references: List<String>, onRemoveReference: (String) -> Unit, onAddReference: () -> Unit,
@@ -94,7 +112,15 @@ internal fun ImageComposer(
                 }
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                IMAGE_ASPECTS.forEachIndexed { i, (label, _, _) -> FilterChip(aspect == i, { onAspect(i) }, label = { Text(label) }, colors = choiceChipColors()) }
+                IMAGE_ASPECTS.forEachIndexed { i, (w, h) -> FilterChip(aspect == i, { onAspect(i) }, label = { Text("$w:$h") }, colors = choiceChipColors()) }
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                IMAGE_LONGEST.forEach { size -> FilterChip(longest == size, { onLongest(size) }, label = { Text(if (size == 1984) "2K" else "$size") }, colors = choiceChipColors()) }
+            }
+            val (width, height) = imageSize(IMAGE_ASPECTS[aspect], longest)
+            Text("$width × $height · ${imageTimeLabel(width, height)}", style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 AssistChip(onAddReference, label = { Text("Reference") }, enabled = references.size < 2,
                     leadingIcon = { Icon(LineIcons.Add, null, Modifier.size(16.dp)) })
                 TextButton({ more = !more }) { Text(if (more) "Fewer options" else "More options") }

@@ -87,13 +87,13 @@ fun ServiceImage(path: String, label: String, modifier: Modifier = Modifier) {
 @Composable
 fun ImagesScreen(vm: FeatureController, open: (String) -> Unit) {
     var prompt by remember { mutableStateOf("") }
-    var aspect by remember { mutableStateOf(0) }
+    var aspect by remember { mutableStateOf(0) }; var longest by remember { mutableStateOf(DEFAULT_LONGEST) }
     var seed by remember { mutableStateOf("") }; var transparent by remember { mutableStateOf(false) }
     var references by remember { mutableStateOf(listOf<String>()) }
     var picking by remember { mutableStateOf(false) }; var viewing by remember { mutableStateOf<String?>(null) }
     val state by vm.state.collectAsState()
     fun generate() {
-        val (_, width, height) = IMAGE_ASPECTS[aspect]
+        val (width, height) = imageSize(IMAGE_ASPECTS[aspect], longest)
         vm.change("/workspace/images", body = buildJsonObject {
             put("prompt", prompt.trim()); put("width", width); put("height", height)
             // The PC's image setup decides the step count (its distilled schedule); 8 is the request's nominal value.
@@ -108,7 +108,7 @@ fun ImagesScreen(vm: FeatureController, open: (String) -> Unit) {
         val columns = ((maxWidth - 40.dp) / 168.dp).toInt().coerceIn(2, 6)
         ServiceScreen("Images", vm) { state ->
             item(key = "images-composer") {
-                ImageComposer(prompt, { prompt = it }, aspect, { aspect = it }, seed, { seed = it },
+                ImageComposer(prompt, { prompt = it }, aspect, { aspect = it }, longest, { longest = it }, seed, { seed = it },
                     transparent, { transparent = it }, references, { id -> references = references - id }, { picking = true },
                     state.busy, ::generate)
             }
@@ -133,8 +133,12 @@ fun ImagesScreen(vm: FeatureController, open: (String) -> Unit) {
                 onReuse = {
                     prompt = job.string("prompt")
                     (job["request"] as? JsonObject)?.let { r ->
-                        val size = r["width"]?.jsonPrimitive?.intOrNull to r["height"]?.jsonPrimitive?.intOrNull
-                        IMAGE_ASPECTS.indexOfFirst { (_, w, h) -> w to h == size }.takeIf { it >= 0 }?.let { aspect = it }
+                        val w = r["width"]?.jsonPrimitive?.intOrNull; val h = r["height"]?.jsonPrimitive?.intOrNull
+                        if (w != null && h != null && w > 0 && h > 0) {
+                            // The closest shape and longest side to the original, which may predate these choices.
+                            aspect = IMAGE_ASPECTS.indices.minBy { i -> kotlin.math.abs(IMAGE_ASPECTS[i].first.toDouble() / IMAGE_ASPECTS[i].second - w.toDouble() / h) }
+                            longest = IMAGE_LONGEST.minBy { kotlin.math.abs(it - maxOf(w, h)) }
+                        }
                     }
                     viewing = null
                 },
