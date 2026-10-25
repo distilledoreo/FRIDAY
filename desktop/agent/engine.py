@@ -11,6 +11,7 @@ import tempfile
 import uuid
 
 from .ipc import TaskBroker, UnixBroker
+from .spawn import spawn_args
 
 MAX_LOG = 2 * 1024 * 1024
 
@@ -34,8 +35,8 @@ class OpenCodeEngine:
     def bind(self, store): self.store = store
 
     async def available(self):
-        process = await asyncio.create_subprocess_exec(*docker_command(['image', 'inspect', self.image, '--format', '{{.Id}}']),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        argv, spawn = spawn_args(*docker_command(['image', 'inspect', self.image, '--format', '{{.Id}}']))
+        process = await asyncio.create_subprocess_exec(*argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, **spawn)
         try:
             output, _ = await asyncio.wait_for(process.communicate(), timeout=5)
             return process.returncode == 0 and output.decode().strip() == self.image
@@ -78,9 +79,10 @@ class OpenCodeEngine:
         # exposes the user's home to the container; only this socket is mounted.
         with tempfile.TemporaryDirectory(prefix='friday-agent-', dir='/dev/shm') as stage:
             async with UnixBroker(Path(stage) / 'broker.sock', broker):
-                process = await asyncio.create_subprocess_exec(*self.command(name, Path(stage) / 'broker.sock'),
+                argv, spawn = spawn_args(*self.command(name, Path(stage) / 'broker.sock'))
+                process = await asyncio.create_subprocess_exec(*argv,
                     stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-                    limit=MAX_LOG + 1)
+                    limit=MAX_LOG + 1, **spawn)
                 text = []
                 async def consume():
                     payload = json.dumps({'approved_task': task['proposal']}, ensure_ascii=False).encode()
@@ -111,8 +113,9 @@ class OpenCodeEngine:
                 try:
                     return await asyncio.wait_for(consume(), timeout=self.timeout)
                 finally:
-                    cleanup = await asyncio.create_subprocess_exec(*docker_command(['rm', '-f', name]),
-                        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                    argv, spawn = spawn_args(*docker_command(['rm', '-f', name]))
+                    cleanup = await asyncio.create_subprocess_exec(*argv,
+                        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL, **spawn)
                     try: await asyncio.wait_for(cleanup.wait(), timeout=15)
                     except asyncio.TimeoutError: cleanup.kill(); await cleanup.wait()
                     if process.returncode is None: process.kill()

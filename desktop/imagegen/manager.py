@@ -15,6 +15,7 @@ import httpx
 from fastapi import HTTPException
 from PIL import Image
 from .policy import validate, MAX_LOAD_SECONDS, MAX_RENDER_SECONDS
+from .spawn import spawn_args
 
 
 def atomic(path, value):
@@ -165,7 +166,8 @@ class SystemRuntime:
                 raise ValueError('Dedicated images require one physical GPU UUID in CUDA_VISIBLE_DEVICES')
 
     async def command(self, *args, timeout=65):
-        proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        argv, spawn = spawn_args(*args)
+        proc = await asyncio.create_subprocess_exec(*argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, **spawn)
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout)
         except BaseException:
@@ -206,7 +208,8 @@ class SystemRuntime:
             if time.monotonic() > end:
                 raise RuntimeError('Chat model is still busy; image generation was not started')
             await asyncio.sleep(1)
-        proc = await asyncio.create_subprocess_exec('systemctl', '--user', 'is-active', '--quiet', self.config['llm_unit'])
+        argv, spawn = spawn_args('systemctl', '--user', 'is-active', '--quiet', self.config['llm_unit'])
+        proc = await asyncio.create_subprocess_exec(*argv, **spawn)
         if await proc.wait() != 0:
             raise RuntimeError('Chat service is not active; restore it before requesting images')
 
