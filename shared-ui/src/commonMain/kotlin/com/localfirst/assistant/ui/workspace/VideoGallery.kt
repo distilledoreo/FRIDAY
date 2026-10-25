@@ -4,6 +4,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -52,6 +57,27 @@ internal fun JsonObject.videoLevels(aspect: String, seconds: Int): List<VideoLev
             int("estimate_seconds"), int("chat_paused_seconds"))
     }
 
+/** A file chosen to steer a video: a start, end or key frame (at a time), a clip to continue, or a soundtrack. */
+internal data class VideoInputDraft(val kind: String, val fileId: String, val name: String, val atSeconds: Float? = null)
+
+/** What each input is called, the file types it takes, and how many a video may have. Mirrors the computer's rules. */
+internal data class VideoInputKind(val label: String, val mimes: List<String>, val limit: Int, val hint: String)
+internal val VIDEO_INPUT_KINDS = mapOf(
+    "start_image" to VideoInputKind("Start frame", listOf("image/"), 1, "The video opens on this image."),
+    "end_image" to VideoInputKind("End frame", listOf("image/"), 1, "The video ends on this image."),
+    "keyframe" to VideoInputKind("Keyframe", listOf("image/"), 4, "The video passes through this image at the time you set."),
+    "source_video" to VideoInputKind("Continue a video", listOf("video/"), 1, "Its frames open the new video, which carries on from them."),
+    "audio" to VideoInputKind("Soundtrack", listOf("audio/", "video/"), 1, "The video keeps this sound from the start (a video file's soundtrack works too)."),
+)
+
+/** Whether another input of this kind can be added: under its limit, and not a start frame alongside a clip to continue. */
+internal fun List<VideoInputDraft>.allows(kind: String): Boolean {
+    val limit = VIDEO_INPUT_KINDS[kind]?.limit ?: return false
+    if (count { it.kind == kind } >= limit) return false
+    if (kind == "start_image" && any { it.kind == "source_video" } || kind == "source_video" && any { it.kind == "start_image" }) return false
+    return true
+}
+
 internal fun minutesLabel(seconds: Int): String = if (seconds < 90) "about 1 min" else "about ${(seconds + 30) / 60} min"
 
 /** What the chosen level means: its size and time, and whether chat stops meanwhile. */
@@ -85,7 +111,7 @@ internal fun VideoComposer(
     options: JsonObject, prompt: String, onPrompt: (String) -> Unit,
     seconds: Int, onSeconds: (Int) -> Unit, aspect: String, onAspect: (String) -> Unit,
     quality: Int, onQuality: (Int) -> Unit, seed: String, onSeed: (String) -> Unit,
-    inputs: Map<String, String>, onPickInput: (String) -> Unit, onRemoveInput: (String) -> Unit,
+    inputs: List<VideoInputDraft>, onPickInput: (String) -> Unit, onRemoveInput: (Int) -> Unit, onInputTime: (Int, Float) -> Unit,
     busy: Boolean, onGenerate: () -> Unit,
 ) {
     var more by remember { mutableStateOf(false) }
@@ -129,16 +155,24 @@ internal fun VideoComposer(
                     color = if (level.pausesChat) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
             } else Text("No size fits $seconds s. Choose a shorter length.", style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(start = 4.dp))
-            // Inputs the computer has switched on (start/end frames and so on); none appear until it supports them.
-            val inputKinds = options.videoInputs()
+            // Inputs the computer has switched on; none appear until it supports them.
+            val inputKinds = options.videoInputs().filter { it in VIDEO_INPUT_KINDS }
+            inputs.forEachIndexed { index, input ->
+                val kind = VIDEO_INPUT_KINDS[input.kind] ?: return@forEachIndexed
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (kind.mimes == listOf("image/")) ImageThumb("/workspace/files/${input.fileId}", kind.label, Modifier.size(40.dp).clip(RoundedCornerShape(8.dp)))
+                    Column(Modifier.weight(1f)) {
+                        Text(kind.label + (input.atSeconds?.let { " · at ${(it * 10).toInt() / 10.0} s" } ?: ""), style = MaterialTheme.typography.labelLarge)
+                        if (input.atSeconds != null) Slider(input.atSeconds, { onInputTime(index, it) }, valueRange = 0.1f..(seconds - 0.1f).coerceAtLeast(0.2f))
+                        else Text(input.name, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    IconButton({ onRemoveInput(index) }) { Icon(LineIcons.Close, "Remove ${kind.label.lowercase()}", Modifier.size(18.dp)) }
+                }
+            }
             if (inputKinds.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 inputKinds.forEach { kind ->
-                    val chosen = inputs[kind]
-                    InputChip(chosen != null, { if (chosen != null) onRemoveInput(kind) else onPickInput(kind) },
-                        label = { Text(kind.replace('_', ' ').replaceFirstChar { it.uppercase() }) },
-                        leadingIcon = if (chosen != null) {
-                            { ImageThumb("/workspace/files/$chosen", kind, Modifier.size(24.dp).clip(RoundedCornerShape(6.dp))) }
-                        } else { { Icon(LineIcons.Add, null, Modifier.size(16.dp)) } })
+                    AssistChip({ onPickInput(kind) }, label = { Text(VIDEO_INPUT_KINDS.getValue(kind).label) }, enabled = inputs.allows(kind),
+                        leadingIcon = { Icon(LineIcons.Add, null, Modifier.size(16.dp)) })
                 }
             }
             TextButton({ more = !more }) { Text(if (more) "Fewer options" else "More options") }
@@ -189,7 +223,7 @@ internal fun VideoTile(job: JsonObject, modifier: Modifier, onClick: () -> Unit)
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun VideoViewer(job: JsonObject, busy: Boolean, onClose: () -> Unit, onSave: (String) -> Unit, onReuse: () -> Unit,
-                         onCancel: () -> Unit, onDelete: () -> Unit) {
+                         onCancel: () -> Unit, onDelete: () -> Unit, onExtend: ((String) -> Unit)? = null) {
     var confirmDelete by remember { mutableStateOf(false) }
     val artifact = job.artifactId()
     val plan = job["plan"] as? JsonObject
@@ -226,6 +260,7 @@ internal fun VideoViewer(job: JsonObject, busy: Boolean, onClose: () -> Unit, on
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (artifact != null) Button({ onSave(artifact) }) { Text("Save") }
+                    if (artifact != null && onExtend != null) OutlinedButton({ onExtend(artifact) }) { Text("Extend") }
                     OutlinedButton(onReuse) { Text("Reuse prompt") }
                     if (!job.finished()) OutlinedButton(onCancel, enabled = !busy) { Text("Cancel") }
                     else TextButton({ confirmDelete = true }, enabled = !busy) { Text("Delete", color = MaterialTheme.colorScheme.error) }
@@ -237,4 +272,31 @@ internal fun VideoViewer(job: JsonObject, busy: Boolean, onClose: () -> Unit, on
         text = { Text("It's removed from your videos. The file stays in Library until you delete it there.") },
         confirmButton = { TextButton({ confirmDelete = false; onDelete() }) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
         dismissButton = { TextButton({ confirmDelete = false }) { Text("Cancel") } })
+}
+
+/** Choose one Library file of the given types: images as thumbnails, videos and audio by name. */
+@Composable
+internal fun VideoInputPicker(files: List<JsonObject>, kind: String, onPick: (JsonObject) -> Unit, onDismiss: () -> Unit) {
+    val spec = VIDEO_INPUT_KINDS.getValue(kind)
+    val matching = files.filter { file -> spec.mimes.any { file.string("mime").startsWith(it) } }
+    AlertDialog(onDismissRequest = onDismiss, title = { FridayDialogWindow(); Text(spec.label) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(spec.hint, style = MaterialTheme.typography.bodySmall)
+                if (matching.isEmpty()) Text("Nothing in Library yet. Upload one in a chat or in Library first.")
+                else if (spec.mimes == listOf("image/")) LazyVerticalGrid(GridCells.Adaptive(96.dp), Modifier.heightIn(max = 420.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(matching, key = { it.string("id") }) { file ->
+                        ImageThumb("/workspace/files/${file.string("id")}", file.string("name"),
+                            Modifier.aspectRatio(1f).clip(RoundedCornerShape(10.dp)).clickable { onPick(file) })
+                    }
+                } else LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                    items(matching, key = { it.string("id") }) { file ->
+                        Text(file.string("name"), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth().clickable { onPick(file) }.padding(vertical = 10.dp))
+                    }
+                }
+            }
+        },
+        confirmButton = {}, dismissButton = { TextButton(onDismiss) { Text("Cancel") } })
 }

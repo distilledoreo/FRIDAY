@@ -7,14 +7,14 @@ from fastapi import APIRouter
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from .manager import VideoManager, INPUT_KINDS
+from .manager import VideoManager
 from .plan import Planner, ASPECTS
-from .runtime import VideoRuntime
+from .runtime import VideoRuntime, INPUTS
 
 
 class VideoInput(BaseModel):
     """A file that steers the video. Each kind is accepted once the computer's config enables it."""
-    kind: Literal[tuple(INPUT_KINDS)]
+    kind: Literal[tuple(INPUTS)]
     file_id: str = Field(min_length=32, max_length=32)
     at_seconds: float | None = Field(default=None, ge=0, le=60)
     strength: float | None = Field(default=None, ge=0, le=1)

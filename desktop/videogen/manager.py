@@ -11,10 +11,8 @@ import uuid
 
 from fastapi import HTTPException
 
-from .runtime import INPUT_ARGS
+from .runtime import INPUTS
 
-INPUT_KINDS = {'start_image': 'image/', 'end_image': 'image/', 'keyframe': 'image/', 'reference_image': 'image/',
-               'reference_video': 'video/', 'audio': 'audio/'}
 MAX_JOBS = 100
 MAX_QUEUED = 3
 MAX_VIDEO_BYTES = 300 * 1024 * 1024
@@ -40,7 +38,7 @@ class VideoManager:
         # The image service shares the image card and owns chat stop/restore (its runtime knows the chat unit).
         self.images = images
         self.config = config
-        self.enabled_inputs = [k for k in config.get('inputs', []) if k in INPUT_ARGS]
+        self.enabled_inputs = [k for k in config.get('inputs', []) if k in INPUTS]
         self.journal = self.root / 'gpu-state.json'
         self.worker_task = None
         self.current = None
@@ -73,17 +71,26 @@ class VideoManager:
     def validate(self, request):
         if not request['prompt'].strip():
             raise ValueError('Describe the video to generate')
-        plan = self.planner.resolve(request['duration_seconds'], request['aspect'], request['quality'])
-        for item in request.get('inputs', []):
-            if item['kind'] not in self.enabled_inputs:
-                raise ValueError(f'{item["kind"].replace("_", " ").capitalize()} inputs are not available on this computer yet')
+        inputs = request.get('inputs', [])
+        for item in inputs:
+            kind, name = item['kind'], item['kind'].replace('_', ' ').capitalize()
+            if kind not in self.enabled_inputs:
+                raise ValueError(f'{name} inputs are not available on this computer yet')
             file_id = item['file_id']
             if len(file_id) != 32 or any(c not in '0123456789abcdef' for c in file_id):
                 raise ValueError('Invalid input file id')
-            if not self.store.file(file_id)['mime'].startswith(INPUT_KINDS[item['kind']]):
-                raise ValueError(f'{item["kind"].replace("_", " ").capitalize()} needs a {INPUT_KINDS[item["kind"]].rstrip("/")} file')
-            if item.get('at_seconds') is not None and not 0 <= item['at_seconds'] <= request['duration_seconds']:
-                raise ValueError('An input is placed outside the video')
+            types, limit = INPUTS[kind]
+            if not self.store.file(file_id)['mime'].startswith(types):
+                raise ValueError(f'{name} needs {" or ".join(("an " if t[0] in "aeiou" else "a ") + t.rstrip("/") for t in types)} file')
+            if sum(other['kind'] == kind for other in inputs) > limit:
+                raise ValueError(f'Use at most {limit} {name.lower()} input{"s" if limit > 1 else ""}')
+            if kind == 'keyframe' and not (item.get('at_seconds') is not None and 0 < item['at_seconds'] < request['duration_seconds']):
+                raise ValueError('Place each keyframe between the start and the end of the video')
+        kinds = {item['kind'] for item in inputs}
+        if {'source_video', 'start_image'} <= kinds:
+            raise ValueError('A video continues either a source video or a start image, not both')
+        extra = sum(item['kind'] in ('keyframe', 'end_image') for item in inputs)
+        plan = self.planner.resolve(request['duration_seconds'], request['aspect'], request['quality'], extra)
         if request.get('loras'):
             available = set(self.loras())
             for lora in request['loras']:

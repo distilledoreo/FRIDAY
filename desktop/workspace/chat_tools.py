@@ -223,6 +223,13 @@ class ChatTools:
             for key, kind in (('duration_seconds', int), ('quality', int), ('seed', int), ('aspect', str), ('negative_prompt', str)):
                 if isinstance(args.get(key), kind) and not isinstance(args.get(key), bool):
                     body[key] = args[key]
+            inputs = [{'kind': kind, 'file_id': args[kind]} for kind in ('start_image', 'end_image', 'source_video', 'audio')
+                      if isinstance(args.get(kind), str) and args[kind]]
+            for frame in args.get('keyframes') or []:
+                if isinstance(frame, dict) and isinstance(frame.get('file_id'), str) and isinstance(frame.get('at_seconds'), (int, float)):
+                    inputs.append({'kind': 'keyframe', 'file_id': frame['file_id'], 'at_seconds': frame['at_seconds']})
+            if inputs:
+                body['inputs'] = inputs
             # Videos take minutes; queue it and answer now. The Videos screen shows progress and the result.
             job = await call('POST', '/workspace/videos', body)
             plan = job.get('plan', {}) if isinstance(job, dict) else {}
@@ -375,12 +382,16 @@ class ChatTools:
                                      'seed': {'type': 'integer', 'minimum': 0, 'maximum': 2147483647},
                                      'reference_file_ids': {'type': 'array', 'maxItems': 2, 'items': {'type': 'string'}}, 'transparent': {'type': 'boolean'}}, ['prompt'])),
             dict(name='generate_video', run=generate_video,
-                 description='Queue a short video with sound using local LTX-2.5 and return at once; it renders for minutes and appears in the Videos screen. duration_seconds 2-26. aspect 16:9, 9:16, 1:1, 4:3 or 3:4. quality 0 (fastest, keeps chat running) to 4 (largest size the GPUs fit for that length; may pause chat for a long time). Use 0 unless the user asks for higher quality. Longer videos get smaller sizes. Describe motion, camera and sound in the prompt. Tell the user the returned size and time; do not claim the video is finished.',
+                 description="Queue a short video with sound using local LTX-2.5 and return at once; it renders for minutes and appears in the Videos screen. duration_seconds 2-26. aspect 16:9, 9:16, 1:1, 4:3 or 3:4. quality 0 (fastest, keeps chat running) to 4 (largest size the GPUs fit for that length; may pause chat for a long time). Use 0 unless the user asks for higher quality. Longer videos get smaller sizes. Describe motion, camera and sound in the prompt. Optional files from this chat, by the id in their assistant://artifact/<id> link: start_image (animate a photo), end_image, keyframes (images with at_seconds), source_video (continue a video), audio (keep this soundtrack, e.g. speech or music to match). A start image and a source video can't be combined. Tell the user the returned size and time; do not claim the video is finished.",
                  parameters=_schema({'prompt': {'type': 'string', 'maxLength': 4000}, 'duration_seconds': {'type': 'integer', 'minimum': 2, 'maximum': 26},
                                      'aspect': {'type': 'string', 'enum': ['16:9', '9:16', '1:1', '4:3', '3:4']},
                                      'quality': {'type': 'integer', 'minimum': 0, 'maximum': 4},
                                      'seed': {'type': 'integer', 'minimum': 0, 'maximum': 2147483647},
-                                     'negative_prompt': {'type': 'string', 'maxLength': 1000}}, ['prompt'])),
+                                     'negative_prompt': {'type': 'string', 'maxLength': 1000},
+                                     'start_image': {'type': 'string'}, 'end_image': {'type': 'string'},
+                                     'source_video': {'type': 'string'}, 'audio': {'type': 'string'},
+                                     'keyframes': {'type': 'array', 'maxItems': 4, 'items': {'type': 'object', 'properties': {
+                                         'file_id': {'type': 'string'}, 'at_seconds': {'type': 'number'}}, 'required': ['file_id', 'at_seconds']}}}, ['prompt'])),
             dict(name='remember', run=remember, confirm=True, title='Remember this?', approve='Remember', prompt=lambda a: f"Save this memory across chats?\n\n{a.get('text', '')}",
                  description='Save a fact or preference across chats. Use only when the user explicitly asks to remember it. Do not save passwords or API keys.',
                  parameters=_schema({'text': {'type': 'string'}}, ['text'])),

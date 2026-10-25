@@ -33,10 +33,11 @@ is free.
 A job holds the image lock for its whole run, so image jobs wait.
 
 - **One card**: stop the resident image server and GPU speech recognition (which falls back to the CPU), render on the
-  image card, then restart speech recognition. The renderer recycles its own file cache above 3 GB (4 GB hard cap), so
-  the weights it streams don't push the chat model's RAM into swap. Measured with chat running: short replies took
-  about 1 s while it rendered, and 10-20 s during the two minutes it loads the transformer. A 2 GB limit stalled that
-  load; no limit made replies take up to a minute.
+  image card, then restart speech recognition. The renderer recycles its own file cache above 5 GB (6 GB hard cap), so
+  the weights it streams don't push the chat model's RAM into swap. It holds about 2 GB itself plus about 1.7 GB of CUDA
+  shared memory that can't be reclaimed, so 2-3 GB limits stalled it. Measured with chat running: short replies took
+  about 1 s while it rendered and 10-20 s while it loaded the transformer; with no limit, up to a minute. The chat
+  service itself is protected with `MemoryLow` (see Setup).
 - **Two cards**: as above, and also stop the chat model through the image service's runtime, after in-flight chat
   requests finish. A journal records the borrow first, so an API restart restores chat. While it renders, chat requests
   get `503` with `X-Assistant-GPU-Busy: video` and the minutes left; Android shows that instead of retrying. Chat is
@@ -44,30 +45,57 @@ A job holds the image lock for its whole run, so image jobs wait.
 
 Afterwards the resident image model reloads in the background. Cancelling stops the renderer units.
 
-## Inputs, LoRAs and later features
+## Inputs
 
-Requests already carry `inputs` (`start_image`, `end_image`, `keyframe`, `reference_image`, `reference_video`,
-`audio`, each a Library file with an optional `at_seconds` and `strength`) and `loras` (`name`, `strength`). The server
-refuses them until both of these are true:
+A request's `inputs` are Library files that steer the video. The patched runtime
+([video_lab/native/ltx_conditioning.h](../video_lab/native/ltx_conditioning.h), built by
+`python -m desktop.video_lab.build_conditioning_variant`) handles them:
 
-1. `runtime.INPUT_ARGS` maps the kind to renderer options. `start_image` (`--init-img`) and `end_image` (`--end-img`)
-   are mapped.
-2. The private config lists the kind in `inputs`, after it has been tested on these GPUs.
+| Kind | Files | How |
+| --- | --- | --- |
+| `start_image` | image | encoded in place as the first latent (stock `--init-img`) |
+| `end_image` | image | an appended keyframe at the last frame (LTX-2.5's keyframe position embedding) |
+| `keyframe` | up to 4 images, each with `at_seconds` | appended keyframes at their own frames (`-r` plus `FRIDAY_LTX_KEYFRAME_FRAMES`) |
+| `source_video` | video | its frames (24 fps, trimmed to 8k+1, leaving at least a second to generate) are encoded and frozen as the opening latents, so the rest continues them (`--control-video`) |
+| `audio` | audio, or a video's soundtrack | encoded on the CPU by `audio_encode.py` (ComfyUI's PyTorch LTX audio VAE; the runtime has only the decoder) and frozen from the start of the soundtrack (`FRIDAY_LTX_AUDIO_IN`) |
 
-Capabilities report the enabled kinds and the LoRAs found in `lora_dir`. The app shows an input picker only for enabled
-kinds, so adding one needs no app update.
+Images are fitted to the video's size by cropping. Keyframes and the end image each add one frame of work, so the
+planner rechecks the size and placement with them. `strength` (0-1) loosens conditioning; the renderer applies the
+lowest one given to every input. A start image and a source video can't be combined.
+
+Measured on the image card at 640×352 for 4 s: a start image, a keyframe at frame 48 and an end image each came back
+almost unchanged at their frames, and a two-tone soundtrack came back at the same frequencies (330 and 495 Hz).
+LTX-2.5 has no reference-image or reference-video conditioning (identity or style without fixing a frame), so those
+aren't offered.
+
+A kind is accepted only when the config lists it in `inputs`; capabilities report the list, and the app shows a picker
+for each. `loras` (`name`, `strength`) take files from `lora_dir`.
 
 ## Setup
 
-Build the runtime with [video_lab](../video_lab/README.md): `build_planner_variant` for the patched `sd-cli`, and
-`build_rpc_worker` for the second card's worker. Then write the private config, which checksums every file once:
+Build the runtime with [video_lab](../video_lab/README.md): `build_planner_variant`, then `build_conditioning_variant`
+(on top of the planner variant) for the patched `sd-cli`, and `build_rpc_worker` for the second card's worker. Then
+write the private config, which checksums every file once:
 
 ```sh
 python3 -m desktop.videogen.configure --binary /private/ltx/sd-cli --rpc-worker /private/ltx/rpc-worker \
   --transformer /private/ltx-2.5-22b-distilled-transformer-Q3_K_M.gguf \
   --text-encoder /private/gemma4-12b-with-proj-ltx-2.5-Q5_1.gguf \
   --video-vae /private/ltx-2.5-video-vae-conv-bf16.safetensors --audio-vae /private/ltx-2.5-audio-vae-bf16.safetensors \
-  --image-gpu GPU-... --chat-gpu GPU-... --output /private/videogen.json
+  --image-gpu GPU-... --chat-gpu GPU-... --output /private/videogen.json \
+  --inputs start_image,end_image,keyframe,source_video,audio \
+  --audio-python /private/ComfyUI/venv/bin/python --comfyui /private/ComfyUI/app
+```
+
+One-card videos share RAM with the chat model. Protect it so the renderer's file cache doesn't push it into swap. The
+protection only takes effect when every parent cgroup grants it too:
+
+```sh
+systemctl --user set-property app.slice MemoryLow=48G
+systemctl --user set-property assistant-strata.service MemoryLow=48G
+sudo systemctl set-property user.slice MemoryLow=48G
+sudo systemctl set-property user-1000.slice MemoryLow=48G
+sudo systemctl set-property user@1000.service MemoryLow=48G
 ```
 
 Point `FRIDAY_VIDEOGEN_CONFIG` at it (or place it as `api/videogen/config.json`), deploy with `setup.sh`, and restart

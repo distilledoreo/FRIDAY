@@ -103,13 +103,19 @@ def main():
     parser.add_argument('--planner-variant', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
+    build(args)
+    print('Built isolated AV-carry runtime:', args.output / 'sd-cli')
+
+
+def build(args, source_patch=patch_source):
+    """Patch private copies of the runtime and model sources, rebuild that object, and link a separate CLI."""
     args.output.mkdir(parents=True, exist_ok=True)
     native = Path(__file__).resolve().parent / 'native'
     for header in native.glob('ltx_chunk_*.h'):
         shutil.copy2(header, args.output / header.name)
     original = args.source / 'src/stable-diffusion.cpp'
     source = args.output / original.name
-    source.write_text(patch_source(original.read_text()))
+    source.write_text(source_patch(original.read_text()))
     model = args.output / 'model/diffusion/ltxv.hpp'
     model.parent.mkdir(parents=True, exist_ok=True)
     model.write_text(patch_model((args.source / 'src/model/diffusion/ltxv.hpp').read_text()))
@@ -135,7 +141,6 @@ def main():
     link[link.index('-o') + 1] = str(args.output / 'sd-cli')
     link[link.index('libstable-diffusion.a')] = str(archive)
     subprocess.run(link, cwd=args.build, check=True)
-    print('Built isolated AV-carry runtime:', args.output / 'sd-cli')
 
 
 if __name__ == '__main__':

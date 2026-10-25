@@ -70,8 +70,9 @@ class Planner:
         """The first placement that fits, in configured order: the one that keeps chat comes first."""
         return next((p for p in self.placements if work <= p['max_blocks']), None)
 
-    def option(self, width, height, frames):
-        work = blocks(width, height, frames)
+    def option(self, width, height, frames, extra_frames=0):
+        # Keyframes and an end image each add one latent frame of tokens beside the video's own.
+        work = blocks(width, height, frames) + (width // 32) * (height // 32) * extra_frames
         p = self.placement(work)
         if p is None:
             return None
@@ -101,13 +102,18 @@ class Planner:
             out.append(max((o for o in fitting if fast['blocks'] <= o['blocks'] <= target + 1e-6), key=lambda o: o['blocks']))
         return out
 
-    def resolve(self, seconds, aspect, quality):
+    def resolve(self, seconds, aspect, quality, extra_frames=0):
         levels = self.levels(seconds, aspect)
         if not levels:
             raise ValueError(f'No size fits {seconds:g} s; use {self.config["min_seconds"]}-{self.config["max_seconds"]} s')
         if not 0 <= quality < len(levels):
             raise ValueError(f'Quality must be 0-{len(levels) - 1}')
-        return levels[quality]
+        level = levels[quality]
+        if extra_frames:
+            level = self.option(level['width'], level['height'], level['frames'], extra_frames)
+            if level is None:
+                raise ValueError('Too many keyframes for this size; choose a faster setting or fewer keyframes')
+        return level
 
     def table(self):
         """Every duration's levels for every shape, for clients to show sizes and times without asking."""

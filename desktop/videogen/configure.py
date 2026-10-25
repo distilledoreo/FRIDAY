@@ -33,6 +33,9 @@ def main():
     parser.add_argument('--chat-gpu', required=True, help='UUID of the chat model\'s card (borrowed for two-card videos)')
     parser.add_argument('--asr-unit', default='friday-voice-asr.service', help='GPU speech service on the image card ("" for none)')
     parser.add_argument('--lora-dir', type=Path)
+    parser.add_argument('--inputs', default='', help='Comma-separated input kinds to accept, once tested on these GPUs')
+    parser.add_argument('--audio-python', type=Path, help='Python with torch and ComfyUI, for encoding soundtracks')
+    parser.add_argument('--comfyui', type=Path, help='ComfyUI source folder (the one with comfy/)')
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     for gpu in (args.image_gpu, args.chat_gpu):
@@ -47,7 +50,17 @@ def main():
     config = {**previous, 'binary': verified(args.binary, previous=known.get(str(args.binary.resolve()))),
               'rpc_worker': verified(args.rpc_worker, previous=known.get(str(args.rpc_worker.resolve()))),
               'files': files, 'gpus': {'image': args.image_gpu, 'chat': args.chat_gpu}, 'asr_unit': args.asr_unit or None}
-    config.setdefault('inputs', [])
+    from .runtime import INPUTS
+    inputs = [kind for kind in args.inputs.split(',') if kind]
+    unknown = [kind for kind in inputs if kind not in INPUTS]
+    if unknown:
+        parser.error('Unknown input kinds: ' + ', '.join(unknown) + '; choose from ' + ', '.join(INPUTS))
+    if 'audio' in inputs and not (args.audio_python and args.comfyui):
+        parser.error('Audio input needs --audio-python and --comfyui')
+    config['inputs'] = inputs
+    if args.audio_python and args.comfyui:
+        config['audio_encoder'] = {'python': str(args.audio_python), 'comfyui': str(args.comfyui.resolve(strict=True)),
+                                   'vae': str(args.audio_vae.resolve(strict=True))}
     if args.lora_dir:
         config['lora_dir'] = str(args.lora_dir.resolve(strict=True))
     atomic(args.output, config)

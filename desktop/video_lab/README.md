@@ -93,6 +93,23 @@ The private CLI reads `FRIDAY_LTX_CARRY_IN`, `FRIDAY_LTX_CARRY_OUT` and `FRIDAY_
 
 `analyze_chunks` checks a completed output by decoding every frame, measuring frame changes and optical flow around the joins, and writing contact sheets and audio levels. Its optional analysis environment needs NumPy and OpenCV; generation itself uses only Python's standard library plus the existing native binaries and FFmpeg. These measurements aid inspection and do not establish perceptual continuity automatically.
 
+### Keyframes, source clips and soundtracks
+
+`build_conditioning_variant` builds FRIDAY's production runtime: the AV-carry patches above (their per-token audio
+timesteps keep frozen audio frozen) plus [native/ltx_conditioning.h](native/ltx_conditioning.h), hooked into the LTX
+branch. It adds several keyframes (`--ref-image` files at the frames in `FRIDAY_LTX_KEYFRAME_FRAMES`), a source clip
+frozen as the opening latents (`--control-video`, which the stock LTX path refuses), and a soundtrack frozen from the
+start (`FRIDAY_LTX_AUDIO_IN`, latents from `desktop/videogen/audio_encode.py`). The stock start and end images still
+work, and the end image joins the keyframe list. See [desktop/videogen](../videogen/README.md) for how jobs use them.
+
+Encoding a long source clip in one pass needs a large VAE buffer (5.8 GB for 73 frames at 640×352). The CUDA pool then
+keeps the card too full for the final decode, so jobs pass only the clip's last 33 frames.
+
+```sh
+python3 -m desktop.video_lab.build_conditioning_variant --source /private/source --build /private/build \
+  --planner-variant /private/planner --output /private/conditioning-runtime
+```
+
 ### Observed native trial
 
 On two 16 GB P100s with the existing LTX-2.5 distilled Q3_K_M transformer, three 97-frame windows with 25-frame carry produced 241 frames at 640×352 and 24 fps (10.042 seconds). Every window completed eight sampling steps and decoding. Both handoffs preserved all carried channels within maximum absolute errors of `2.39e-7` for video and `1.20e-7` for audio. Sampled frames and optical flow around both joins showed a consistent rolling-ball scene. This validates the short trial, not arbitrary-duration identity or motion consistency.

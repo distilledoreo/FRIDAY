@@ -37,4 +37,16 @@ class VideoOptionsTest {
         val paused = Json.parseToJsonElement("""{"status":"running","phase":"unloading_chat"}""").jsonObject
         assertEquals("Pausing chat", paused.videoStatus())
     }
+
+    @Test fun inputLimitsMatchTheComputersRules() {
+        val none = emptyList<VideoInputDraft>()
+        assertTrue(none.allows("start_image") && none.allows("keyframe"))
+        val start = listOf(VideoInputDraft("start_image", "a", "photo.png"))
+        assertTrue(!start.allows("start_image") && !start.allows("source_video") && start.allows("end_image"))
+        val clip = listOf(VideoInputDraft("source_video", "b", "clip.mp4"))
+        assertTrue(!clip.allows("start_image") && clip.allows("audio"))
+        val four = List(4) { VideoInputDraft("keyframe", "k$it", "k.png", 1f) }
+        assertTrue(!four.allows("keyframe"))
+        assertTrue(!none.allows("reference_image"))
+    }
 }

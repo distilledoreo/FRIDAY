@@ -3,12 +3,17 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from uuid import uuid4 as _uuid4
 
 from fastapi import HTTPException
 
 from desktop.imagegen.manager import GpuGate
 from desktop.videogen.manager import VideoManager
 from desktop.videogen.plan import Planner
+
+
+def uuid4():
+    return _uuid4().hex
 
 
 class Images:
@@ -56,7 +61,8 @@ class Store:
         self.saved.append((name, mime, limit))
         return {'id': 'b' * 32, 'name': name, 'mime': mime, 'url': 'assistant://artifact/' + 'b' * 32}
     def file(self, file_id):
-        return {'mime': 'image/png'}
+        # Test ids say what they are: f... is a video, e... a song, anything else an image.
+        return {'mime': {'f': 'video/mp4', 'e': 'audio/mpeg'}.get(file_id[0], 'image/png')}
 
 
 class Tests(unittest.IsolatedAsyncioTestCase):
@@ -168,8 +174,35 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         job = enabled.create(self.request(inputs=[{'kind': 'start_image', 'file_id': 'c' * 32, 'at_seconds': 0, 'strength': None}]))
         self.assertEqual(job['status'], 'queued')
 
+    def test_input_rules(self):
+        m = self.manager(config={'inputs': ['start_image', 'end_image', 'keyframe', 'source_video', 'audio']})
+        def item(kind, at=None, file='c'):
+            return {'kind': kind, 'file_id': file * 32, 'at_seconds': at, 'strength': None}
+        def refused(inputs, text):
+            with self.assertRaises(HTTPException) as e:
+                m.create(self.request(id=uuid4(), inputs=inputs))
+            self.assertIn(text, e.exception.detail)
+        refused([item('keyframe')], 'between the start and the end')
+        refused([item('keyframe', 4)], 'between the start and the end')
+        refused([item('start_image'), item('start_image', file='d')], 'at most 1')
+        refused([item('keyframe', t) for t in (0.5, 1, 1.5, 2, 2.5)], 'at most 4')
+        refused([item('source_video')], 'needs a video file')
+        refused([item('source_video', file='f'), item('start_image')], 'not both')
+        refused([item('audio')], 'needs an audio or a video file')
+        self.assertEqual(m.create(self.request(id=uuid4(), inputs=[item('audio', file='e')]))['status'], 'queued')
+        self.assertEqual(m.create(self.request(id=uuid4(), inputs=[item('audio', file='f')]))['status'], 'queued')
+        # Keyframes and an end image add a frame of work each, which can move the video to both cards.
+        m = self.manager(config={'inputs': ['keyframe', 'end_image']})
+        for job in m.jobs():
+            m.update(job['id'], status='completed')  # the queue holds three
+        plain = m.create(self.request(id=uuid4(), quality=1))['plan']
+        framed = m.create(self.request(id=uuid4(), quality=1, inputs=[item('keyframe', 2), item('end_image')]))['plan']
+        self.assertGreater(framed['blocks'], plain['blocks'])
+        self.assertEqual(framed['blocks'] - plain['blocks'], 2 * (plain['width'] // 32) * (plain['height'] // 32))
+
     def test_queue_and_delete(self):
         m = self.manager()
+        m.config = {}
         for i in range(3):
             m.create(self.request(id=f'{i:032x}'))
         with self.assertRaises(HTTPException) as e:

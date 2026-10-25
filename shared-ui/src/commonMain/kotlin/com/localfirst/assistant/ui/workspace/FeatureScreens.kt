@@ -154,7 +154,7 @@ fun VideosScreen(vm: FeatureController, open: (String) -> Unit) {
     var prompt by remember { mutableStateOf("") }
     var seconds by remember { mutableStateOf(4) }; var aspect by remember { mutableStateOf("16:9") }; var quality by remember { mutableStateOf(0) }
     var seed by remember { mutableStateOf("") }
-    var inputs by remember { mutableStateOf(mapOf<String, String>()) }
+    var inputs by remember { mutableStateOf(listOf<VideoInputDraft>()) }
     var picking by remember { mutableStateOf<String?>(null) }; var viewing by remember { mutableStateOf<String?>(null) }
     val state by vm.state.collectAsState()
     val options = state.videoOptions
@@ -162,9 +162,13 @@ fun VideosScreen(vm: FeatureController, open: (String) -> Unit) {
         vm.change("/workspace/videos", body = buildJsonObject {
             put("prompt", prompt.trim()); put("duration_seconds", seconds); put("aspect", aspect); put("quality", quality)
             put("seed", seed.toIntOrNull() ?: kotlin.random.Random.nextInt(Int.MAX_VALUE))
-            put("inputs", JsonArray(inputs.map { (kind, id) -> buildJsonObject { put("kind", kind); put("file_id", id) } }))
+            put("inputs", JsonArray(inputs.map { input -> buildJsonObject {
+                put("kind", input.kind); put("file_id", input.fileId)
+                // Times are kept inside the chosen length, which may have shortened since the keyframe was placed.
+                input.atSeconds?.let { put("at_seconds", it.coerceIn(0.1f, seconds - 0.1f).toDouble()) }
+            } }))
         })
-        prompt = ""; inputs = emptyMap()
+        prompt = ""; inputs = emptyList()
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val columns = ((maxWidth - 40.dp) / 168.dp).toInt().coerceIn(2, 6)
@@ -180,7 +184,10 @@ fun VideosScreen(vm: FeatureController, open: (String) -> Unit) {
             if (available) {
                 item(key = "videos-composer") {
                     VideoComposer(options!!, prompt, { prompt = it }, seconds, { seconds = it }, aspect, { aspect = it },
-                        quality, { quality = it }, seed, { seed = it }, inputs, { picking = it }, { kind -> inputs = inputs - kind }, state.busy, ::generate)
+                        quality, { quality = it }, seed, { seed = it }, inputs, { picking = it },
+                        { index -> inputs = inputs.filterIndexed { i, _ -> i != index } },
+                        { index, at -> inputs = inputs.mapIndexed { i, input -> if (i == index) input.copy(atSeconds = at) else input } },
+                        state.busy, ::generate)
                 }
                 if (state.videos.isEmpty()) item(key = "videos-empty") {
                     Column(Modifier.fillMaxWidth().padding(vertical = 48.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -210,12 +217,20 @@ fun VideosScreen(vm: FeatureController, open: (String) -> Unit) {
                     viewing = null
                 },
                 onCancel = { vm.change("/workspace/videos/$id/cancel") },
-                onDelete = { vm.change("/workspace/videos/$id", "DELETE"); viewing = null })
+                onDelete = { vm.change("/workspace/videos/$id", "DELETE"); viewing = null },
+                // Continue this video: its frames open the next one.
+                onExtend = if ("source_video" in (options?.videoInputs() ?: emptyList())) { artifact ->
+                    inputs = inputs.filter { it.kind != "source_video" && it.kind != "start_image" } +
+                        VideoInputDraft("source_video", artifact, job.string("prompt").take(60))
+                    prompt = ""; viewing = null
+                } else null)
         }
     }
     picking?.let { kind ->
-        ReferencePicker(state.files, listOfNotNull(inputs[kind]), onDone = { chosen -> inputs = if (chosen.isEmpty()) inputs - kind else inputs + (kind to chosen.first()); picking = null },
-            onDismiss = { picking = null }, limit = 1, title = kind.replace('_', ' ').replaceFirstChar { it.uppercase() }, hint = "Pick one image.")
+        VideoInputPicker(state.files, kind, onPick = { file ->
+            inputs = inputs + VideoInputDraft(kind, file.string("id"), file.string("name"), if (kind == "keyframe") seconds / 2f else null)
+            picking = null
+        }, onDismiss = { picking = null })
     }
 }
 
