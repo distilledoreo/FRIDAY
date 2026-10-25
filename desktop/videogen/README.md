@@ -33,7 +33,10 @@ is free.
 A job holds the image lock for its whole run, so image jobs wait.
 
 - **One card**: stop the resident image server and GPU speech recognition (which falls back to the CPU), render on the
-  image card with a 4 GB RAM cap (so memory pressure can't reach the chat model), then restart speech recognition.
+  image card, then restart speech recognition. The renderer recycles its own file cache above 3 GB (4 GB hard cap), so
+  the weights it streams don't push the chat model's RAM into swap. Measured with chat running: short replies took
+  about 1 s while it rendered, and 10-20 s during the two minutes it loads the transformer. A 2 GB limit stalled that
+  load; no limit made replies take up to a minute.
 - **Two cards**: as above, and also stop the chat model through the image service's runtime, after in-flight chat
   requests finish. A journal records the borrow first, so an API restart restores chat. While it renders, chat requests
   get `503` with `X-Assistant-GPU-Busy: video` and the minutes left; Android shows that instead of retrying. Chat is

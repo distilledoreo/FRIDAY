@@ -100,11 +100,12 @@ class VideoRuntime:
         await self.command('systemctl', '--user', 'stop', unit, check=False)
         await self.command('systemctl', '--user', 'reset-failed', unit, check=False)
 
-    async def start_unit(self, unit, gpu, argv, log, memory_max):
+    async def start_unit(self, unit, gpu, argv, log, memory_max, memory_high='infinity'):
         await self.stop(unit)
         await self.command('systemd-run', '--user', f'--unit={unit}', '--property=KillMode=control-group',
                            '--property=TimeoutStopSec=30', '--property=BindsTo=assistant-api.service',
                            '--property=After=assistant-api.service', f'--property=MemoryMax={memory_max}',
+                           f'--property=MemoryHigh={memory_high}',
                            '--property=MemorySwapMax=0', f'--property=StandardOutput=append:{log}',
                            f'--property=StandardError=append:{log}', f'--working-directory={log.parent}',
                            '--setenv=CUDA_DEVICE_ORDER=PCI_BUS_ID', f'--setenv=CUDA_VISIBLE_DEVICES={gpu}', *argv)
@@ -136,9 +137,12 @@ class VideoRuntime:
                 update(phase='starting_worker')
                 await self.start_worker(work / 'worker.log')
             update(phase='loading')
-            # With chat running, the renderer gets a small RAM cap so memory pressure can't reach the chat model.
+            # With chat running, the renderer recycles its own file cache above 3 GB: the weights it streams from disk
+            # (about 25 GB) would otherwise push the chat model's RAM into swap and slow its replies. It needs over 2 GB
+            # itself while loading the transformer, and a lower limit stalls that load.
             await self.start_unit(VIDEO_UNIT, self.config['gpus']['chat' if dual else 'image'],
-                                  self.argv(request, plan, output, inputs), log, '40G' if dual else '4G')
+                                  self.argv(request, plan, output, inputs), log, '40G' if dual else '4G',
+                                  'infinity' if dual else self.config.get('single_memory_high', '3G'))
             started = time.monotonic()
             phase = 'loading'
             while True:
