@@ -157,7 +157,12 @@ internal fun VideoTile(job: JsonObject, modifier: Modifier, onClick: () -> Unit)
             job.flag("poster") -> {
                 ImageThumb("/workspace/videos/${job.string("id")}/poster", job.string("prompt").take(120), Modifier.fillMaxSize())
                 Surface(shape = CircleShape, color = Color.Black.copy(alpha = .55f), modifier = Modifier.size(40.dp)) {
-                    Box(contentAlignment = Alignment.Center) { Text("▶", color = Color.White) }
+                    // Drawn, since the web build's font has no play symbol.
+                    androidx.compose.foundation.Canvas(Modifier.padding(start = 15.dp, end = 11.dp, top = 12.dp, bottom = 12.dp).fillMaxSize()) {
+                        drawPath(androidx.compose.ui.graphics.Path().apply {
+                            moveTo(0f, 0f); lineTo(size.width, size.height / 2); lineTo(0f, size.height); close()
+                        }, Color.White)
+                    }
                 }
                 job["seconds"]?.jsonPrimitive?.doubleOrNull?.let { s ->
                     Surface(shape = RoundedCornerShape(6.dp), color = Color.Black.copy(alpha = .55f), modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp)) {
