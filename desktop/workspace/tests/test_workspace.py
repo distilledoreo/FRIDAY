@@ -443,8 +443,10 @@ class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.app = FastAPI()
-        self.searches, self.final_request = 0, None
+        self.searches, self.final_request, self.impl = 0, None, None
         async def model(messages, tools):
+            if self.impl:
+                return await self.impl(messages, tools)
             if not tools:
                 self.final_request = messages
                 return {'role': 'assistant', 'content': 'Answer from the results'}
@@ -474,6 +476,75 @@ class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.final_request[-1], {'role': 'user', 'content': module.STEP_LIMIT_NOTE})
         repeated = [m for m in self.final_request if m['role'] == 'tool' and 'already ran' in m['content']]
         self.assertEqual(len(repeated), module.STEP_LIMIT - 2)
+
+    def workspace_model(self, impl):
+        self.impl = impl
+
+    async def run_job(self, prompt):
+        r = await self.client.post('/workspace/jobs', json={'prompt': prompt})
+        for _ in range(200):
+            job = next(j for j in self.workspace.jobs() if j['id'] == r.json()['id'])
+            if job['status'] in {'completed', 'failed', 'paused'}:
+                return job
+            await asyncio.sleep(.05)
+        return job
+
+    async def test_python_sees_attached_files_runs_a_bounded_number_of_times_and_never_answers_in_markup(self):
+        # The assessment's CSV job: no file_ids passed, the same sum recomputed 19 times, then tool syntax as the answer.
+        runs, markup = [], '<tool_call>\n<function=execute_python>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>'
+        self.workspace.analyze = lambda code, files: runs.append(files) or {'stdout': 'TOTAL 173.85'}
+        async def model(messages, tools):
+            names = {t['function']['name'] for t in tools}
+            if 'execute_python' in names:
+                return {'role': 'assistant', 'content': '', 'tool_calls': [{'id': uuid.uuid4().hex, 'type': 'function',
+                    'function': {'name': 'execute_python', 'arguments': json.dumps({'code': f'print({len(runs)})'})}}]}
+            if messages[-1]['content'] == module.TOOL_MARKUP_NOTE:
+                return {'role': 'assistant', 'content': 'The total is 173.85.'}
+            return {'role': 'assistant', 'content': markup}
+        self.workspace_model(model)
+        job = await self.run_job('Sum the sales.\nFile qa_sales.csv; file_id=' + 'a' * 32)
+        self.assertEqual(job['status'], 'completed', job)
+        self.assertEqual(job['result'], 'The total is 173.85.')
+        self.assertEqual(len(runs), module.PYTHON_LIMIT)
+        self.assertTrue(all(files == ['a' * 32] for files in runs))
+
+    async def test_markup_twice_ends_in_a_plain_note_with_the_last_result(self):
+        self.workspace.analyze = lambda code, files: {'stdout': 'TOTAL 173.85'}
+        async def model(messages, tools):
+            if any(t['function']['name'] == 'execute_python' for t in tools) and not any(m['role'] == 'tool' for m in messages):
+                return {'role': 'assistant', 'content': '', 'tool_calls': [{'id': 'c1', 'type': 'function',
+                    'function': {'name': 'execute_python', 'arguments': '{"code": "print(1)"}'}}]}
+            return {'role': 'assistant', 'content': '<tool_call><function=execute_python></function></tool_call>'}
+        self.workspace_model(model)
+        job = await self.run_job('Sum the sales.')
+        self.assertTrue(job['result'].startswith("I couldn't finish writing the answer."), job['result'])
+        self.assertIn('TOTAL 173.85', job['result'])
+        self.assertNotIn('<tool_call>', job['result'])
+
+    async def test_an_empty_reply_gets_a_fresh_try_with_its_tools(self):
+        # The gateway answers empty when it can't repair a malformed tool call; that must not become the result.
+        runs, replies = [], iter([{'role': 'assistant', 'content': ''}])
+        self.workspace.analyze = lambda code, files: runs.append(files) or {'stdout': 'TOTAL 173.85'}
+        async def model(messages, tools):
+            reply = next(replies, None)
+            if reply:
+                return reply
+            if not any(m['role'] == 'tool' for m in messages):
+                return {'role': 'assistant', 'content': '', 'tool_calls': [{'id': 'c1', 'type': 'function',
+                    'function': {'name': 'execute_python', 'arguments': '{"code": "print(1)"}'}}]}
+            return {'role': 'assistant', 'content': 'The total is 173.85.'}
+        self.workspace_model(model)
+        job = await self.run_job('Sum the sales.')
+        self.assertEqual(job['result'], 'The total is 173.85.')
+        self.assertEqual(len(runs), 1)
+
+    def test_attached_files_are_found_newest_first(self):
+        messages = [{'role': 'user', 'content': 'File a.csv; file_id=' + 'a' * 32},
+                    {'role': 'user', 'content': [{'type': 'text', 'text': 'x'}, {'type': 'text', 'text': 'File b; file_id=' + 'b' * 32}]}]
+        self.assertEqual(module._attached_files(messages), ['b' * 32, 'a' * 32])
+        args = module._with_attachments('execute_python', {'code': 'x', 'file_ids': ['c' * 32]}, messages)
+        self.assertEqual(args['file_ids'], ['c' * 32, 'b' * 32, 'a' * 32])
+        self.assertEqual(module._with_attachments('web_search', {'query': 'q'}, messages), {'query': 'q'})
 
     def test_sent_note_and_call_identity(self):
         from datetime import datetime, timezone

@@ -50,6 +50,8 @@ class ConversationEngine(
         var rounds = 0
         // Set once the tool budget is spent: the next request has no tools, so the user gets an answer.
         var answerNow = false
+        // Set when the model wrote a tool call as text: one more request without tools asks for plain words.
+        var retryPlain = false
         // Finished non-phone calls this turn (tool + arguments), so a verbatim repeat gets the earlier result back.
         val finishedCalls = mutableSetOf<String>()
         var phoneUseRounds = 0
@@ -69,8 +71,9 @@ class ConversationEngine(
                 modelProvider.streamConversation(
                     messages = outboundMessages(systemPrompt, messages, latestUserNote, recallContext) + listOfNotNull(submittedPhoneScreen?.let {
                         Message.User(submittedPhoneScreenNote, listOf(it))
-                    }) + listOfNotNull(if (answerNow) Message.User(TOOL_LIMIT_NOTE) else null),
-                    tools = if (answerNow) emptyList() else toolRegistry.definitions().filter { it.name !in blockedTools },
+                    }) + listOfNotNull(if (answerNow) Message.User(TOOL_LIMIT_NOTE) else null,
+                        if (retryPlain) Message.User(TOOL_MARKUP_NOTE) else null),
+                    tools = if (answerNow || retryPlain) emptyList() else toolRegistry.definitions().filter { it.name !in blockedTools },
                 ) { delta ->
                     // Providers may deliver deltas on their own thread.
                     val soFar = synchronized(partial) { partial.append(delta).toString() }
@@ -102,6 +105,22 @@ class ConversationEngine(
                     ?.let { File(it).delete() }
             }
 
+            // An answer is never tool-call syntax: retry once without tools, then say it couldn't be finished.
+            val answer = when (response) {
+                is ModelResponse.TextResponse -> visibleText(response.text)
+                is ModelResponse.ToolCallResponse -> if (response.calls.isEmpty()) visibleText(response.text.orEmpty()) else null
+            }
+            if (answer != null && TOOL_MARKUP.containsMatchIn(answer)) {
+                if (!retryPlain) {
+                    retryPlain = true
+                    continue
+                }
+                val last = messages.filterIsInstance<Message.ToolResult>().lastOrNull()?.content
+                messages += Message.Assistant("I couldn't finish writing the answer." +
+                    (last?.let { " The last result was:\n\n```\n${it.take(4000)}\n```" } ?: ""))
+                onUpdate(messages.toList())
+                return TurnOutcome.Completed(messages.toList())
+            }
             when (response) {
                 is ModelResponse.TextResponse -> {
                     messages += Message.Assistant(visibleText(response.text))
@@ -461,6 +480,8 @@ class ConversationEngine(
         private const val THINK_OPEN = "<think>"
         private const val THINK_CLOSE = "</think>"
         const val DEFAULT_MAX_TOOL_ROUNDS = 20
+        internal const val TOOL_MARKUP_NOTE = "(Your last reply was a tool call written as text. No tools can run now: answer in plain words from the results above, and say what is still unverified.)"
+        internal val TOOL_MARKUP = Regex("<tool_call>|</tool_call>|<function=[\\w-]+>|<parameter=[\\w-]+>")
         internal const val TOOL_LIMIT_NOTE = "(Tool limit reached for this message. Answer now from the results above, and say plainly what is still unverified.)"
         internal const val REPEATED_CALL_RESULT = "Not executed. This exact call already ran for this message and its result is above. " +
             "Use that result and answer, or make a different call if something is still missing."

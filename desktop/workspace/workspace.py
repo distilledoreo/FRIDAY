@@ -10,6 +10,7 @@ import hashlib
 import logging
 import mimetypes
 import os
+import re
 from pathlib import Path
 import shutil
 import sqlite3
@@ -192,6 +193,73 @@ def _repeated_call(messages, start, call):
     key = _call_key(call)
     return any(c.get('id') in answered and _call_key(c) == key
                for m in messages[start:] if m.get('role') == 'assistant' for c in m.get('tool_calls') or [])
+
+
+# A model sometimes writes a tool call as text, mostly when no tools are offered (the step limit's last call). That
+# text is protocol, not an answer: it is never delivered.
+TOOL_MARKUP = re.compile(r'<tool_call>|</tool_call>|<function=[\w-]+>|<parameter=[\w-]+>')
+TOOL_MARKUP_NOTE = ('(Your last reply could not be shown: it was empty, or a tool call written as text. No tools can run '
+                    'now: answer in plain words from the results above, and say what is still unverified.)')
+# Calculations repeat when a model loops on its own results; after this many in one message it has to answer.
+PYTHON_LIMIT = 4
+FILE_ID = re.compile(r'file_id=([a-f0-9]{32})')
+
+
+def _attached_files(messages):
+    """Files attached in this conversation, newest first: their ids appear in the user messages the model reads."""
+    ids = []
+    for message in reversed(messages):
+        if message.get('role') != 'user':
+            continue
+        content = message.get('content')
+        texts = [part.get('text') or '' for part in content if isinstance(part, dict)] if isinstance(content, list) else [content or '']
+        for text in texts:
+            ids += [found for found in FILE_ID.findall(str(text)) if found not in ids]
+    return ids
+
+
+def _with_attachments(name, args, messages):
+    """Python runs see the conversation's files even when the model forgets to pass them (it often does)."""
+    if name != 'execute_python' or not isinstance(args, dict):
+        return args
+    given = [f for f in args.get('file_ids') or [] if isinstance(f, str)]
+    return dict(args, file_ids=(given + [f for f in _attached_files(messages) if f not in given])[:6])
+
+
+def _python_runs(messages, start):
+    return sum(c.get('function', {}).get('name') == 'execute_python'
+               for m in messages[start:] if m.get('role') == 'assistant' for c in m.get('tool_calls') or [])
+
+
+def _step_tools(available, messages, start):
+    """The tools offered for the next step: Python is withdrawn once a message has used it PYTHON_LIMIT times."""
+    if _python_runs(messages, start) < PYTHON_LIMIT:
+        return available
+    return [t for t in available if (t.get('function') or {}).get('name') != 'execute_python']
+
+
+async def _plain_answer(answer, request, regenerate, tools=True):
+    """A usable answer: tool calls, or plain text. An empty reply (the gateway returns one when it can't repair a
+    malformed tool call) gets one fresh try with the same tools. Tool-call markup gets one retry without tools. If the
+    model still fails, the user is told the answer couldn't be finished, with the last tool result, rather than shown
+    protocol or nothing. `regenerate(messages, with_tools)` asks the model again."""
+    text = answer.get('content') or ''
+    if answer.get('tool_calls'):
+        return answer
+    if not text.strip() and tools:
+        answer = await regenerate(request, True)
+        text = answer.get('content') or ''
+        if answer.get('tool_calls'):
+            return answer
+    if text.strip() and not TOOL_MARKUP.search(text):
+        return answer
+    retry = await regenerate(request + ([{'role': 'assistant', 'content': text}] if text.strip() else []) +
+                             [{'role': 'user', 'content': TOOL_MARKUP_NOTE}], False)
+    if not retry.get('tool_calls') and not TOOL_MARKUP.search(retry.get('content') or '') and (retry.get('content') or '').strip():
+        return {'role': 'assistant', 'content': retry['content']}
+    last = next((m.get('content') or '' for m in reversed(request) if m.get('role') == 'tool'), '')
+    return {'role': 'assistant', 'content': "I couldn't finish writing the answer." +
+            (' The last result was:\n\n```\n' + str(last)[:4000] + '\n```' if last else '')}
 
 
 def _unanswered(messages):
@@ -930,7 +998,10 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                     for step in range(STEP_LIMIT):
                         last = step == STEP_LIMIT - 1
                         request = _for_model(messages) + ([{'role': 'user', 'content': STEP_LIMIT_NOTE}] if last else [])
-                        answer = await asyncio.wait_for(generate(request, [] if last else available, report, body.model, body.connection, reasoning=body.reasoning, private=True), 900)
+                        answer = await asyncio.wait_for(generate(request, [] if last else _step_tools(available, messages, initial), report, body.model, body.connection, reasoning=body.reasoning, private=True), 900)
+                        answer = await _plain_answer(answer, request, lambda retry, with_tools: asyncio.wait_for(
+                            generate(retry, _step_tools(available, messages, initial) if with_tools else [], report, body.model,
+                                     body.connection, reasoning=body.reasoning, private=True), 900), tools=not last)
                         messages.append(answer)
                         calls = answer.get('tool_calls') or []
                         if not calls:
@@ -957,7 +1028,7 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                                         private_waits.pop(session, None)
                                     await queue.put({'approval': None})
                             try:
-                                args = json.loads(call['function']['arguments'] or '{}')
+                                args = _with_attachments(name, json.loads(call['function']['arguments'] or '{}'), messages)
                                 if toolkit is not None:
                                     result = await run_tool(toolkit, call, args, decisions, options) if name in allowed else {'error': 'Unavailable in a private conversation'}
                                 elif name == 'web_search': result = _source_refs(await search(args['query']))
@@ -1183,8 +1254,8 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
 
         async def execute(call):
             try:
-                args = json.loads(call['function']['arguments'] or '{}')
                 name = call['function']['name']
+                args = _with_attachments(name, json.loads(call['function']['arguments'] or '{}'), messages)
                 if toolkit is not None:
                     return await run_tool(toolkit, call, args, decisions, options)
                 if name == 'web_search':
@@ -1219,8 +1290,12 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                     progress[job['id']] = ''
                     async def report(text): progress[job['id']] = text[:64000]
                     request = _for_model(messages) + ([{'role': 'user', 'content': STEP_LIMIT_NOTE}] if last else [])
-                    answer = await asyncio.wait_for(generate(request, [] if last else available, report, options.get('model'), options.get('connection'), job['id'],
-                                                             options.get('reasoning')), timeout=900)
+                    start = job.get('initial_count') or 0
+                    answer = await asyncio.wait_for(generate(request, [] if last else _step_tools(available, messages, start), report, options.get('model'),
+                                                             options.get('connection'), job['id'], options.get('reasoning')), timeout=900)
+                    answer = await _plain_answer(answer, request, lambda retry, with_tools: asyncio.wait_for(generate(
+                        retry, _step_tools(available, messages, start) if with_tools else [], report, options.get('model'),
+                        options.get('connection'), job['id'], options.get('reasoning')), timeout=900), tools=not last)
                     if status() != 'running':
                         if status() == 'cancelled':
                             keep_partial(job, messages, answer.get('content') or progress.get(job['id'], ''))

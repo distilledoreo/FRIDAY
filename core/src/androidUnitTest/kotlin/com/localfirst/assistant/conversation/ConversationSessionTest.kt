@@ -296,6 +296,34 @@ class ConversationSessionTest {
         }
     }
 
+    @Test
+    fun toolCallMarkupIsRetriedWithoutToolsAndNeverShown() = runBlocking {
+        val markup = "<tool_call>\n<function=execute_python>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>"
+        val provider = ScriptedModelProvider(
+            { ModelResponse.TextResponse(markup) },
+            { messages ->
+                assertEquals(ConversationEngine.TOOL_MARKUP_NOTE, (messages.last() as Message.User).content)
+                ModelResponse.TextResponse("The total is 173.85.")
+            },
+        )
+        val session = session(provider, ToolRegistry().apply { register(SetMediaVolumeTool { }) })
+        val outcome = session.submitUserMessage("Sum it")
+        assertTrue(outcome is TurnOutcome.Completed)
+        assertEquals(emptyList<String>(), provider.toolNames.last())
+        assertEquals(listOf(Message.User("Sum it"), Message.Assistant("The total is 173.85.")), session.snapshot())
+    }
+
+    @Test
+    fun repeatedMarkupEndsInAPlainNote() = runBlocking {
+        val provider = ScriptedModelProvider(
+            { ModelResponse.TextResponse("<tool_call><function=web_search></function></tool_call>") },
+            { ModelResponse.TextResponse("<tool_call><function=web_search></function></tool_call>") },
+        )
+        val outcome = session(provider, ToolRegistry()).submitUserMessage("Look it up")
+        val last = (outcome as TurnOutcome.Completed).messages.last() as Message.Assistant
+        assertEquals("I couldn't finish writing the answer.", last.content)
+    }
+
     private class ScriptedModelProvider(
         vararg responders: (List<Message>) -> ModelResponse,
     ) : ModelProvider {
