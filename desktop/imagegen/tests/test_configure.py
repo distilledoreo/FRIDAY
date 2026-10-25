@@ -38,3 +38,29 @@ class DedicatedProfileTests(unittest.TestCase):
             self.assertEqual(result['environment']['CUDA_VISIBLE_DEVICES'], 'GPU-spare')
             self.assertEqual(result['placement'], 'dedicated')
             self.assertEqual(len(result['files']), 5)
+            self.assertIn('te=cpu', result['command'][result['command'].index('--backend') + 1])
+
+    def test_encoder_can_move_to_a_vulkan_card(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ('binary', 'transformer', 'encoder', 'vision', 'vae'):
+                (root / name).write_bytes(name.encode())
+            base, output = root / 'base.json', root / 'dedicated.json'
+            base.write_text(json.dumps({'command': ['old-server'], 'files': []}))
+            argv = ['configure', '--base-config', str(base), '--output', str(output),
+                    '--gpu-uuid', 'GPU-spare', '--encoder-device', 'vulkan0']
+            for name in ('binary', 'transformer', 'encoder', 'vision', 'vae'):
+                argv += ['--' + name, str(root / name)]
+            with patch('sys.argv', argv):
+                main()
+            command = json.loads(output.read_text())['command']
+            for flag in ('--backend', '--params-backend'):
+                self.assertEqual(command[command.index(flag) + 1], 'diffusion=cuda0,te=vulkan0,vae=cuda0')
+            self.assertEqual(command[command.index('--max-vram') + 1], 'cuda0=10,vulkan0=7')
+
+    def test_encoder_device_rejects_a_second_cuda_card(self):
+        with patch('sys.argv', ['configure', '--base-config', 'b', '--output', 'o', '--gpu-uuid', 'GPU-x',
+                                '--binary', 'b', '--transformer', 't', '--encoder', 'e', '--vision', 'v',
+                                '--vae', 'v', '--encoder-device', 'cuda1']), \
+                patch('sys.stderr'), self.assertRaises(SystemExit):
+            main()

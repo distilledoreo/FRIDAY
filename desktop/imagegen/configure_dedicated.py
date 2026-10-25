@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from .manager import atomic
@@ -32,9 +33,14 @@ def main():
     parser.add_argument('--vae', required=True, type=Path)
     parser.add_argument('--gpu-uuid', required=True)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--encoder-device', default='cpu',
+                        help='cpu, or a Vulkan card such as vulkan0 (needs a build with SD_VULKAN=ON)')
+    parser.add_argument('--encoder-vram', type=int, default=7, help='GiB the encoder may use on a Vulkan card')
     args = parser.parse_args()
     if not args.gpu_uuid.startswith('GPU-') or ',' in args.gpu_uuid:
         parser.error('Provide exactly one physical GPU UUID')
+    if args.encoder_device != 'cpu' and not re.fullmatch(r'vulkan\d+', args.encoder_device):
+        parser.error('--encoder-device must be cpu or vulkanN')
     config = json.loads(args.base_config.read_text())
     original_command = config['command']
     previous = {str(Path(item['path']).resolve()): item for item in config['files']}
@@ -42,6 +48,8 @@ def main():
     models = {name: verified(getattr(args, name), previous.get(str(getattr(args, name).resolve())))
               for name in ('transformer', 'encoder', 'vision', 'vae')}
     sample = config.get('sample_params', {})
+    placement = f'diffusion=cuda0,te={args.encoder_device},vae=cuda0'
+    budget = 'cuda0=10' + ('' if args.encoder_device == 'cpu' else f',{args.encoder_device}={args.encoder_vram}')
     def option(flag, default):
         return original_command[original_command.index(flag) + 1] if flag in original_command else default
     config.update(placement='dedicated', environment={'CUDA_DEVICE_ORDER': 'PCI_BUS_ID',
@@ -51,9 +59,8 @@ def main():
     config['command'] = [binary['path'], '--diffusion-model', models['transformer']['path'],
                          '--llm', models['encoder']['path'], '--llm_vision', models['vision']['path'],
                          '--vae', models['vae']['path'], '--mmap', '--eager-load',
-                         '--backend', 'diffusion=cuda0,te=cpu,vae=cuda0',
-                         '--params-backend', 'diffusion=cuda0,te=cpu,vae=cuda0',
-                         '--max-vram', 'cuda0=10', '--vae-tiling', '--diffusion-fa',
+                         '--backend', placement, '--params-backend', placement,
+                         '--max-vram', budget, '--vae-tiling', '--vae-tile-size', '512', '--diffusion-fa',
                          '--listen-ip', '127.0.0.1', '--listen-port', '8192', '--threads', '4',
                          '--cfg-scale', str(sample.get('guidance', {}).get('txt_cfg', option('--cfg-scale', '1'))),
                          '--sampling-method', sample.get('sample_method', option('--sampling-method', 'euler')),

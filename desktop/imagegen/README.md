@@ -5,7 +5,8 @@
 A private runtime config with `"placement":"dedicated"` keeps the managed image server warm between
 successful requests. Set `environment.CUDA_VISIBLE_DEVICES` to the spare card's physical `GPU-...` UUID
 and `CUDA_DEVICE_ORDER` to `PCI_BUS_ID`. Inside that isolated process the spare card is `cuda0`, regardless
-of its host ordinal. Place diffusion and VAE compute/parameters on `cuda0`, and the encoder on `cpu`.
+of its host ordinal. Place diffusion and VAE compute/parameters on `cuda0`, and the encoder on `cpu`
+or a spare Vulkan card (below).
 The existing shared-card handoff remains the default for installations without a dedicated profile.
 
 Dedicated jobs do not acquire the chat GPU lease, stop/restart the LLM, wait for its active requests, or
@@ -17,7 +18,7 @@ RAM job records, waiting for another session's render to finish first; the next 
 and the selector remain on the spare card and consume part of its memory budget.
 
 `configure_dedicated` writes a new private config with verified asset metadata, the Q8 Turbo transformer,
-Q4 encoder, CPU text encoding, GPU VAE/DiT and tiled VAE decoding. It preserves the base config's
+Q4 encoder, CPU text encoding, GPU VAE/DiT and tiled VAE decoding (512 px tiles). It preserves the base config's
 sampling profile, step count, sigma schedule and LoRA adapters, including the existing four-step
 Turbo/Lightning setup. Changing GPU placement does not require changing the sampling setup:
 
@@ -28,6 +29,31 @@ python3 -m desktop.imagegen.configure_dedicated --base-config /private/current.j
   --vae /private/qwen_image_2.1_vae_bf16.safetensors --gpu-uuid GPU-... \
   --output /private/imagegen-resident.json
 ```
+
+### Text encoder on a spare Vulkan card
+
+The Qwen3-VL encoder dominates edits on the CPU: it reads the reference image as well as the prompt.
+An otherwise idle AMD card can run it through Vulkan while the CUDA card keeps diffusion and VAE. Build
+stable-diffusion.cpp with both backends (Polaris and Pascal need no special flags beyond the CUDA arch):
+
+```sh
+cmake -S stable-diffusion.cpp -B build-vulkan -DCMAKE_BUILD_TYPE=Release -DSD_CUDA=ON -DSD_VULKAN=ON \
+  -DCMAKE_CUDA_ARCHITECTURES=60 -DSD_BUILD_EXAMPLES=ON -DSD_SERVER_BUILD_FRONTEND=OFF -DGGML_NATIVE=ON
+cmake --build build-vulkan -j --target sd-server
+build-vulkan/bin/sd-server --list-devices   # the AMD card should appear as Vulkan0
+```
+
+Then pass `--binary build-vulkan/bin/sd-server --encoder-device vulkan0` to `configure_dedicated`
+(`--encoder-vram` caps the card's budget, default 7 GiB). The Q4 encoder uses about 6.6 GB on an 8 GB
+RX 580. Measured at 1024×1024 with four steps, P100 for diffusion:
+
+| | Encoder on CPU (4 threads) | Encoder on RX 580 |
+|---|---|---|
+| New prompt | 68 s (encoder 30 s) | 39 s (encoder 0.8 s) |
+| Edit, one 512 px reference | 229 s (encoder 145 s) | 93 s (encoder 10 s) |
+
+Output matches the CPU encoder (mean pixel difference under 1/255 on edits). The vision projector gains
+nothing from moving, so it stays on its default placement. Server start-up takes about 40 s longer.
 
 Select it through `FRIDAY_IMAGEGEN_CONFIG`, deploy the imagegen module with the existing setup script,
 and restart only the API. Check `/workspace/images/health`: `placement`, `loaded`, `runtime_available`
