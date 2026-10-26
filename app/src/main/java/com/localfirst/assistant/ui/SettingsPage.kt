@@ -318,9 +318,9 @@ private fun VoiceSection(
         Column(modifier = Modifier.weight(1f)) {
             Text("“Hey FRIDAY” wake phrase", style = MaterialTheme.typography.bodyLarge)
             Text(
-                text = "Listens for the wake phrase and opens a voice chat. Uses Android speech recognition, " +
-                    "on-device when available; otherwise audio may go to the recognition service. " +
-                    "Runs a foreground microphone service with a persistent notification, and uses noticeably more battery.",
+                text = "Listens for the wake phrase and opens a voice chat. A small wake-phrase model runs on the phone, " +
+                    "so audio never leaves it, and it mostly idles during silence. " +
+                    "Runs a foreground microphone service with a persistent notification.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

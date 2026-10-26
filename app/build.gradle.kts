@@ -12,8 +12,10 @@ android {
         applicationId = "com.localfirst.assistant"
         minSdk = 26
         targetSdk = 35
-        versionCode = 77
-        versionName = "0.27.2"
+        versionCode = 78
+        versionName = "0.28.0"
+        // ONNX Runtime (the wake phrase) is the only native code; one 64-bit ARM copy keeps the APK small.
+        ndk { abiFilters += "arm64-v8a" }
     }
 
     buildTypes {
@@ -33,6 +35,10 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+    }
+
+    packaging {
+        jniLibs.useLegacyPackaging = true
     }
 
     buildFeatures {
@@ -58,6 +64,9 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
+    // Runs the "Hey FRIDAY" wake-phrase model; unit tests use the desktop build of the same API.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.0")
+    testImplementation("com.microsoft.onnxruntime:onnxruntime:1.31.0")
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
@@ -71,4 +80,9 @@ dependencies {
     testImplementation("io.github.takahirom.roborazzi:roborazzi:1.40.0")
     testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.40.0")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+}
+
+// The Android runtime's native code can't load on the build machine, so JVM tests get the desktop one only.
+configurations.matching { it.name.endsWith("UnitTestRuntimeClasspath") }.configureEach {
+    exclude(group = "com.microsoft.onnxruntime", module = "onnxruntime-android")
 }

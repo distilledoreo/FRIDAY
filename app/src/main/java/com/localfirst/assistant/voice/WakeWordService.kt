@@ -1,6 +1,7 @@
 package com.localfirst.assistant.voice
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -8,41 +9,36 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.os.Build
-import android.os.Bundle
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.localfirst.assistant.MainActivity
 import com.localfirst.assistant.phone.PermissionBroker
-import java.util.Locale
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Opt-in "Hey FRIDAY" listener. A foreground service so the mic stays allowed;
- * it runs Android speech recognition in a loop and watches transcripts for the
- * wake phrase, then opens a fresh voice chat. The on-device recognizer is
- * preferred when available so audio stays on the phone; when it isn't, the
- * default recognizer is used and audio may go to the recognition service. The
- * app itself records nothing and sends transcripts nowhere: only the wake
- * match opens the app. Enable it in Settings; it uses noticeably more battery
- * while it runs.
+ * it runs a small wake-phrase model ([WakeWordDetector]) on the phone and opens
+ * a fresh voice chat when it hears the phrase. Audio never leaves the phone and
+ * nothing is recorded or kept. It steps off the microphone while a voice chat
+ * holds it, and for a short cooldown after each wake. Enable it in Settings.
  */
 class WakeWordService : Service() {
-    private val handler = Handler(Looper.getMainLooper())
-    private var recognizer: SpeechRecognizer? = null
-    private var stopped = false
-    private var lastTrigger = 0L
-    private var onDeviceUsable = true
-    private var onDevice = false
-
-    private val retryRunnable = Runnable { listen() }
-    private val watchdogRunnable = Runnable { watchdog() }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var generation = 0
 
     override fun onCreate() {
@@ -55,117 +51,86 @@ class WakeWordService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) { stopSelf(); return START_NOT_STICKY }
         if (generation != runningGeneration) { stopSelf(); return START_NOT_STICKY }
-        if (active.value) {
-            if (!stopped && recognizer == null) listen()
-            handler.removeCallbacks(watchdogRunnable)
-            handler.postDelayed(watchdogRunnable, WATCHDOG_MS)
-            return START_STICKY
-        }
-        if (!PermissionBroker.isGranted(this, Manifest.permission.RECORD_AUDIO) ||
-            !SpeechRecognizer.isRecognitionAvailable(this)
-        ) { stopSelf(); return START_NOT_STICKY }
+        if (active.value) return START_STICKY
+        if (!PermissionBroker.isGranted(this, Manifest.permission.RECORD_AUDIO)) { stopSelf(); return START_NOT_STICKY }
         getSystemService(NotificationManager::class.java)
             .createNotificationChannel(NotificationChannel(CHANNEL, "Hey FRIDAY", NotificationManager.IMPORTANCE_LOW))
-        ServiceCompat.startForeground(this, 903, buildNotification(null), if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0)
+        ServiceCompat.startForeground(this, 903, buildNotification(), if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0)
         active.value = true
-        listen()
-        handler.postDelayed(watchdogRunnable, WATCHDOG_MS)
+        scope.launch { listen() }
         return START_STICKY
     }
 
-    private fun buildNotification(state: Boolean?): android.app.Notification {
-        val detail = when (state) {
-            true -> "On-device listening for “Hey FRIDAY”"
-            false -> "Listening for “Hey FRIDAY” (network recognition)"
-            null -> "Starting the wake phrase listener"
-        }
+    private fun buildNotification(): android.app.Notification {
         val stop = PendingIntent.getService(this, 5, Intent(this, WakeWordService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE)
         val open = PendingIntent.getActivity(this, 6, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         return NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentTitle(detail).setContentText("Say the wake phrase to start a voice chat")
+            .setContentTitle("Listening for “Hey FRIDAY” on this phone")
+            .setContentText("Say the wake phrase to start a voice chat")
             .setOngoing(true).setContentIntent(open).addAction(0, "Stop", stop).build()
     }
 
-    private fun showNotification(state: Boolean?) {
-        getSystemService(NotificationManager::class.java).notify(903, buildNotification(state))
-    }
-
-    private fun listen() {
-        if (stopped || recognizer != null) return
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) { retry(); return }
-        onDevice = onDeviceUsable && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            SpeechRecognizer.isOnDeviceRecognitionAvailable(this)
-        val current = runCatching {
-            if (onDevice) SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
-            else SpeechRecognizer.createSpeechRecognizer(this)
-        }.getOrNull()
-        if (current == null) { retry(); return }
-        recognizer = current
-        showNotification(onDevice)
-        current.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) = Unit
-            override fun onBeginningOfSpeech() = Unit
-            override fun onRmsChanged(rmsdB: Float) = Unit
-            override fun onBufferReceived(buffer: ByteArray?) = Unit
-            override fun onEndOfSpeech() = Unit
-            override fun onEvent(eventType: Int, params: Bundle?) = Unit
-            override fun onPartialResults(partialResults: Bundle?) {
-                partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.let(::heard)
-            }
-            override fun onResults(results: Bundle?) {
-                results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.let(::heard)
-                restart()
-            }
-            override fun onError(error: Int) {
-                if (onDevice && (error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED || error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE)) {
-                    onDeviceUsable = false
+    private suspend fun listen() {
+        val detector = runCatching {
+            WakeWordDetector(model("melspectrogram.onnx"), model("embedding_model.onnx"), model("hey_friday.onnx"))
+        }.getOrElse { withContext(Dispatchers.Main) { stopSelf() }; return }
+        try {
+            var resumeAt = 0L
+            while (scope.isActive) {
+                VoiceForegroundService.active.first { !it }
+                val wait = resumeAt - SystemClock.elapsedRealtime()
+                if (wait > 0) { delay(wait); continue }
+                if (record(detector)) {
+                    trigger()
+                    resumeAt = SystemClock.elapsedRealtime() + TRIGGER_COOLDOWN_MS
+                } else {
+                    delay(RETRY_DELAY_MS)
                 }
-                restart()
             }
-        })
-        runCatching {
-            current.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
-            })
-        }.onFailure { restart() }
+        } finally {
+            detector.close()
+        }
     }
 
-    private fun heard(text: String) {
-        if (stopped || !WakeWord.isWakeWord(text)) return
-        val now = android.os.SystemClock.elapsedRealtime()
-        if (now - lastTrigger < TRIGGER_COOLDOWN_MS) return
-        lastTrigger = now
-        startActivity(Intent(this, MainActivity::class.java).setAction(WAKE_ACTION).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+    private fun model(name: String) = assets.open("wakeword/$name").use { it.readBytes() }
+
+    /** Records until the phrase is heard (true), or a voice chat takes the mic, or the mic fails (false). */
+    @SuppressLint("MissingPermission")
+    private suspend fun record(detector: WakeWordDetector): Boolean = withContext(Dispatchers.IO) {
+        val minimum = AudioRecord.getMinBufferSize(WakeWordDetector.SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        if (minimum <= 0) return@withContext false
+        val recorder = runCatching {
+            AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, WakeWordDetector.SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT, maxOf(minimum, WakeWordDetector.FRAME * 2 * 4))
+        }.getOrNull() ?: return@withContext false
+        try {
+            if (recorder.state != AudioRecord.STATE_INITIALIZED) return@withContext false
+            recorder.startRecording()
+            if (recorder.recordingState != AudioRecord.RECORDSTATE_RECORDING) return@withContext false
+            val frame = ShortArray(WakeWordDetector.FRAME)
+            while (isActive && !VoiceForegroundService.active.value) {
+                var filled = 0
+                while (filled < frame.size) {
+                    val read = recorder.read(frame, filled, frame.size - filled)
+                    if (read <= 0) return@withContext false
+                    filled += read
+                }
+                if (detector.accept(frame)) return@withContext true
+            }
+            false
+        } finally {
+            runCatching { recorder.stop() }
+            recorder.release()
+        }
     }
 
-    private fun restart() {
-        runCatching { recognizer?.cancel(); recognizer?.destroy() }
-        recognizer = null
-        retry()
-    }
-
-    private fun retry() {
-        if (stopped) return
-        handler.removeCallbacks(retryRunnable)
-        handler.postDelayed(retryRunnable, RETRY_DELAY_MS)
-    }
-
-    /** Restarts listening if the recognizer died without a restart (stuck on, silently off). */
-    private fun watchdog() {
-        if (stopped) return
-        if (active.value && recognizer == null) listen()
-        handler.postDelayed(watchdogRunnable, WATCHDOG_MS)
+    private suspend fun trigger() = withContext(Dispatchers.Main) {
+        startActivity(Intent(this@WakeWordService, MainActivity::class.java).setAction(WAKE_ACTION)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
     }
 
     override fun onDestroy() {
-        stopped = true
-        handler.removeCallbacks(retryRunnable)
-        handler.removeCallbacks(watchdogRunnable)
-        runCatching { recognizer?.cancel(); recognizer?.destroy() }
-        recognizer = null
+        scope.cancel()
         if (generation == runningGeneration) active.value = false
         super.onDestroy()
     }
@@ -176,7 +141,6 @@ class WakeWordService : Service() {
         private const val CHANNEL = "wake"
         private const val RETRY_DELAY_MS = 1_000L
         private const val TRIGGER_COOLDOWN_MS = 15_000L
-        private const val WATCHDOG_MS = 60_000L
         @Volatile private var runningGeneration = 0
         val active = MutableStateFlow(false)
         fun start(context: Context) { context.startForegroundService(Intent(context, WakeWordService::class.java)) }
