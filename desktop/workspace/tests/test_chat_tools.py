@@ -344,9 +344,22 @@ class PrivateLeakTests(unittest.TestCase):
         identifying, other, context = find('weather Plano', ['The user lives in Plano.'], "What's the weather?")
         self.assertEqual((identifying, other, context), ([], ['plano'], ['The user lives in Plano.']))
 
+    def test_everyday_words_and_the_users_inflected_words_are_not_private(self):
+        # A public DART search stopped for approval: "dimorphos", "change" and "minutes" matched recalled test chats,
+        # though the user had written "Dimorphos's" and "changed" and the rest are everyday words.
+        from desktop.workspace.private_leak import details
+        recalled = ["Past chat: NASA said DART shortened Dimorphos's orbit by 32 minutes. Minutes later the change was refined."]
+        asked = "NASA reported how much DART changed Dimorphos's orbital period. What were the numbers?"
+        self.assertEqual(details('NASA DART Dimorphos orbital period change 33 minutes refined', recalled, asked), [])
+        # A name that opens a sentence is still a name.
+        self.assertEqual(details('Priya shift times', ['Priya starts her shift at 7.'], 'When does my sister start?'), ['priya'])
+
     def test_only_a_clear_ok_lets_details_through_and_recall_skips_its_introduction(self):
         from desktop.workspace.private_leak import judged_identifying, recalled
         self.assertEqual([judged_identifying(r) for r in ('OK', 'IDENTIFYING', 'Not sure', None)], [False, True, True, True])
+        # The verdict is the last one given, after any reasoning.
+        self.assertFalse(judged_identifying('These are not IDENTIFYING details on their own.\nOK'))
+        self.assertTrue(judged_identifying('OK, wait: the name points to one person. IDENTIFYING'))
         prompt = 'System prompt.\n\nRetrieved personal context. Approved memories are user-reviewed facts.\n\nThe user lives in Plano.'
         self.assertEqual(recalled(prompt), 'The user lives in Plano.')
         self.assertIsNone(recalled('No memories here.'))

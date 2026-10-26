@@ -8,3 +8,9 @@ search:
   formats:
     - html
     - json
+
+# Bing alongside the defaults: when DuckDuckGo, Brave, Google CSE and Wikipedia throttle a burst of searches,
+# they all answer nothing at once, and research gets empty results.
+engines:
+  - name: bing
+    disabled: false

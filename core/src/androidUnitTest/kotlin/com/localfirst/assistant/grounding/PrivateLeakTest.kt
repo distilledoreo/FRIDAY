@@ -31,11 +31,21 @@ class PrivateLeakTest {
     }
 
     @Test
+    fun everydayWordsAndTheUsersInflectedWordsAreNotPrivate() {
+        val recalled = listOf("Past chat: NASA said DART shortened Dimorphos's orbit by 32 minutes. Minutes later the change was refined.")
+        val asked = "NASA reported how much DART changed Dimorphos's orbital period. What were the numbers?"
+        assertTrue(PrivateLeak.details("NASA DART Dimorphos orbital period change 33 minutes refined", recalled, asked).isEmpty())
+        assertEquals(listOf("priya"), PrivateLeak.details("Priya shift times", listOf("Priya starts her shift at 7."), "When does my sister start?"))
+    }
+
+    @Test
     fun onlyAClearOkLetsDetailsThrough() {
         assertEquals(false, PrivateLeak.judgedIdentifying("OK"))
         assertEquals(true, PrivateLeak.judgedIdentifying("IDENTIFYING"))
         assertEquals(true, PrivateLeak.judgedIdentifying("Not sure"))
         assertEquals(true, PrivateLeak.judgedIdentifying(null))
+        assertEquals(false, PrivateLeak.judgedIdentifying("These are not IDENTIFYING details on their own.\nOK"))
+        assertEquals(true, PrivateLeak.judgedIdentifying("OK, wait: the name points to one person. IDENTIFYING"))
     }
 
     @Test

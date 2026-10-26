@@ -55,24 +55,24 @@ object PrivateLeak {
         "Search or URL: $outgoing\nDetails from private data: ${found.other.joinToString(", ")}\nWhere they came from:\n" +
             found.context.joinToString("\n") { "- $it" }
 
-    /** True unless the reply clearly says OK. */
+    /** True unless the reply's verdict, its last IDENTIFYING or OK, is OK: a model may reason before answering. */
     fun judgedIdentifying(reply: String?): Boolean {
         val text = reply?.uppercase() ?: return true
-        return "IDENTIFYING" in text || "OK" !in text
+        return verdict.findAll(text).lastOrNull()?.value != "OK"
     }
 
     /** The private words in [outgoing], or empty when it's safe to send without asking. */
     fun details(outgoing: String, privateTexts: List<String>, userText: String): List<String> {
         if (privateTexts.isEmpty() || outgoing.isBlank()) return emptyList()
-        val own = words(userText).toSet()
-        val private = privateTexts.flatMapTo(HashSet()) { words(it) }
+        val own = words(userText).mapTo(HashSet()) { stem(it) }
+        val private = nameLike(privateTexts)
         val found = LinkedHashSet<String>()
         for (match in contact.findAll(outgoing)) {
             val value = match.value.trim()
             if (privateTexts.any { value in it } && value !in userText) found += value
         }
         for (w in words(contact.replace(outgoing, " "))) {
-            if (w.length >= 3 && w !in COMMON && w in private && w !in own) found += w
+            if (w.length >= 3 && w !in COMMON && stem(w) in private && stem(w) !in own) found += w
         }
         return found.toList()
     }
@@ -83,6 +83,35 @@ object PrivateLeak {
         val body = systemPrompt.indexOf('\n', start + RECALL_MARKER.length).takeIf { it >= 0 } ?: return null
         return systemPrompt.substring(body).trim().ifEmpty { null }
     }
+
+    /** A rough common form, so "Dimorphos's", "changed" and "minutes" match "dimorphos", "change" and "minute". */
+    fun stem(word: String): String {
+        var w = word.lowercase().replace('’', '\'')
+        if (w.endsWith("'s")) w = w.dropLast(2)
+        for ((suffix, keep) in listOf("ing" to 5, "ed" to 4, "es" to 4, "s" to 3)) {
+            if (w.endsWith(suffix) && w.length > keep && !w.endsWith("ss")) { w = w.dropLast(suffix.length); break }
+        }
+        return if (w.endsWith('e') && w.length > 3) w.dropLast(1) else w
+    }
+
+    /**
+     * Words of the private text that can single someone out: written capitalized and never in lowercase (names of
+     * people and places, wherever they sit in a sentence), or containing a digit. Everyday words a memory happens to
+     * use ("change", "minutes") are not. Contact details are checked on their own, so they're left out here.
+     */
+    private fun nameLike(privateTexts: List<String>): Set<String> {
+        val capital = HashSet<String>(); val lower = HashSet<String>()
+        for (text in privateTexts) {
+            for (match in word.findAll(contact.replace(text, " ").replace('’', '\''))) {
+                val raw = match.value.trim('\'')
+                if (raw.isEmpty()) continue
+                if (raw.any { it.isDigit() } || raw[0].isUpperCase()) capital += stem(raw) else lower += stem(raw)
+            }
+        }
+        return capital - lower
+    }
+
+    private val verdict = platformRegex("\\b(IDENTIFYING|OK)\\b")
 
     private fun words(text: String): List<String> =
         word.findAll(text.lowercase().replace('’', '\'')).map { it.value.trim('\'') }.filter { it.isNotEmpty() }.toList()

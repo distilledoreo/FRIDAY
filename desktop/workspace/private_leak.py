@@ -50,19 +50,52 @@ def _words(text):
     return [w for w in (m.group(0).strip("'") for m in _word.finditer(text.lower().replace('’', "'"))) if w]
 
 
+def stem(word):
+    """A rough common form, so "Dimorphos's", "changed" and "minutes" match "dimorphos", "change" and "minute"."""
+    w = word.lower().replace('’', "'")
+    if w.endswith("'s"):
+        w = w[:-2]
+    for suffix, keep in (('ing', 5), ('ed', 4), ('es', 4), ('s', 3)):
+        if w.endswith(suffix) and len(w) > keep and not w.endswith('ss'):
+            w = w[:-len(suffix)]
+            break
+    return w[:-1] if w.endswith('e') and len(w) > 3 else w
+
+
+def name_like(private_texts):
+    """Words of the private text that can single someone out: written capitalized and never in lowercase (names of
+    people and places, wherever they sit in a sentence), or containing a digit. Everyday words a memory happens to
+    use ("change", "minutes") are not."""
+    capital, lower = set(), set()
+    for text in private_texts:
+        # Contact details are checked on their own; the lowercase "priya" in priya.k@… doesn't make Priya an everyday word.
+        for m in _word.finditer(_contact.sub(' ', text).replace('’', "'")):
+            raw = m.group(0).strip("'")
+            if not raw:
+                continue
+            key = stem(raw)
+            if any(c.isdigit() for c in raw):
+                capital.add(key)
+            elif raw[0].isupper():
+                capital.add(key)
+            else:
+                lower.add(key)
+    return capital - lower
+
+
 def details(outgoing, private_texts, user_text):
     """The private words in [outgoing], or empty when it's safe to send without asking."""
     if not private_texts or not outgoing.strip():
         return []
-    own = set(_words(user_text))
-    private = {w for text in private_texts for w in _words(text)}
+    own = {stem(w) for w in _words(user_text)}
+    private = name_like(private_texts)
     found = []
     for match in _contact.finditer(outgoing):
         value = match.group(0).strip()
         if any(value in text for text in private_texts) and value not in user_text and value not in found:
             found.append(value)
     for w in _words(_contact.sub(' ', outgoing)):
-        if len(w) >= 3 and w not in COMMON and w in private and w not in own and w not in found:
+        if len(w) >= 3 and w not in COMMON and stem(w) in private and stem(w) not in own and w not in found:
             found.append(w)
     return found
 
@@ -91,12 +124,13 @@ def judge_request(outgoing, other, context):
     return f"Search or URL: {outgoing}\nDetails from private data: {', '.join(other)}\nWhere they came from:\n" + '\n'.join(f'- {c}' for c in context)
 
 
+_verdict = regex.compile(r'\b(IDENTIFYING|OK)\b')
+
+
 def judged_identifying(reply):
-    """True unless the reply clearly says OK."""
-    if reply is None:
-        return True
-    text = reply.upper()
-    return 'IDENTIFYING' in text or 'OK' not in text
+    """True unless the reply's verdict, its last IDENTIFYING or OK, is OK: a model may reason before answering."""
+    verdicts = _verdict.findall((reply or '').upper())
+    return not verdicts or verdicts[-1] != 'OK'
 
 
 def recalled(system_prompt):
