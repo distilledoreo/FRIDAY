@@ -13,6 +13,8 @@ import com.localfirst.assistant.ui.ChatViewModel
 import com.localfirst.assistant.ui.theme.AssistantTheme
 import com.localfirst.assistant.settings.AppearanceSettingsStore
 import androidx.compose.runtime.remember
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -30,8 +32,11 @@ class MainActivity : ComponentActivity() {
             val appearanceStore=remember { AppearanceSettingsStore(applicationContext) }
             val appearance by appearanceStore.state.collectAsState()
             DisposableEffect(appearanceStore) { onDispose { appearanceStore.close() } }
+            val navigationBar=androidx.compose.foundation.layout.WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
             AssistantTheme(preferences=appearance,onPreferencesChange=appearanceStore::save) {
-                ChatScreen(viewModel)
+                androidx.compose.runtime.CompositionLocalProvider(com.localfirst.assistant.ui.LocalAppNavigationBar provides navigationBar) {
+                    ChatScreen(viewModel)
+                }
             }
         }
     }

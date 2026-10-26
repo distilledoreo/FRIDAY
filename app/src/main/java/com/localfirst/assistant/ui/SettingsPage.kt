@@ -78,12 +78,12 @@ internal fun SettingsPage(
     var androidAuto by remember(initial) { mutableStateOf(initial.androidAuto) }
 
     Dialog(onDismissRequest=onDismiss,properties=DialogProperties(usePlatformDefaultWidth=false,decorFitsSystemWindows=false)) {
-        FridayDialogWindow()
+        FridayDialogWindow(fullScreen = true)
         Scaffold(containerColor=MaterialTheme.colorScheme.background,
             topBar={ TopAppBar(title={Text("Voice and server")},navigationIcon={IconButton(onClick=onDismiss) { Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back") }}) }) { insets ->
             Column(
                 modifier = Modifier
-                    .fillMaxSize().padding(insets).imePadding()
+                    .fillMaxSize().padding(insets).dialogNavigationBarPadding().imePadding()
                     .verticalScroll(rememberScrollState())
                     .padding(24.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),

@@ -81,7 +81,7 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
         if ((state.workspaceStatus == "Task scheduled." && page == WorkspaceDestination.NEW_TASK) || (state.workspaceStatus == "Task removed." && page == WorkspaceDestination.TASK)) page = WorkspaceDestination.TASKS
     }
     Dialog(onDismissRequest = ::goBack, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        FridayDialogWindow()
+        FridayDialogWindow(fullScreen = true)
         Surface(Modifier.fillMaxSize(),color=MaterialTheme.colorScheme.background) {
             Scaffold(containerColor=MaterialTheme.colorScheme.background, modifier = Modifier.imePadding(), topBar = {
                 TopAppBar(title = { FridayDialogWindow(); Text(if (page == WorkspaceDestination.PROJECT) project?.name ?: "Project" else page.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -98,7 +98,7 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                         }
                     })
             }) { padding ->
-                Column(Modifier.fillMaxSize().padding(padding)) {
+                Column(Modifier.fillMaxSize().padding(padding).dialogNavigationBarPadding()) {
                     if (state.workspaceBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
                     state.workspaceStatus?.takeIf { it.isNotBlank() && !it.startsWith("Computer online") }?.let { Text(it, Modifier.padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall) }
                     CompositionLocalProvider(com.localfirst.assistant.ui.workspace.LocalFeatureImages provides vm::loadFeatureImage,

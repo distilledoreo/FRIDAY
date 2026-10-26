@@ -32,6 +32,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.localfirst.assistant.ui.FridayCard
 import com.localfirst.assistant.ui.FridayDialogWindow
+import com.localfirst.assistant.ui.dialogNavigationBarPadding
 import com.localfirst.assistant.ui.FridaySheet
 import com.localfirst.assistant.ui.FridayVisibleEffect
 import com.localfirst.assistant.ui.LineIcons
@@ -49,9 +50,11 @@ fun CodeScreen(code: CodeWorkspace) {
     if (!state.open) return
     Dialog(onDismissRequest = { if (state.taskId != null) code.closeTask() else code.close() },
         properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        FridayDialogWindow()
+        FridayDialogWindow(fullScreen = true)
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            if (state.taskId != null) CodeTaskScreen(state, code) else CodeHome(state, code)
+            Box(Modifier.dialogNavigationBarPadding()) {
+                if (state.taskId != null) CodeTaskScreen(state, code) else CodeHome(state, code)
+            }
         }
     }
 }

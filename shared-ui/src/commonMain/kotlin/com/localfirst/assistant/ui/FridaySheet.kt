@@ -25,11 +25,11 @@ fun FridaySheet(onDismiss:()->Unit,content:@Composable ColumnScope.(expanded:Boo
     if(LocalFridayPalette.current.reducedMotion) {
         var expanded by remember { mutableStateOf(false) }
         Dialog(onDismissRequest=onDismiss,properties=DialogProperties(usePlatformDefaultWidth=false)) {
-        FridayDialogWindow()
+        FridayDialogWindow(fullScreen = true)
             Box(Modifier.fillMaxSize()) {
                 Box(Modifier.fillMaxWidth().fillMaxHeight(if(expanded).1f else .45f).align(Alignment.TopCenter).clickable(onClick=onDismiss))
                 Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth().fillMaxHeight(if(expanded).9f else .55f),shape=RoundedCornerShape(topStart=16.dp,topEnd=16.dp),color=MaterialTheme.colorScheme.surfaceContainerLow) {
-                    Column(Modifier.navigationBarsPadding()) {
+                    Column(Modifier.navigationBarsPadding().dialogNavigationBarPadding()) {
                         Box(Modifier.fillMaxWidth().height(48.dp).clickable { expanded=!expanded }.semantics { contentDescription=if(expanded)"Collapse panel"else"Expand panel" }
                             .pointerInput(Unit) { var total=0f;detectVerticalDragGestures(onDragStart={total=0f},onDragEnd={if(total < -24.dp.toPx())expanded=true else if(total>24.dp.toPx()) { if(expanded)expanded=false else onDismiss() }}) { change,amount -> total+=amount;change.consume() } },contentAlignment=Alignment.Center) {
                             Box(Modifier.width(32.dp).height(3.dp).background(MaterialTheme.colorScheme.outlineVariant,RoundedCornerShape(2.dp)))
