@@ -31,6 +31,7 @@ from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from .model_ranking import ModelRanking, PROVIDER, ENDPOINT
+from .spawn import spawn_args
 
 PORT = 4097
 MODES = ('ask', 'ask_changes', 'full')
@@ -548,8 +549,9 @@ class PcAgent:
                        # Code tasks run in cloned repositories: their opencode.json and .opencode plugins never load.
                        OPENCODE_DISABLE_PROJECT_CONFIG='true')
             log = open(self.root / 'opencode.log', 'ab')
-            self.process = await asyncio.create_subprocess_exec(self.opencode, 'serve', '--hostname', '127.0.0.1', '--port', str(self.port),
-                cwd=str(Path.home()), env=env, stdin=asyncio.subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+            argv, spawn = spawn_args(self.opencode, 'serve', '--hostname', '127.0.0.1', '--port', str(self.port),
+                                     cwd=Path.home(), new_session=True)
+            self.process = await asyncio.create_subprocess_exec(*argv, env=env, stdin=asyncio.subprocess.DEVNULL, stdout=log, stderr=log, **spawn)
             log.close()
             self.client = httpx.AsyncClient(base_url=f'http://127.0.0.1:{self.port}', auth=('opencode', self.password), timeout=30)
             for _ in range(60):
@@ -935,8 +937,9 @@ def routes(app, auth, agent):
         sudo_ready = False
         sudo = None
         try:
-            sudo = await asyncio.create_subprocess_exec('sudo', '-n', 'true', stdin=asyncio.subprocess.DEVNULL,
-                                                        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            argv, spawn = spawn_args('sudo', '-n', 'true')
+            sudo = await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.DEVNULL,
+                                                        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL, **spawn)
             sudo_ready = await asyncio.wait_for(sudo.wait(), 3) == 0
         except (OSError, asyncio.TimeoutError):
             if sudo and sudo.returncode is None:

@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <cache-path name="camera" path="camera/" />
+    <!-- Incognito photos: deleted when the private chat ends, and at every app start. -->
+    <cache-path name="incognito-camera" path="incognito/camera/" />
     <cache-path name="downloads" path="downloads/" />
 </paths>

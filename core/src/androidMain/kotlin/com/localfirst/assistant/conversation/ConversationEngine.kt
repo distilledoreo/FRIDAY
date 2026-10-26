@@ -45,8 +45,15 @@ class ConversationEngine(
         blockedTools: Set<String> = emptySet(),
         confirmedTools: Set<String> = emptySet(),
         capturePhoneScreen: suspend () -> Attachment? = { null },
+        recallContext: String? = null,
     ): TurnOutcome {
         var rounds = 0
+        // Set once the tool budget is spent: the next request has no tools, so the user gets an answer.
+        var answerNow = false
+        // Set when the model wrote a tool call as text: one more request without tools asks for plain words.
+        var retryPlain = false
+        // Finished non-phone calls this turn (tool + arguments), so a verbatim repeat gets the earlier result back.
+        val finishedCalls = mutableSetOf<String>()
         var phoneUseRounds = 0
         val phoneActionsThisTurn = mutableMapOf<String, Int>()
         // True once a successful read_phone_screen/capture_phone_screen has shown the current
@@ -54,7 +61,7 @@ class ConversationEngine(
         var screenRechecked = false
         var latestPhoneScreen: Attachment? = null
         var latestPhoneScreenNote = PHONE_SCREEN_NOTE
-        val recalled = PrivateLeak.recalled(systemPrompt)
+        val recalled = PrivateLeak.recalled(recallContext.orEmpty()) ?: PrivateLeak.recalled(systemPrompt)
         while (true) {
             val partial = StringBuilder()
             val submittedPhoneScreen = latestPhoneScreen
@@ -62,10 +69,11 @@ class ConversationEngine(
             latestPhoneScreen = null
             val response = try {
                 modelProvider.streamConversation(
-                    messages = outboundMessages(systemPrompt, messages, latestUserNote) + listOfNotNull(submittedPhoneScreen?.let {
+                    messages = outboundMessages(systemPrompt, messages, latestUserNote, recallContext) + listOfNotNull(submittedPhoneScreen?.let {
                         Message.User(submittedPhoneScreenNote, listOf(it))
-                    }),
-                    tools = toolRegistry.definitions().filter { it.name !in blockedTools },
+                    }) + listOfNotNull(if (answerNow) Message.User(TOOL_LIMIT_NOTE) else null,
+                        if (retryPlain) Message.User(TOOL_MARKUP_NOTE) else null),
+                    tools = if (answerNow || retryPlain) emptyList() else toolRegistry.definitions().filter { it.name !in blockedTools },
                 ) { delta ->
                     // Providers may deliver deltas on their own thread.
                     val soFar = synchronized(partial) { partial.append(delta).toString() }
@@ -97,6 +105,22 @@ class ConversationEngine(
                     ?.let { File(it).delete() }
             }
 
+            // An answer is never tool-call syntax: retry once without tools, then say it couldn't be finished.
+            val answer = when (response) {
+                is ModelResponse.TextResponse -> visibleText(response.text)
+                is ModelResponse.ToolCallResponse -> if (response.calls.isEmpty()) visibleText(response.text.orEmpty()) else null
+            }
+            if (answer != null && TOOL_MARKUP.containsMatchIn(answer)) {
+                if (!retryPlain) {
+                    retryPlain = true
+                    continue
+                }
+                val last = messages.filterIsInstance<Message.ToolResult>().lastOrNull()?.content
+                messages += Message.Assistant("I couldn't finish writing the answer." +
+                    (last?.let { " The last result was:\n\n```\n${it.take(4000)}\n```" } ?: ""))
+                onUpdate(messages.toList())
+                return TurnOutcome.Completed(messages.toList())
+            }
             when (response) {
                 is ModelResponse.TextResponse -> {
                     messages += Message.Assistant(visibleText(response.text))
@@ -115,6 +139,10 @@ class ConversationEngine(
                     val phoneUseOnly = response.calls.all { it.name in PhoneUseToolNames.ALL }
                     if (phoneUseOnly && phoneUseRounds < MAX_PHONE_USE_ROUNDS) {
                         phoneUseRounds += 1
+                    } else if (rounds >= maxToolRounds && !answerNow) {
+                        // The calls are dropped unanswered; one more request without tools answers from what was found.
+                        answerNow = true
+                        continue
                     } else if (rounds >= maxToolRounds) {
                         onUpdate(messages.toList())
                         return TurnOutcome.Failed(
@@ -201,6 +229,13 @@ class ConversationEngine(
                                 screenRechecked = false
                             }
                         }
+                        val callKey = call.name + "|" + canonicalArguments(call.argumentsJson)
+                        if (call.name in REPEAT_GUARDED_TOOLS && callKey in finishedCalls) {
+                            // Models stuck in a loop repeat a finished call verbatim; running it again only feeds the loop.
+                            messages += Message.ToolResult(toolCallId = call.id, name = call.name, content = REPEATED_CALL_RESULT, success = false)
+                            onUpdate(messages.toList())
+                            continue
+                        }
                         // Public web calls ask first only when they would carry out details that identify someone.
                         val leaked = if (call.name in WEB_TOOLS) messages.identifyingDetails(modelProvider, call.argumentsJson, recalled) else emptyList()
                         val result = try {
@@ -223,6 +258,7 @@ class ConversationEngine(
                             onUpdate(messages.toList())
                             throw e
                         }
+                        finishedCalls += callKey
                         val screenshot = result.images.lastOrNull()
                         messages += Message.ToolResult(
                             toolCallId = call.id,
@@ -279,7 +315,7 @@ class ConversationEngine(
      * they were first sent until their state is shortened, rather than riding along at
      * the end of one request only.
      */
-    internal fun outboundMessages(systemPrompt: String, messages: List<Message>, note: String? = null): List<Message> {
+    internal fun outboundMessages(systemPrompt: String, messages: List<Message>, note: String? = null, recall: String? = null): List<Message> {
         // Keep complete user turns, including all associated tool calls/results.
         // The on-device archive remains complete and searchable with search_history.
         val starts = messages.indices.filter { messages[it] is Message.User }
@@ -304,9 +340,12 @@ class ConversationEngine(
                 else -> m
             }
         }
-        val lastUser = if (note.isNullOrBlank()) -1 else selected.indexOfLast { it is Message.User }
+        // Recalled memories ride here too, not in the system prompt: they change every turn and would make the server
+        // re-read the system prompt and every tool definition after them.
+        val extra = listOfNotNull(recall?.trim()?.takeIf { it.isNotEmpty() }, note?.trim()?.takeIf { it.isNotEmpty() }).joinToString("\n\n")
+        val lastUser = if (extra.isEmpty()) -1 else selected.indexOfLast { it is Message.User }
         val noted = selected.mapIndexed { i, m ->
-            if (i == lastUser) (m as Message.User).let { it.copy(content = "${it.content}\n\n$note".trim()) } else m
+            if (i == lastUser) (m as Message.User).let { it.copy(content = "${it.content}\n\n$extra".trim()) } else m
         }
         val body = withScreenshots(noted)
         val prompt = systemPrompt + if (start > 0) "\nEarlier turns were omitted to fit context. Use search_history to recover details; do not assume you recall them." else ""
@@ -441,6 +480,28 @@ class ConversationEngine(
         private const val THINK_OPEN = "<think>"
         private const val THINK_CLOSE = "</think>"
         const val DEFAULT_MAX_TOOL_ROUNDS = 20
+        internal const val TOOL_MARKUP_NOTE = "(Your last reply was a tool call written as text. No tools can run now: answer in plain words from the results above, and say what is still unverified.)"
+        internal val TOOL_MARKUP = Regex("<tool_call>|</tool_call>|<function=[\\w-]+>|<parameter=[\\w-]+>")
+        internal const val TOOL_LIMIT_NOTE = "(Tool limit reached for this message. Answer now from the results above, and say plainly what is still unverified.)"
+        internal const val REPEATED_CALL_RESULT = "Not executed. This exact call already ran for this message and its result is above. " +
+            "Use that result and answer, or make a different call if something is still missing."
+        /**
+         * Tools whose identical repeat in one turn can't learn anything new. Phone, device and status tools read live
+         * state that changes between calls (re-reading the screen is how phone actions are checked), so they repeat freely.
+         */
+        private val REPEAT_GUARDED_TOOLS = setOf("web_search", "fetch_page", "execute_python", "create_file", "generate_image", "generate_video", "search_memory", "search_history")
+
+        /** Arguments with sorted keys, so {"a":1,"b":2} and {"b":2,"a":1} are the same call. */
+        private fun canonicalArguments(json: String): String = try {
+            fun sorted(e: JsonElement): JsonElement = when (e) {
+                is JsonObject -> JsonObject(e.toSortedMap().mapValues { sorted(it.value) })
+                is JsonArray -> JsonArray(e.map(::sorted))
+                else -> e
+            }
+            sorted(JsonCodec.json.parseToJsonElement(json)).toString()
+        } catch (e: Exception) {
+            json
+        }
         const val STOPPED_RESULT = "Stopped by the user before this tool finished."
     }
 }

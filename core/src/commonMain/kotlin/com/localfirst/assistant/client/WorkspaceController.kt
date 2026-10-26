@@ -3,6 +3,7 @@ package com.localfirst.assistant.client
 import com.localfirst.assistant.backup.ChatBackup
 import com.localfirst.assistant.backup.Inflate
 import com.localfirst.assistant.conversation.*
+import com.localfirst.assistant.voice.LiveVoiceConversation
 import com.localfirst.assistant.grounding.GroundedEvidence
 import com.localfirst.assistant.grounding.GroundingPrecheck
 import com.localfirst.assistant.tools.SourceLink
@@ -21,6 +22,8 @@ private val WEB_TOOLS = setOf("web_search", "fetch_page")
 data class WorkspaceState(
     val incognito: Boolean = false, val privateChat: StoredConversation? = null,
     val attachments: List<Attachment> = emptyList(), val streamingText: String = "",
+    /** What the computer's job for this chat is doing (waiting its turn, thinking, running a tool), while it works. */
+    val jobStage: String? = null,
     val connected: Boolean = false, val busy: Boolean = false, val activeJob: String? = null,
     val activeId: String? = null, val draft: String = "", val projectId: String? = null, val query: String = "",
     val tasks: List<JsonObject> = emptyList(), val detachedReply: String? = null,
@@ -69,6 +72,22 @@ data class WorkspaceState(
 }
 
 /** Server revisions are the baseline for every write; refresh never touches an unsent draft. */
+/** A client's remembered sign-in (the browser keeps it in local storage when the user asks). */
+interface SavedSignIn {
+    fun load(): Pair<String, String>?
+    fun save(baseUrl: String, token: String)
+    fun clear()
+}
+
+/** Where a client keeps unsent draft text across a page reload, by chat ("chat:<id>", or "new:<project>"). Never used
+ *  for incognito, and cleared on sign-out. The host decides how long it lasts (the browser: across visits while the
+ *  sign-in is remembered, otherwise only for the tab). Attachments don't survive a reload. */
+interface DraftRecovery {
+    fun load(key: String): String?
+    fun save(key: String, text: String?)
+    fun clear()
+}
+
 class WorkspaceController(
     private val repository: WorkspaceRepository, private val scope: CoroutineScope,
     private val newId: () -> String, private val clock: () -> Long,
@@ -76,6 +95,9 @@ class WorkspaceController(
     private val save: suspend (name: String, mime: String, bytes: ByteArray) -> Unit = { _, _, _ -> error("Saving files is unavailable on this client") },
     /** Expands compressed backup entries, such as those Android writes. */
     private val inflate: Inflate = Inflate { _, _ -> error("Compressed backups are unavailable on this client") },
+    /** Where this client may keep its sign-in between visits, when the user asks; null keeps it in memory only. */
+    val savedSignIn: SavedSignIn? = null,
+    private val draftRecovery: DraftRecovery? = null,
 ) : WorkspaceActions {
     private val mutable = MutableStateFlow(WorkspaceState())
     override val state = mutable.asStateFlow()
@@ -87,7 +109,33 @@ class WorkspaceController(
     private var memoryStale = false
     private var memoryQuery = ""
     private var groundingAttempted = false
-    override fun setDraft(text: String) { mutable.update { it.copy(draft = text) } }
+    private val drafts = SessionDrafts<Attachment>()
+    private var beforeEdit: ComposerDraft<Attachment>? = null
+    private fun composer(s: WorkspaceState) = ComposerDraft(s.draft, s.attachments, s.imageMode)
+    private fun rememberDraft() {
+        val s = state.value
+        if (!s.incognito) drafts.put(s.activeId, s.projectId, DraftSnapshot(composer(s), s.editingIndex, beforeEdit))
+    }
+    private fun openDraft(id: String?, project: String?) {
+        val saved = drafts.take(id, project)
+        beforeEdit = saved?.beforeEdit
+        // After a page reload the in-memory drafts are gone; the recovered text stands in for them.
+        val recovered = if (saved == null && !state.value.incognito) recovery()?.load(draftKey(id, project)) else null
+        mutable.update { cleared(it).copy(activeId = id, projectId = project,
+            draft = saved?.composer?.text ?: recovered.orEmpty(), attachments = saved?.composer?.attachments.orEmpty(),
+            imageMode = saved?.composer?.imageMode ?: false, editingIndex = saved?.editingIndex) }
+    }
+    private fun sentDraft(old: WorkspaceState) {
+        if (!old.incognito) { drafts.remove(old.activeId, old.projectId); recovery()?.save(draftKey(old.activeId, old.projectId), null) }
+        beforeEdit = null
+    }
+    private fun draftKey(id: String?, project: String?) = if (id != null) "chat:$id" else "new:${project.orEmpty()}"
+    private fun recovery() = draftRecovery
+    override fun setDraft(text: String) {
+        mutable.update { it.copy(draft = text) }
+        val s = state.value
+        if (!s.incognito && s.editingIndex == null) recovery()?.save(draftKey(s.activeId, s.projectId), text.takeIf { it.isNotBlank() })
+    }
     fun search(text: String) { mutable.update { it.copy(query = text) } }
     fun selectProject(id: String?) { mutable.update { it.copy(projectId = id) } }
     fun dismissError() { mutable.update { it.copy(error = null) } }
@@ -110,10 +158,54 @@ class WorkspaceController(
     private fun cleared(s: WorkspaceState) = s.copy(error = null, detachedReply = null, incognito = false, privateChat = null, attachments = emptyList(), streamingText = "",
         activeJob = null, liveEntries = emptyList(), approval = null, editingIndex = null, canvas = null, imageMode = false,
         groundingStatus = null, groundingSources = emptyList(), groundingResearch = null, privateSession = null)
-    override fun newChat(project: String?) { if (canLeave()) { detach(); mutable.update { cleared(it).copy(activeId = null, draft = "", projectId = project) } } }
+    override fun newChat(project: String?) { if (canLeave()) { rememberDraft(); detach(); openDraft(null, project) } }
+    /** Open the same saved voice conversation on every normal session and connected client. */
+    fun openLiveVoice(): Job? {
+        if (!canLeave() || state.value.incognito) return null
+        return action { identity ->
+            refreshSnapshot(identity)
+            if (identity != epoch) return@action
+            if (state.value.chats.none { it.item.id == LiveVoiceConversation.ID }) {
+                val revision = state.value.items.firstOrNull { it.id == LiveVoiceConversation.ID }?.revision ?: 0
+                try { repository.save(LiveVoiceConversation.empty(clock()), revision) }
+                catch (e: WorkspaceException) { if (e.status != 409) throw e }
+                refreshSnapshot(identity)
+            }
+            if (identity != epoch) return@action
+            check(state.value.chats.any { it.item.id == LiveVoiceConversation.ID }) { "Live voice conversation is unavailable. Try again." }
+            rememberDraft(); detach(); openDraft(LiveVoiceConversation.ID, null)
+            adopt(identity)
+        }
+    }
     /** A private chat; [freshSlate] leaves saved memories out too. */
-    fun newIncognito(freshSlate: Boolean = false) { if (!canLeave()) return; newChat(); repository.gateway.privateMode(true); mutable.update { it.copy(incognito = true, freshSlate = freshSlate) } }
+    fun newIncognito(freshSlate: Boolean = false) {
+        if (!canLeave()) return
+        rememberDraft(); detach(); beforeEdit = null
+        repository.gateway.privateMode(true)
+        mutable.update { cleared(it).copy(activeId = null, projectId = null, incognito = true, freshSlate = freshSlate, draft = "") }
+    }
     fun removeAttachment(id: String) { mutable.update { it.copy(attachments = it.attachments.filterNot { a -> a.id == id }) } }
+    /** An attachment built from a saved file's reference: no bytes are downloaded or uploaded. */
+    private fun referenceAttachment(info: JsonObject): Attachment {
+        val id = info.getValue("id").jsonPrimitive.content
+        val name = info["name"]?.jsonPrimitive?.contentOrNull ?: "file"
+        val mime = info["mime"]?.jsonPrimitive?.contentOrNull ?: "application/octet-stream"
+        val image = mime.startsWith("image/")
+        return Attachment(id, if (image) AttachmentKind.IMAGE else AttachmentKind.DOCUMENT, name, mime,
+            path = if (image) "remote:$id" else null,
+            text = info["text"]?.jsonPrimitive?.contentOrNull,
+            remoteFileId = id,
+            pageImages = (info["pageImageIds"] as? JsonArray)?.map { "remote:" + it.jsonPrimitive.content }.orEmpty(),
+            note = info["note"]?.jsonPrimitive?.contentOrNull
+                ?: if (!image && info["text"] == null) "Use the file tool to inspect this document." else null)
+    }
+    /** Attaches a saved Library file to the draft by reference; the server reads its own stored bytes. */
+    fun reuseFile(fileId: String) = action { identity ->
+        require(Regex("[a-f0-9]{32}").matches(fileId)) { "Unknown file." }
+        require(state.value.attachments.size < 8) { "Attach at most eight files." }
+        val info = repository.gateway.request("/workspace/files/$fileId/reference").jsonObject
+        if (identity == epoch) mutable.update { it.copy(attachments = it.attachments + referenceAttachment(info)) }
+    }
     fun upload(name: String, mime: String, bytes: ByteArray, attachToDraft: Boolean = true) = action { identity ->
         require(bytes.size <= 25 * 1024 * 1024) { "File exceeds 25 MB." }
         require(state.value.attachments.size < 8) { "Attach at most eight files." }
@@ -139,17 +231,29 @@ class WorkspaceController(
     }
     fun reportError(message: String) { mutable.update { it.copy(error = message) } }
     override fun select(id: String) {
-        if (!canLeave()) return
+        if (!canLeave() || (!state.value.incognito && state.value.activeId == id)) return
         val chat = state.value.chats.firstOrNull { it.item.id == id } ?: return
+        rememberDraft()
         detach()
-        mutable.update { cleared(it).copy(activeId = id, projectId = chat.conversation.summary.projectId) }
+        openDraft(id, chat.conversation.summary.projectId)
         adopt(epoch)
     }
     fun lock() {
+        drafts.clear(); beforeEdit = null
         state.value.connection?.let(repository.gateway::closeModelConnection)
         epoch++; memoryQuery = ""; memoryStale = false; operation?.cancel(); generation?.cancel(); watching?.cancel(); repository.gateway.lock(); repository.forget(); mutable.value = WorkspaceState()
     }
     fun close() { lock(); polling?.cancel() }
+    /** Lock and forget a remembered sign-in: the next visit asks for the token again. */
+    fun signOut() { savedSignIn?.clear(); draftRecovery?.clear(); lock() }
+    /** Reconnects with a remembered sign-in; one the computer refuses is forgotten. */
+    fun resumeSavedSignIn(): Job? {
+        if (state.value.connected) return null
+        val (baseUrl, token) = savedSignIn?.load() ?: return null
+        return connect(baseUrl, token, remember = true)?.also { job -> job.invokeOnCompletion {
+            if (!state.value.connected && state.value.error?.contains("did not accept") == true) savedSignIn?.clear()
+        } }
+    }
     private fun action(quiet: Boolean = false, body: suspend (Int) -> Unit): Job? {
         if (state.value.busy) return null
         // The held background refresh gives way, so it never blocks or interleaves with something the user asked for.
@@ -163,20 +267,28 @@ class WorkspaceController(
             finally { if (identity == epoch) mutable.update { it.copy(busy = false) } }
         }.also { operation = it }
     }
-    fun connect(baseUrl: String, token: String) = action { identity ->
+    fun connect(baseUrl: String, token: String, remember: Boolean = false) = action { identity ->
         repository.gateway.connect(baseUrl, token); repository.forget()
         refreshSnapshot(identity)
+        // Saved only after the computer accepted it; connecting without "remember" forgets an older one.
+        if (identity == epoch) { if (remember) savedSignIn?.save(baseUrl, token) else savedSignIn?.clear() }
         // The computer's models, for choosing one; optional.
         val models = try { (repository.gateway.request("/v1/models") as? JsonObject)?.get("data")?.rows()?.map { it.text("id") }?.filter { it.isNotBlank() }.orEmpty() }
             catch (e: CancellationException) { throw e } catch (e: Exception) { emptyList() }
         if (identity == epoch) mutable.update { it.copy(connected = true, models = models, model = it.model?.takeIf { m -> m in models }) }
+        // A reload lands on a new chat: bring back what was being typed there.
+        if (identity == epoch && state.value.activeId == null && state.value.draft.isEmpty() && !state.value.incognito) {
+            recovery()?.load(draftKey(null, state.value.projectId))?.let { text -> mutable.update { it.copy(draft = text) } }
+        }
     }
     /** Keeps one held request open while visible and idle; the gateway answers it when another client changes something. */
     fun startPolling(visible: () -> Boolean) {
         polling?.cancel()
         polling = scope.launch {
             while (isActive) {
-                if (!state.value.connected || state.value.busy || !visible()) { delay(250); continue }
+                // A hidden tab checks back slowly; showing it again refreshes at once (the host's visibility listener).
+                if (!visible()) { delay(2000); continue }
+                if (!state.value.connected || state.value.busy) { delay(250); continue }
                 val identity = epoch; val started = clock(); var failed = false
                 val call = launch {
                     try { refreshSnapshot(identity, 10) }
@@ -231,11 +343,14 @@ class WorkspaceController(
                     if (identity == epoch && state.value.activeJob == jobId) {
                         val entries = (event["entries"] as? JsonArray)?.let { decodeMessages(it.toString()) }
                         val done = (event["done"] as? JsonPrimitive)?.booleanOrNull == true
+                        // The computer says what the job is doing (waiting its turn, thinking, running a tool) in place of a bare spinner.
+                        val stage = (event["stage"] as? JsonPrimitive)?.contentOrNull
                         mutable.update { it.copy(streamingText = (event["text"] as? JsonPrimitive)?.contentOrNull ?: it.streamingText,
-                            liveEntries = entries ?: it.liveEntries, approval = if (done) null else event["approval"] as? JsonObject) }
+                            liveEntries = entries ?: it.liveEntries, approval = if (done) null else event["approval"] as? JsonObject,
+                            jobStage = if (done) null else stage ?: it.jobStage) }
                     }
                 }
-                if (identity == epoch && state.value.activeJob == jobId) { refreshSnapshot(identity); mutable.update { it.copy(streamingText = "", liveEntries = emptyList()) }; finishGrounding() }
+                if (identity == epoch && state.value.activeJob == jobId) { refreshSnapshot(identity); mutable.update { it.copy(streamingText = "", liveEntries = emptyList(), jobStage = null) }; finishGrounding() }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { /* The change feed still retrieves the durable result after a stream disconnect. */ }
         }
@@ -294,17 +409,26 @@ class WorkspaceController(
     fun startEditing(index: Int) {
         val message = state.value.active?.conversation?.messages?.getOrNull(index) as? Message.User ?: return
         if (!state.value.idle) return
-        // The edited message keeps its own attachments; new ones are not added to it.
+        // Preserve unsent work while editing; the edited message keeps its own attachments.
+        if (state.value.editingIndex == null) beforeEdit = composer(state.value)
         mutable.update { it.copy(editingIndex = index, draft = message.content, attachments = emptyList()) }
     }
-    fun cancelEditing() { mutable.update { it.copy(editingIndex = null, draft = "") } }
+    fun cancelEditing() {
+        val previous = beforeEdit ?: ComposerDraft()
+        beforeEdit = null
+        mutable.update { it.copy(editingIndex = null, draft = previous.text, attachments = previous.attachments, imageMode = previous.imageMode) }
+    }
     private fun submit(messages: List<Message>, fromComposer: Boolean) = action { identity ->
         val old = state.value; val now = clock(); val active = old.active
         val first = (messages.firstOrNull() as? Message.User)?.content.orEmpty()
         val conversation = active?.conversation ?: StoredConversation(ConversationSummary(newId(), first.trim().take(70), now, now, old.projectId), emptyList())
         val next = conversation.copy(summary = conversation.summary.copy(updatedAt = now, projectId = old.projectId), messages = messages)
-        fun sent(s: WorkspaceState) = if (fromComposer) s.copy(draft = "", attachments = emptyList(), editingIndex = null, imageMode = false) else s
-        if (old.incognito) mutable.update { sent(it).copy(privateChat = next, activeId = next.summary.id, activeJob = "private", streamingText = "", liveEntries = emptyList()) }
+        val previous = if (old.editingIndex != null) beforeEdit else null
+        fun sent(s: WorkspaceState) = if (fromComposer) s.copy(draft = previous?.text.orEmpty(), attachments = previous?.attachments.orEmpty(), editingIndex = null, imageMode = previous?.imageMode ?: false) else s
+        if (old.incognito) {
+            mutable.update { sent(it).copy(privateChat = next, activeId = next.summary.id, activeJob = "private", streamingText = "", liveEntries = emptyList()) }
+            if (fromComposer) sentDraft(old)
+        }
         val turn = prepareTurn(messages, old)
         if (old.incognito) {
             try {
@@ -328,7 +452,9 @@ class WorkspaceController(
             } finally { if (identity == epoch) mutable.update { it.copy(activeJob = null, approval = null, privateSession = null) } }
             return@action
         }
-        val job = repository.continueChat(next, active?.item?.revision ?: 0, if (old.preferences.interactiveAnswers) clientInterfacePrompt() else "", old.imageSettings.overrides(), turn)
+        val interfacePrompt = (if (old.preferences.interactiveAnswers) clientInterfacePrompt() else "") +
+            LiveVoiceConversation.instructions(next.summary.id, old.incognito)
+        val job = repository.continueChat(next, active?.item?.revision ?: 0, interfacePrompt, old.imageSettings.overrides(), turn)
         if (identity != epoch) return@action
         val item = SyncItem(next.summary.id, job.getValue("revision").jsonPrimitive.int, buildJsonObject { put("chat", encodeConversation(next)) })
         val recall = (job["recall"] as? JsonArray)?.rows()
@@ -339,6 +465,7 @@ class WorkspaceController(
                 recall.isEmpty() -> "No relevant memories needed."
                 else -> "${recall.size} relevant memory sources supplied."
             }) }
+        if (fromComposer) sentDraft(old)
         follow(job.text("id"), identity)
     }
     /**
@@ -362,7 +489,7 @@ class WorkspaceController(
         }
         val block = g.blocksWeb(query)
         if (block) note += g.OPT_OUT_NOTE
-        return TurnOptions(note, block, old.model, old.connection)
+        return TurnOptions(note, block, old.model, old.connection, old.preferences.thinking.wire)
     }
     /** After a reply that used public sources, checks which of its links match pages actually read. */
     private fun finishGrounding() {
@@ -413,7 +540,7 @@ class WorkspaceController(
             val now = clock(); val id = newId()
             repository.save(StoredConversation(ConversationSummary(id, ChatEdits.branchTitle(chat.summary.title), now, now, chat.summary.projectId), prefix), 0)
             refreshSnapshot(identity)
-            if (identity == epoch) { detach(); mutable.update { cleared(it).copy(activeId = id, projectId = chat.summary.projectId) } }
+            if (identity == epoch) { rememberDraft(); detach(); openDraft(id, chat.summary.projectId) }
         }
     }
     fun openCanvas(text: String) {
@@ -553,7 +680,7 @@ class WorkspaceController(
     }
     fun delete(id: String? = state.value.activeId) = action { identity ->
         val chat = state.value.chats.firstOrNull { it.item.id == id } ?: return@action
-        repository.delete(chat); refreshSnapshot(identity)
+        repository.delete(chat); drafts.remove(id, chat.conversation.summary.projectId); refreshSnapshot(identity)
     }
     fun preference(key: String, value: JsonPrimitive, expectedRevision: Int? = null) = action { identity -> repository.preference(key, value, state.value.items, expectedRevision); refreshSnapshot(identity) }
     override fun saveMemory(text: String, id: String?, category: String, memoryScope: String, pinned: Boolean) = action { identity ->

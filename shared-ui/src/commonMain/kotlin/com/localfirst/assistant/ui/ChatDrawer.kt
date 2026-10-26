@@ -77,6 +77,7 @@ fun ChatDrawer(
     onActivity: (() -> Unit)?,
     onFiles: (() -> Unit)?,
     onImages: (() -> Unit)?,
+    onVideos: (() -> Unit)? = null,
     onCode: (() -> Unit)? = null,
     destinations: List<DrawerDestination> = emptyList(),
     topInset: Dp = 64.dp,
@@ -106,6 +107,7 @@ fun ChatDrawer(
                     if (onActivity != null) item { DrawerRow("FRIDAY", LineIcons.Friday, onActivity) }
                     if (onFiles != null) item { DrawerRow("Library", LineIcons.Library, onFiles) }
                     if (onImages != null) item { DrawerRow("Images", LineIcons.Images, onImages) }
+                    if (onVideos != null) item { DrawerRow("Videos", LineIcons.Video, onVideos) }
                     if (onCode != null) item { DrawerRow("Code", LineIcons.Code, onCode) }
                     items(destinations, key = { "destination:${it.label}" }) { DrawerRow(it.label, it.icon, it.onClick, selected = it.selected) }
                     item {

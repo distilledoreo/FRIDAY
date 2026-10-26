@@ -23,6 +23,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from .pc import (CATASTROPHIC, COMPUTER, READ_ONLY, RISKY_VARIANTS, SECRET_FILES, Prompt)
+from .spawn import spawn_args
 
 CODE_AGENT = 'friday-code'
 REPO = re.compile(r'[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}')
@@ -146,8 +147,9 @@ class CodeProjects:
     async def run(self, *command, cwd=None, timeout=180, check=True):
         """Runs git or gh as the user. Prompts are disabled, so a missing sign-in fails instead of waiting."""
         env = dict(os.environ, GIT_TERMINAL_PROMPT='0', GH_PROMPT_DISABLED='1', GIT_EDITOR='true', PAGER='cat', GH_PAGER='cat')
-        process = await asyncio.create_subprocess_exec(*command, cwd=str(cwd) if cwd else None, env=env, stdin=asyncio.subprocess.DEVNULL,
-                                                       stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        argv, spawn = spawn_args(*command, cwd=cwd)
+        process = await asyncio.create_subprocess_exec(*argv, env=env, stdin=asyncio.subprocess.DEVNULL,
+                                                       stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, **spawn)
         try:
             out, err = await asyncio.wait_for(process.communicate(), timeout)
         except asyncio.TimeoutError:

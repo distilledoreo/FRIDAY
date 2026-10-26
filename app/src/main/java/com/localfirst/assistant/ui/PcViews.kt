@@ -224,9 +224,9 @@ internal fun PcScreenPreview(state:ChatUiState,vm:ChatViewModel) {
         bitmap=kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { android.graphics.BitmapFactory.decodeFile(path) }.getOrNull() }
     }
     androidx.compose.ui.window.Dialog(onDismissRequest=vm::closePcScreen,properties=androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth=false,decorFitsSystemWindows=false)) {
-        FridayDialogWindow()
+        FridayDialogWindow(fullScreen = true)
         Surface(Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(16.dp)) {
+            Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().dialogNavigationBarPadding().padding(16.dp)) {
                 Row(verticalAlignment=Alignment.CenterVertically) {
                     Text("PC screen",Modifier.weight(1f),style=MaterialTheme.typography.titleMedium)
                     TextButton(onClick=vm::capturePcScreen,enabled=!state.pcBusy) { Text("Refresh") }

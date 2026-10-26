@@ -18,6 +18,11 @@ Older browser-local chats can be copied into shared history from Settings. JSON 
 
 Shared appearance fields are theme, accent, proactivity, reduced motion, display name and interactive answers. Connection/model routing, network timeouts, phone permissions, Bluetooth/voice hardware, Android Auto and Wake-on-LAN remain local. The web app uses the same Compose components as Android for messages, Markdown/tables, appearance, the composer, projects, memory and tasks (including scheduling). Its generated interfaces use the shared layout, input, form, chart, timer and data renderers and bounded script runtime. See [`shared-ui/README.md`](../shared-ui/README.md) for the module boundaries and remaining orchestration differences. Library, Images, FRIDAY, account management, Code, the personal dashboard, memory review/import/archive and data controls use shared screens. Chats support editing, regeneration, branching, Canvas, sharing and feedback, and run with the Android app's non-phone tools and approval cards (see [`NEXT_STEPS.md`](NEXT_STEPS.md)). Browser adapters supply file picking/document extraction, microphone capture and playback for the shared voice loop, downloads, image previews and sandboxed AppBlocks. See [`NEXT_STEPS.md`](NEXT_STEPS.md) for service requirements and private-chat behavior.
 
+Library filename search and file-type filters query the complete PC collection, with newest/name/size
+sorts and explicit paging. Refresh or re-enter Library to see external uploads; background refresh does
+not repeatedly reset the loaded pages. The shared controller also supplies Android's Library, including
+its separate RAM-backed incognito collection. Deploy the matching server endpoints with this frontend.
+
 ## Build and serve
 
 Use JDK 21, Android SDK 35 and the repository's Gradle wrapper. Kotlin/JS installs its Node/Yarn tools; its generated dependency lock is committed in `kotlin-js-store/yarn.lock`.

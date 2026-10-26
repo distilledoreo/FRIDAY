@@ -9,15 +9,19 @@ APP_REPO="$(cd "$HERE/.." && pwd)"
 DEST="${SERVER_DIR:-$HOME/assistant-server}"
 BACKEND="${FRIDAY_LLM_BACKEND:-llama}"
 case "$BACKEND" in llama|strata) ;; *) echo "FRIDAY_LLM_BACKEND must be llama or strata" >&2; exit 1 ;; esac
+MODULES="${FRIDAY_SETUP_MODULES:-agent memory workspace imagegen videogen model_server voice_runtime}"
+for module in $MODULES; do
+  case "$module" in agent|memory|workspace|imagegen|videogen|model_server|voice_runtime) ;; *) echo "Unknown setup module: $module" >&2; exit 1 ;; esac
+done
 mkdir -p "$DEST/api" "$DEST/searxng/config" "$DEST/maintenance" "$DEST/llama" "$DEST/slot-cache" "$HOME/.config/systemd/user"
 
-# Gateway core from server/; feature modules (agent, memory, workspace, imagegen, model_server) from desktop/.
+# Gateway core from server/; selected feature modules from desktop/.
 cp "$HERE"/api/{app.py,prompt_cache.py,requirements.txt} "$DEST/api/"
-for module in agent memory workspace imagegen model_server; do
+for module in $MODULES; do
   rsync -a --delete --exclude tests --exclude __pycache__ --exclude config.json "$APP_REPO/desktop/$module/" "$DEST/api/$module/"
 done
 cp "$HERE"/compose.yml "$HERE"/test.sh "$DEST/"
-cp "$HERE"/maintenance/memory-backup.py "$DEST/maintenance/"
+cp "$HERE"/maintenance/memory-backup.py "$HERE"/maintenance/api-watchdog.py "$DEST/maintenance/"
 cp "$HERE"/llama/start-server.sh "$DEST/llama/"
 [ -f "$DEST/llama/llama.env" ] || cp "$HERE/llama/llama.env.example" "$DEST/llama/llama.env"
 [ -f "$DEST/api/imagegen/config.json" ] || cp "$HERE/imagegen/config.example.json" "$DEST/api/imagegen/config.json"
@@ -31,9 +35,11 @@ if [ ! -f "$DEST/searxng/config/settings.yml" ]; then
   sed "s|secret_key: \"CHANGE_ME\".*|secret_key: \"$(openssl rand -hex 32)\"|" "$HERE/searxng/settings.yml" > "$DEST/searxng/config/settings.yml"
 fi
 
-python3 -m venv "$DEST/api/.venv"
-"$DEST/api/.venv/bin/pip" install -q -r "$DEST/api/requirements.txt"
-[ -f "$APP_REPO/desktop/agent/requirements-vault.txt" ] && "$DEST/api/.venv/bin/pip" install -q -r "$APP_REPO/desktop/agent/requirements-vault.txt"
+if [ "${FRIDAY_SETUP_SKIP_DEPENDENCIES:-0}" != 1 ]; then
+  python3 -m venv "$DEST/api/.venv"
+  "$DEST/api/.venv/bin/pip" install -q -r "$DEST/api/requirements.txt"
+  [ -f "$APP_REPO/desktop/agent/requirements-vault.txt" ] && "$DEST/api/.venv/bin/pip" install -q -r "$APP_REPO/desktop/agent/requirements-vault.txt"
+fi
 
 # Units are only added, never replaced: an existing install may have customised them (paths, schedules).
 for unit in "$HERE"/systemd/*.service "$HERE"/systemd/*.timer; do
@@ -50,4 +56,4 @@ systemctl --user daemon-reload
 echo "Installed to $DEST. To pick up code changes on a running install: systemctl --user restart assistant-api."
 echo "First install only: Next: fill llama/llama.env and api/imagegen/config.json, set VOICE_MODELS in .env,"
 MODEL_UNIT=llama-qwen38-mtp; [ "$BACKEND" = strata ] && MODEL_UNIT=assistant-strata
-echo "then: (cd $DEST && docker compose up -d) and systemctl --user enable --now $MODEL_UNIT assistant-api friday-memory-backup.timer"
+echo "then: (cd $DEST && docker compose up -d) and systemctl --user enable --now $MODEL_UNIT assistant-api friday-memory-backup.timer friday-api-watchdog.timer"

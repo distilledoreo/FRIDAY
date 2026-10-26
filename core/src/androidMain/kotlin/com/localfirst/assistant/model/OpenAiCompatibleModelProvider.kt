@@ -17,6 +17,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Talks to any server that implements the OpenAI chat-completions HTTP API,
@@ -27,6 +29,11 @@ class OpenAiCompatibleModelProvider(
     private val config: OpenAiCompatibleConfig,
 ) : ModelProvider {
     @Volatile var incognito: Boolean = false
+    /**
+     * The thinking level FRIDAY's PC gateway applies to streamed chat replies (off, low, medium, high), sent as
+     * X-Assistant-Reasoning. Other servers ignore the header. One-shot helper calls (titles, privacy checks) never reason.
+     */
+    @Volatile var reasoning: String = "high"
     override suspend fun sendConversation(
         messages: List<Message>,
         tools: List<ToolDefinition>,
@@ -121,6 +128,11 @@ class OpenAiCompatibleModelProvider(
 
     private fun httpError(code: Int, connection: HttpURLConnection): ModelProviderException {
         val text = connection.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+        // A video rendering on both GPUs pauses chat for many minutes; say so plainly rather than retrying.
+        if (code == 503 && connection.getHeaderField("X-Assistant-GPU-Busy") == "video") {
+            val message = runCatching { ((JsonCodec.json.parseToJsonElement(text) as JsonObject)["detail"] as JsonObject)["message"]!!.jsonPrimitive.content }.getOrNull()
+            return ModelProviderException(message ?: "Chat is paused while a video renders on both GPUs. Your chat is saved; try again when it finishes.")
+        }
         val detail = snippet(text)
         val suffix = if (detail.isEmpty()) "" else " $detail"
         return ModelProviderException("The model server returned HTTP $code.$suffix")
@@ -156,6 +168,8 @@ class OpenAiCompatibleModelProvider(
                     requestMethod = "POST"; connectTimeout = config.connectTimeoutMillis; readTimeout = 15_000; doOutput = true
                     setRequestProperty("Content-Type", "application/json; charset=utf-8")
                     setRequestProperty("X-Assistant-Prime", "1")
+                    // The opening is cached as the turn will send it; reasoning changes the rendered system prompt.
+                    setRequestProperty(REASONING_HEADER, reasoning)
                     config.apiKey?.trim()?.takeIf { it.isNotEmpty() }?.let { setRequestProperty("Authorization", "Bearer $it") }
                 }
                 connection.outputStream.use { it.write(payload(messages, tools, stream = true).toByteArray()) }
@@ -198,10 +212,12 @@ class OpenAiCompatibleModelProvider(
         val connection = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = config.connectTimeoutMillis
-            readTimeout = config.readTimeoutMillis
+            // A reasoning reply with tools arrives whole, after the model has thought and answered.
+            readTimeout = if (stream && reasoning != "off") maxOf(config.readTimeoutMillis, REASONING_READ_TIMEOUT_MILLIS) else config.readTimeoutMillis
             doOutput = true
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
             if (incognito) setRequestProperty("X-Assistant-Incognito", "1")
+            if (stream) setRequestProperty(REASONING_HEADER, reasoning)
             setRequestProperty("Accept", if (stream) "text/event-stream" else "application/json")
             val key = config.apiKey?.trim().orEmpty()
             if (key.isNotEmpty()) {
@@ -227,3 +243,6 @@ data class OpenAiCompatibleConfig(
     val connectTimeoutMillis: Int = 10_000,
     val readTimeoutMillis: Int = 90_000,
 )
+
+private const val REASONING_HEADER = "X-Assistant-Reasoning"
+private const val REASONING_READ_TIMEOUT_MILLIS = 600_000

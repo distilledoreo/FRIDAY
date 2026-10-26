@@ -1,0 +1,43 @@
+--- a/src/core/layer_split_partition.cpp
++++ b/src/core/layer_split_partition.cpp
+@@ -151,13 +151,33 @@
+         int64_t current_used   = 0;
+         for (size_t seg_idx = 0; seg_idx < plan.segments.size(); seg_idx++) {
+             int64_t bytes = segment_param_bytes[seg_idx];
+-            while (current_backend + 1 < split_backends.size() &&
+-                   bytes > 0 &&
+-                   current_used + bytes > backend_capacities[current_backend]) {
+-                current_backend++;
+-                current_used = 0;
+-            }
+-            if (bytes > 0 && current_used + bytes > backend_capacities[current_backend]) {
++            // Later denoising steps reuse resident weights. Free VRAM no longer
++            // represents the capacity that was available for their first placement.
++            auto& params = segment_params[seg_idx];
++            bool reuse = !params.empty() && std::all_of(params.begin(), params.end(), [&](ggml_tensor* param) {
++                return param_assignments.find(param) != param_assignments.end();
++            });
++            if (reuse) {
++                ggml_backend_t previous = param_assignments.at(params.front());
++                auto previous_it = std::find(split_backends.begin(), split_backends.end(), previous);
++                if (previous_it == split_backends.end() ||
++                    !std::all_of(params.begin(), params.end(), [&](ggml_tensor* param) {
++                        return param_assignments.at(param) == previous;
++                    })) {
++                    LOG_ERROR("%s graph-cut layer split: resident segment placement changed", desc);
++                    return false;
++                }
++                current_backend = (size_t)std::distance(split_backends.begin(), previous_it);
++                current_used = assignment.bytes_by_backend[current_backend];
++            } else {
++                while (current_backend + 1 < split_backends.size() &&
++                       bytes > 0 &&
++                       current_used + bytes > backend_capacities[current_backend]) {
++                    current_backend++;
++                    current_used = 0;
++                }
++            }
++            if (!reuse && bytes > 0 && current_used + bytes > backend_capacities[current_backend]) {
+                 LOG_ERROR("%s graph-cut layer split: segment %zu needs %.1f MB on %s, but only %.1f MB is available under current VRAM limits",
+                           desc,
+                           seg_idx,

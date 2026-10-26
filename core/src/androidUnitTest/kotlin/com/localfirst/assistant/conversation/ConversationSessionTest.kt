@@ -193,15 +193,19 @@ class ConversationSessionTest {
     }
 
     @Test
-    fun tooManyToolRoundsStopsWithoutDroppingEarlierResults() = runBlocking {
+    fun toolLimitEndsWithAnAnswerWithoutTools() = runBlocking {
         var runs = 0
         val registry = ToolRegistry().apply {
             register(SetMediaVolumeTool { runs += 1 })
         }
         val provider = ScriptedModelProvider(
-            { ModelResponse.ToolCallResponse(calls = listOf(call("1"))) },
-            { ModelResponse.ToolCallResponse(calls = listOf(call("2"))) },
-            { ModelResponse.ToolCallResponse(calls = listOf(call("3"))) },
+            { ModelResponse.ToolCallResponse(calls = listOf(call("1", 10))) },
+            { ModelResponse.ToolCallResponse(calls = listOf(call("2", 20))) },
+            { ModelResponse.ToolCallResponse(calls = listOf(call("3", 30))) },
+            { messages ->
+                assertEquals(ConversationEngine.TOOL_LIMIT_NOTE, (messages.last() as Message.User).content)
+                ModelResponse.TextResponse("Volume is at 20%.")
+            },
         )
         val session = ConversationSession(
             modelProvider = provider,
@@ -211,10 +215,51 @@ class ConversationSessionTest {
         )
         val outcome = session.submitUserMessage("Keep going")
 
-        assertTrue(outcome is TurnOutcome.Failed)
+        assertTrue(outcome is TurnOutcome.Completed)
         assertEquals(2, runs)
+        assertEquals(emptyList<String>(), provider.toolNames.last())
         assertEquals(2, session.snapshot().count { it is Message.ToolResult })
+        assertEquals(Message.Assistant("Volume is at 20%."), session.snapshot().last())
         assertEquals(Message.User("Keep going"), session.snapshot().first())
+    }
+
+    @Test
+    fun repeatedFinishedCallGetsTheEarlierResultInstead() = runBlocking {
+        var runs = 0
+        val search = object : Tool {
+            override val name = "web_search"
+            override val description = "Search."
+            override val inputSchema = JsonObject(emptyMap())
+            override suspend fun execute(arguments: JsonObject): ToolExecutionResult { runs += 1; return ToolExecutionResult(true, "Canberra") }
+        }
+        val registry = ToolRegistry().apply { register(search) }
+        val provider = ScriptedModelProvider(
+            { ModelResponse.ToolCallResponse(calls = listOf(ToolCall("1", "web_search", """{"query":"capital of Australia","limit":5}"""))) },
+            { ModelResponse.ToolCallResponse(calls = listOf(ToolCall("2", "web_search", """{ "limit": 5, "query": "capital of Australia" }"""))) },
+            { ModelResponse.TextResponse("Canberra.") },
+        )
+        val outcome = session(provider, registry).submitUserMessage("Capital of Australia?")
+
+        assertTrue(outcome is TurnOutcome.Completed)
+        assertEquals(1, runs)
+        val repeated = outcome.messages.filterIsInstance<Message.ToolResult>().last()
+        assertEquals(ConversationEngine.REPEATED_CALL_RESULT, repeated.content)
+        assertFalse(repeated.success)
+    }
+
+    @Test
+    fun recallRidesOnTheLatestUserMessageAndLeavesTheSystemPromptAlone() = runBlocking {
+        val provider = ScriptedModelProvider({ ModelResponse.TextResponse("Hi") })
+        val session = session(provider, ToolRegistry())
+        session.latestUserNote = "[Sent at 9:00 AM]"
+        session.recallContext = "\n\nRetrieved personal context.\nApproved memory [m1]: Likes tea."
+        session.submitUserMessage("Hello")
+        val sent = provider.requests.single()
+        assertEquals(Message.System("Be brief."), sent.first())
+        val user = sent.last() as Message.User
+        assertTrue(user.content.startsWith("Hello\n\nRetrieved personal context."))
+        assertTrue(user.content.endsWith("Likes tea.\n\n[Sent at 9:00 AM]"))
+        assertEquals(Message.User("Hello"), session.snapshot().first())
     }
 
     @Test
@@ -236,7 +281,7 @@ class ConversationSessionTest {
         )
     }
 
-    private fun call(id: String): ToolCall = ToolCall(id, "set_media_volume", """{"level":15}""")
+    private fun call(id: String, level: Int = 15): ToolCall = ToolCall(id, "set_media_volume", """{"level":$level}""")
 
     private class ConfirmTool : Tool {
         var executed: Boolean = false
@@ -249,6 +294,34 @@ class ConversationSessionTest {
             executed = true
             return ToolExecutionResult(true, "called")
         }
+    }
+
+    @Test
+    fun toolCallMarkupIsRetriedWithoutToolsAndNeverShown() = runBlocking {
+        val markup = "<tool_call>\n<function=execute_python>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>"
+        val provider = ScriptedModelProvider(
+            { ModelResponse.TextResponse(markup) },
+            { messages ->
+                assertEquals(ConversationEngine.TOOL_MARKUP_NOTE, (messages.last() as Message.User).content)
+                ModelResponse.TextResponse("The total is 173.85.")
+            },
+        )
+        val session = session(provider, ToolRegistry().apply { register(SetMediaVolumeTool { }) })
+        val outcome = session.submitUserMessage("Sum it")
+        assertTrue(outcome is TurnOutcome.Completed)
+        assertEquals(emptyList<String>(), provider.toolNames.last())
+        assertEquals(listOf(Message.User("Sum it"), Message.Assistant("The total is 173.85.")), session.snapshot())
+    }
+
+    @Test
+    fun repeatedMarkupEndsInAPlainNote() = runBlocking {
+        val provider = ScriptedModelProvider(
+            { ModelResponse.TextResponse("<tool_call><function=web_search></function></tool_call>") },
+            { ModelResponse.TextResponse("<tool_call><function=web_search></function></tool_call>") },
+        )
+        val outcome = session(provider, ToolRegistry()).submitUserMessage("Look it up")
+        val last = (outcome as TurnOutcome.Completed).messages.last() as Message.Assistant
+        assertEquals("I couldn't finish writing the answer.", last.content)
     }
 
     private class ScriptedModelProvider(

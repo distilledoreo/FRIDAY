@@ -65,6 +65,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
@@ -241,14 +242,39 @@ class ChatViewModel(
         override suspend fun request(path: String, method: String, body: kotlinx.serialization.json.JsonObject?) =
             com.localfirst.assistant.client.wireJson.parseToJsonElement((workspace ?: error("Computer unavailable")).request(path, method, body?.let { JSONObject(it.toString()) }))
     }, viewModelScope)
-    internal suspend fun loadFeatureImage(path: String): androidx.compose.ui.graphics.ImageBitmap? = withContext(Dispatchers.IO) {
+    /** Decoded workspace images by path and size; galleries scroll tiles in and out of view, and each decode costs. */
+    private val featureImages = object : android.util.LruCache<String, androidx.compose.ui.graphics.ImageBitmap>(
+        (Runtime.getRuntime().maxMemory() / 8).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()) {
+        override fun sizeOf(key: String, value: androidx.compose.ui.graphics.ImageBitmap) = value.width * value.height * 4
+    }
+    internal suspend fun loadFeatureImage(path: String, maxEdge: Int): androidx.compose.ui.graphics.ImageBitmap? {
+        val key = "$path@$maxEdge"
+        featureImages.get(key)?.let { return it }
+        return decodeFeatureImage(path, maxEdge)?.also { featureImages.put(key, it) }
+    }
+    private suspend fun decodeFeatureImage(path: String, maxEdge: Int): androidx.compose.ui.graphics.ImageBitmap? = withContext(Dispatchers.IO) {
         val file = when {
             path.startsWith("/workspace/files/") -> loadImage(path.substringAfterLast('/'))
             path == "/workspace/pc/screenshot" -> (workspace ?: error("Computer unavailable")).downloadPcScreenshot(File(app?.cacheDir ?: error("Preview unavailable"), "pc-preview.png"))
             path.startsWith("/workspace/agent/tasks/") -> loadAgentScreenshot(path.split('/')[4], path.substringAfterLast('/'))
+            Regex("/workspace/videos/[a-f0-9]{32}/poster").matches(path) -> File(app?.cacheDir ?: error("Preview unavailable"), "video-posters/${path.split('/')[3]}.jpg").also { file ->
+                if (!file.isFile) (workspace ?: error("Computer unavailable")).downloadPath(path, file, 4 * 1024 * 1024)
+            }
             else -> return@withContext null
         }
-        android.graphics.BitmapFactory.decodeFile(file.absolutePath)?.let { it.asImageBitmap() }
+        // Decode no larger than needed: a gallery tile asks for a few hundred pixels, the viewer for up to 2048.
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeFile(file.absolutePath, bounds)
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxEdge.coerceIn(64, 4096)) sample *= 2
+        android.graphics.BitmapFactory.decodeFile(file.absolutePath, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
+    }
+    /** A saved video as a cached file the platform player can open; videos are never part of an incognito chat. */
+    internal suspend fun loadFeatureVideo(path: String): String? = withContext(Dispatchers.IO) {
+        val id = Regex("/workspace/files/([a-f0-9]{32})").matchEntire(path)?.groupValues?.get(1) ?: return@withContext null
+        val file = File(app?.cacheDir ?: error("Playback unavailable"), "videos/$id.mp4")
+        if (!file.isFile) (workspace ?: error("Computer unavailable")).download(id, file)
+        android.net.Uri.fromFile(file).toString()
     }
     /** The Code workspace: GitHub repositories on the PC, kept apart from chat state. */
     val code = com.localfirst.assistant.ui.code.CodeWorkspace(viewModelScope,
@@ -357,10 +383,14 @@ class ChatViewModel(
     private var dashboardGeneration = 0L
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
+    private var carVoiceSession = false
+    val carVoiceActive: Boolean get() = carVoiceSession
+    private var voiceStartJob: Job? = null
+
     private val voice = voiceEngines?.let { engines ->
         VoiceController(
             scope = viewModelScope,
-            selectIo = { engines.select(_state.value.settings) },
+            selectIo = { engines.select(_state.value.settings, forcePhoneMic = carVoiceSession) },
             chat = state,
             view = { s -> com.localfirst.assistant.voice.VoiceTurn(s.messages, s.busy, s.turnMessagesReady,
                 s.pendingApproval?.let { com.localfirst.assistant.voice.VoiceApproval(it.toolName + "\n" + it.title, it.prompt) }) },
@@ -428,6 +458,52 @@ class ChatViewModel(
         _state.update { it.copy(draft = value) }
     }
 
+    private val sessionDrafts = com.localfirst.assistant.client.SessionDrafts<DraftAttachment>()
+    private var beforeEdit: com.localfirst.assistant.client.ComposerDraft<DraftAttachment>? = null
+    private val attachmentJobs = mutableMapOf<String, Job>()
+    private fun composer(s: ChatUiState) = com.localfirst.assistant.client.ComposerDraft(s.draft, s.draftAttachments, s.imageMode)
+
+    private fun parkDraft() {
+        val current = _state.value
+        if (!current.privacy.incognito) {
+            sessionDrafts.put(current.conversationId, current.projectId,
+                com.localfirst.assistant.client.DraftSnapshot(composer(current), current.editingIndex, beforeEdit))
+            beforeEdit = null
+            _state.update { it.copy(draftAttachments = emptyList()) }
+        } else discardComposer()
+    }
+
+    private fun restoreDraft(id: String?, project: String?) {
+        val saved = sessionDrafts.take(id, project)
+        beforeEdit = saved?.beforeEdit
+        _state.update { it.copy(draft = saved?.composer?.text.orEmpty(), draftAttachments = saved?.composer?.attachments.orEmpty(),
+            imageMode = saved?.composer?.imageMode ?: false, editingIndex = saved?.editingIndex) }
+    }
+
+    private fun discardComposer() {
+        val owned = _state.value.draftAttachments + beforeEdit?.attachments.orEmpty()
+        owned.forEach { attachmentJobs.remove(it.id)?.cancel() }
+        val files = owned.mapNotNull { it.attachment }
+        beforeEdit = null
+        _state.update { it.copy(draft = "", draftAttachments = emptyList(), editingIndex = null) }
+        attachments?.delete(files.distinctBy { it.id })
+    }
+
+    private fun finishAttachment(id: String, result: Result<Attachment>) {
+        fun updated(d: DraftAttachment) = result.fold(
+            { d.copy(status = DraftStatus.READY, attachment = it) },
+            { d.copy(status = DraftStatus.FAILED, error = it.message ?: "Couldn't attach ${d.name}.") })
+        var owned = false
+        _state.update { state -> state.copy(draftAttachments = state.draftAttachments.map {
+            if (it.id == id) { owned = true; updated(it) } else it
+        }) }
+        beforeEdit = beforeEdit?.let { previous -> previous.copy(attachments = previous.attachments.map {
+            if (it.id == id) { owned = true; updated(it) } else it
+        }) }
+        owned = sessionDrafts.updateAttachment({ it.id == id }, ::updated) || owned
+        if (!owned) result.getOrNull()?.let { attachments?.delete(listOf(it)) }
+    }
+
     // ---- sending -------------------------------------------------------------
 
     fun send() {
@@ -438,11 +514,15 @@ class ChatViewModel(
         val editing = current.editingIndex
         pendingRecallQuery = draft
         val ready = current.draftAttachments.mapNotNull { it.attachment } + if (editing == null) listOfNotNull(app?.let { ScreenContextService.snapshot(it, _state.value.privacy.incognito) }) else emptyList()
-        _state.update { it.copy(draft = "", editingIndex = null, draftAttachments = emptyList()) }
+        val consume = {
+            val saved = if (editing != null) beforeEdit else null
+            beforeEdit = null
+            _state.update { it.copy(draft = saved?.text.orEmpty(), editingIndex = null, draftAttachments = saved?.attachments.orEmpty(), imageMode = saved?.imageMode ?: false) }
+        }
         if (editing != null) {
-            runTurn { onUpdate -> session.editUserMessage(editing, draft, onUpdate) }
+            runTurn(onStart = consume) { onUpdate -> session.editUserMessage(editing, draft, onUpdate) }
         } else {
-            runTurn { onUpdate -> session.submitUserMessage(draft, ready, onUpdate) }
+            runTurn(onStart = consume) { onUpdate -> session.submitUserMessage(draft, ready, onUpdate) }
         }
     }
 
@@ -469,47 +549,37 @@ class ChatViewModel(
                 status = DraftStatus.READING,
             )
             _state.update { it.copy(draftAttachments = it.draftAttachments + draft) }
-            viewModelScope.launch {
-                val settings = _state.value.settings
-                val ephemeralId = if (attachmentPrivacy.incognito) workspace?.ephemeralSession() else null
-                val result = try {
-                    runCatching {
-                        if (image) {
-                            importer.importImage(uri, draft.name, attachmentPrivacy.incognito, ephemeralId)
-                        } else if (audio) {
-                            importer.importAudio(uri, settings.searchBaseUrl, settings.searchApiKey.trim().ifEmpty { null }, attachmentPrivacy.incognito, ephemeralId)
-                        } else {
-                            importer.importDocument(uri, settings.searchBaseUrl, settings.searchApiKey.trim().ifEmpty { null }, attachmentPrivacy.incognito, ephemeralId)
-                        }
-                    }.also { result ->
-                        val error = result.exceptionOrNull()
-                        if (error is CancellationException) throw error
-                    }
-                } finally {
-                    deleteSource()
-                }
-                _state.update { state ->
-                    state.copy(
-                        draftAttachments = state.draftAttachments.map { d ->
-                            if (d.id != draft.id) {
-                                d
+            val job = viewModelScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+                try {
+                    val settings = _state.value.settings
+                    val ephemeralId = if (attachmentPrivacy.incognito) workspace?.ephemeralSession() else null
+                    val result = try {
+                        runCatching {
+                            if (image) {
+                                importer.importImage(uri, draft.name, attachmentPrivacy.incognito, ephemeralId)
+                            } else if (audio) {
+                                importer.importAudio(uri, settings.searchBaseUrl, settings.searchApiKey.trim().ifEmpty { null }, attachmentPrivacy.incognito, ephemeralId)
                             } else {
-                                result.fold(
-                                    { d.copy(status = DraftStatus.READY, attachment = it) },
-                                    { e -> d.copy(status = DraftStatus.FAILED, error = e.message ?: "Couldn't attach ${d.name}.") },
-                                )
+                                importer.importDocument(uri, settings.searchBaseUrl, settings.searchApiKey.trim().ifEmpty { null }, attachmentPrivacy.incognito, ephemeralId)
                             }
-                        },
-                    )
-                }
-                // Removed while it was being read: drop the stored files.
-                if (_state.value.draftAttachments.none { it.id == draft.id }) result.getOrNull()?.let { importer.delete(listOf(it)) }
+                        }.also { result ->
+                            val error = result.exceptionOrNull()
+                            if (error is CancellationException) throw error
+                        }
+                    } finally {
+                        deleteSource()
+                    }
+                    finishAttachment(draft.id, result)
+                } finally { attachmentJobs.remove(draft.id) }
             }
+            attachmentJobs[draft.id] = job
+            job.start()
         }
     }
 
     fun removeDraftAttachment(id: String) {
         val removed = _state.value.draftAttachments.firstOrNull { it.id == id } ?: return
+        attachmentJobs.remove(id)?.cancel()
         _state.update { s -> s.copy(draftAttachments = s.draftAttachments.filterNot { it.id == id }) }
         removed.attachment?.let { attachments?.delete(listOf(it)) }
     }
@@ -521,7 +591,9 @@ class ChatViewModel(
             voice?.close()
             turnJob?.cancel()
             turnJob?.join()
-            resetToNewChat()
+            val wasPrivate = _state.value.privacy.incognito
+            clearIncognito()
+            resetToNewChat(preserveDraft = !wasPrivate)
             text?.takeIf { it.isNotBlank() }?.let { shared -> _state.update { it.copy(draft = shared) } }
             addAttachments(uris)
         }
@@ -564,31 +636,67 @@ class ChatViewModel(
 
     // ---- voice -----------------------------------------------------------------
 
-    fun startVoice() {
-        if (_state.value.workspaceBusy || !settingsReady()) return
+    fun startCarVoice(fromCar: Boolean = true) {
+        if (!_state.value.settings.androidAuto || voiceStartJob?.isActive == true) return
+        if (!carVoiceSession) voice?.close()
+        carVoiceSession = true
+        voice?.muteMic(false)
+        startVoice(fromCar)
+    }
+
+    fun stopCarVoice() { if (carVoiceSession) closeVoice() }
+
+    fun startVoice(fromCar: Boolean = false) {
+        if (voiceStartJob?.isActive == true || _state.value.workspaceBusy || !settingsReady()) return
+        if (voice?.active == true) { voice.start(); holdForeground(); return }
         _state.update { it.copy(voiceError=null) }
-        viewModelScope.launch {
+        voiceStartJob = viewModelScope.launch {
             try {
                 if (app != null) {
-                    if (!com.localfirst.assistant.phone.PermissionBroker.ensure(app, android.Manifest.permission.RECORD_AUDIO)) {
+                    val allowed = if (fromCar) com.localfirst.assistant.phone.PermissionBroker.isGranted(app, android.Manifest.permission.RECORD_AUDIO)
+                        else com.localfirst.assistant.phone.PermissionBroker.ensure(app, android.Manifest.permission.RECORD_AUDIO)
+                    if (!allowed) {
                         _state.update { it.copy(voiceError="Microphone permission is needed for voice. Allow it in Android app permissions, then try again.") };return@launch
                     }
+                }
+                prepareLiveVoiceConversation()
+                if (app != null) {
                     VoiceForegroundService.start(app, ::closeVoice)
-                    app?.let(VoiceBubbleService::start)
+                    if (!carVoiceSession) app?.let(VoiceBubbleService::start)
                 }
                 voice?.start()
                 holdForeground()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 app?.let(VoiceForegroundService::stop)
-                _state.update { it.copy(voiceError = "Voice could not start. Check microphone permission and the selected voice connection.") }
+                _state.update { it.copy(voiceError = if (carVoiceSession) "Could not start the microphone from the car. While parked, open FRIDAY on your phone and tap Prepare car voice in Voice and server."
+                    else "Voice could not start. Check microphone permission and the selected voice connection.") }
             }
         }
     }
 
-    fun closeVoice() { voice?.close(); app?.let(VoiceForegroundService::stop);app?.let(VoiceBubbleService::stop);_state.update { it.copy(voiceError=null) } }
+    private suspend fun prepareLiveVoiceConversation() {
+        if (_state.value.privacy.incognito) return
+        turnJob?.cancel()
+        turnJob?.join()
+        _state.first { !it.workspaceBusy }
+        // Merge the other client's latest voice history before selecting our local/offline copy.
+        if (chatSync != null) runChatSync(automatic = true)?.join()
+        val id = com.localfirst.assistant.voice.LiveVoiceConversation.ID
+        withContext(Dispatchers.IO) {
+            if (conversationStore.load(id) == null) {
+                conversationStore.save(com.localfirst.assistant.voice.LiveVoiceConversation.empty(System.currentTimeMillis()))
+            }
+        }
+        switchConversation(id)
+        _state.update { it.copy(showWorkspace = false) }
+    }
+
+    fun closeVoice() { voiceStartJob?.cancel(); voiceStartJob = null; carVoiceSession = false; voice?.close(); app?.let(VoiceForegroundService::stop);app?.let(VoiceBubbleService::stop);_state.update { it.copy(voiceError=null) } }
     fun pauseVoiceFromChat() { voice?.pause("Voice paused. Resume when you're ready.") }
     fun toggleMicMute() { voice?.muteMic(voice?.state?.value?.micMuted == false) }
-    fun toggleVoice() { if(voice?.active == true) closeVoice() else startVoice() }
+    fun toggleVoice() { if(voice?.active == true || voiceStartJob?.isActive == true) closeVoice() else startVoice() }
 
     private var dictationJob: Job? = null
 
@@ -621,6 +729,7 @@ class ChatViewModel(
     fun pauseVoice() {
         val context = app
         if (VoiceForegroundService.active.value && context != null) {
+            if (carVoiceSession) return
             // A foreground mic session keeps the mic: leave voice running and show the floating
             // bubble — but not over a picker (camera, files) the user just opened from the app.
             if (!attachmentPickerOpen && VoiceBubbleService.start(context)) return
@@ -630,14 +739,15 @@ class ChatViewModel(
 
     fun interruptVoice() = voice?.interrupt()
 
-    /** Opened as the phone's assistant (long-press power, headset button): a fresh chat in voice mode. */
+    /** Opened as the phone's assistant: resume the shared live voice conversation. */
     fun startAssistantSession() {
         viewModelScope.launch {
             voice?.close()
             turnJob?.cancel()
             turnJob?.join()
+            val wasPrivate = _state.value.privacy.incognito
             clearIncognito()
-            if (_state.value.messages.isNotEmpty()) resetToNewChat()
+            if (_state.value.messages.isNotEmpty()) resetToNewChat(preserveDraft = !wasPrivate)
             startVoice()
         }
     }
@@ -707,7 +817,11 @@ class ChatViewModel(
     }
 
     override fun onCleared() {
-        clearDraftAttachments()
+        val parked = sessionDrafts.attachments().mapNotNull { it.attachment }
+        sessionDrafts.clear()
+        attachmentJobs.values.toList().forEach { it.cancel() }; attachmentJobs.clear()
+        discardComposer()
+        attachments?.delete(parked.distinctBy { it.id })
         voice?.shutdown()
         app?.let { VoiceForegroundService.stop(it); VoiceBubbleService.stop(it); ScreenContextService.stop(it) }
         super.onCleared()
@@ -716,26 +830,36 @@ class ChatViewModel(
     fun startEditing(index: Int) {
         val message = _state.value.messages.getOrNull(index) as? Message.User ?: return
         if (_state.value.busy) return
-        clearDraftAttachments()
-        _state.update { it.copy(editingIndex = index, draft = message.content) }
+        if (_state.value.editingIndex == null) beforeEdit = composer(_state.value)
+        _state.update { it.copy(editingIndex = index, draft = message.content, draftAttachments = emptyList()) }
     }
 
     fun cancelEditing() {
-        _state.update { it.copy(editingIndex = null, draft = "") }
+        val original = beforeEdit
+        beforeEdit = null
+        _state.update { it.copy(editingIndex = null, draft = original?.text.orEmpty(), draftAttachments = original?.attachments.orEmpty(), imageMode = original?.imageMode ?: false) }
     }
 
-    private fun runTurn(block: suspend (onUpdate: (List<Message>) -> Unit) -> TurnOutcome) {
+    private fun runTurn(onStart: () -> Unit = {}, block: suspend (onUpdate: (List<Message>) -> Unit) -> TurnOutcome) {
         _state.update { it.copy(turnMessagesReady = false) }
         val isFirstExchange = session.snapshot().none { it is Message.Assistant }
         val now = ZonedDateTime.now()
         session.systemPrompt = try { openingPrompt(now) }
-        catch (e: Exception) { _state.update { it.copy(error = "Couldn't read saved knowledge: ${e.message}") }; return }
-        (provider as? com.localfirst.assistant.model.OpenAiCompatibleModelProvider)?.incognito = _state.value.privacy.incognito
+        catch (e: Exception) { _state.update { it.copy(error = "Couldn't read saved knowledge: ${e.message}", turnMessagesReady = true) }; return }
+        (provider as? com.localfirst.assistant.model.OpenAiCompatibleModelProvider)?.let {
+            it.incognito = _state.value.privacy.incognito
+            // Typed chats reason at the chosen level; a spoken reply can't wait for it.
+            val spoken = voice?.active == true || carVoiceSession ||
+                _state.value.conversationId == com.localfirst.assistant.voice.LiveVoiceConversation.ID
+            it.reasoning = if (spoken) "off" else appearance().thinking.wire
+        }
         session.latestUserNote = AssistantPrompts.timeNote(now)
+        session.recallContext = null
         // What the user changed in the last interface reply, so the model knows ("seats = 9").
         session.snapshot().indexOfLast { it is Message.Assistant }.takeIf { it >= 0 }
             ?.let { genUiSessions.noteFor(genUiConversation, it) }
             ?.let { session.latestUserNote = "${session.latestUserNote}\n[$it]" }
+        onStart()
         _state.update { it.copy(busy = true, error = null, turnMessagesReady = false) }
         holdForeground()
         phoneUse?.current?.beginTurn()
@@ -749,7 +873,7 @@ class ChatViewModel(
                     try {
                         if (!_state.value.privacy.incognito) migrateLegacyMemory()
                         val recalled = JSONObject(client.request("/workspace/memory/context", "POST", JSONObject().put("query", pendingRecallQuery.take(4000)).put("scope", _state.value.projectId.orEmpty()).put("incognito", _state.value.privacy.incognito).put("current_id", _state.value.conversationId?.let { "native-" + it.replace("-", "") }.orEmpty()), timeoutMs = 8000))
-                        session.systemPrompt += recalled.optString("context")
+                        session.recallContext = recalled.optString("context").ifEmpty { null }
                         val sources = recalled.optJSONArray("sources") ?: JSONArray()
                         _state.update { it.copy(recallSources = jsonRows(sources), recallStatus = if (sources.length() == 0) "No relevant memories needed." else "${sources.length()} relevant memory sources supplied.") }
                     } catch (e: CancellationException) { throw e }
@@ -772,9 +896,33 @@ class ChatViewModel(
                     }
                 } else _state.update { it.copy(groundingStatus = if (grounding.privateRequest(pendingRecallQuery)) grounding.PRIVATE_STATUS else null, groundingSources = emptyList()) }
                 if (grounding.blocksWeb(pendingRecallQuery)) session.latestUserNote = session.latestUserNote.orEmpty() + grounding.OPT_OUT_NOTE
+                // A streamed reply arrives a few tokens at a time; redrawing (and re-parsing its Markdown) for each one
+                // costs CPU and battery that grow with the reply's length. The first update shows at once, the rest at
+                // most every STREAM_FRAME_MS; the turn's end below writes the final messages either way.
+                val frame = Any()  // Deltas can arrive on the network thread.
+                var pending: List<Message>? = null
+                var lastShown = 0L
+                var flush: Job? = null
                 outcome = block { messages ->
-                    _state.update { it.copy(messages = messages, turnMessagesReady = true) }
+                    synchronized(frame) {
+                        val now = System.currentTimeMillis()
+                        if (now - lastShown >= STREAM_FRAME_MS && flush?.isActive != true) {
+                            lastShown = now
+                            _state.update { it.copy(messages = messages, turnMessagesReady = true) }
+                        } else {
+                            pending = messages
+                            if (flush?.isActive != true) flush = viewModelScope.launch {
+                                kotlinx.coroutines.delay((STREAM_FRAME_MS - (System.currentTimeMillis() - lastShown)).coerceAtLeast(0))
+                                synchronized(frame) {
+                                    pending?.let { latest -> lastShown = System.currentTimeMillis(); pending = null
+                                        _state.update { it.copy(messages = latest, turnMessagesReady = true) } }
+                                }
+                            }
+                        }
+                    }
                 }
+                synchronized(frame) { flush?.cancel() }
+                synchronized(frame) { pending }?.let { latest -> _state.update { it.copy(messages = latest, turnMessagesReady = true) } }
             } catch (e: CancellationException) {
                 // Stopped by the user; the session already kept the partial answer.
             } catch (e: Exception) {
@@ -835,8 +983,10 @@ class ChatViewModel(
     fun startIncognito(freshSlate: Boolean = false) {
         if (_state.value.busy || _state.value.workspaceBusy) return
         viewModelScope.launch {
-            turnJob?.cancel(); turnJob?.join(); clearIncognito()
-            resetToNewChat()
+            turnJob?.cancel(); turnJob?.join()
+            val wasPrivate = _state.value.privacy.incognito
+            clearIncognito()
+            resetToNewChat(preserveDraft = !wasPrivate)
             val privacy = ChatPrivacy(incognito = true, freshSlate = freshSlate)
             workspace?.incognito = true; workspace?.freshSlate = freshSlate
             app?.getSharedPreferences("brief-privacy", Context.MODE_PRIVATE)?.edit()?.putBoolean("incognito", true)?.apply()
@@ -847,6 +997,7 @@ class ChatViewModel(
     }
     private suspend fun clearIncognito() {
         if (!_state.value.privacy.incognito) return
+        discardComposer()
         attachments?.delete(session.snapshot().filterIsInstance<Message.User>().flatMap { it.attachments })
         runCatching { workspace?.endIncognito() }.onFailure { _state.update { state -> state.copy(error = "PC incognito cleanup pending; temporary files expire automatically.") } }
         app?.let { ScreenContextService.stop(it); File(it.cacheDir, "incognito").deleteRecursively() }
@@ -885,8 +1036,12 @@ class ChatViewModel(
             if (_state.value.conversationId == id) {
                 turnJob?.cancel()
                 turnJob?.join()
-                resetToNewChat()
+                resetToNewChat(preserveDraft = false)
             }
+            val parked = sessionDrafts.remove(id, null)
+            val owned = parked?.composer?.attachments.orEmpty() + parked?.beforeEdit?.attachments.orEmpty()
+            owned.forEach { attachmentJobs.remove(it.id)?.cancel() }
+            attachments?.delete(owned.mapNotNull { it.attachment }.distinctBy { it.id })
             withContext(Dispatchers.IO) {
                 val messages = conversationStore.load(id)?.messages.orEmpty()
                 val files = messages.filterIsInstance<Message.User>().flatMap { it.attachments }
@@ -902,37 +1057,28 @@ class ChatViewModel(
 
     private fun switchTo(id: String?, newProjectId: String? = null) {
         if (_state.value.workspaceBusy) return
-        viewModelScope.launch {
+        viewModelScope.launch { switchConversation(id, newProjectId) }
+    }
+
+    private suspend fun switchConversation(id: String?, newProjectId: String? = null) {
             turnJob?.cancel()
             turnJob?.join()
+            val stored = if (id != null) withContext(Dispatchers.IO) { conversationStore.load(id) } else null
+            if (id != null && stored == null) { refreshConversationList(); return }
+            parkDraft()
             clearIncognito()
-            if (id == null) {
-                resetToNewChat()
-                _state.update { it.copy(projectId = newProjectId, showWorkspace = false, imageMode = false) }
-                return@launch
-            }
-            val stored = withContext(Dispatchers.IO) { conversationStore.load(id) }
             if (stored == null) {
-                refreshConversationList()
-                return@launch
+                resetToNewChat(preserveDraft = false)
+                _state.update { it.copy(projectId = newProjectId, showWorkspace = false) }
+                restoreDraft(null, newProjectId)
+                return
             }
-            clearDraftAttachments()
             session = newSession(stored.messages)
             newPhoneUseSession()
             createdAt = stored.summary.createdAt
-            _state.update {
-                it.copy(
-                    conversationId = id,
-                    imageMode = false,
-                    projectId = stored.summary.projectId,
-                    title = stored.summary.title,
-                    messages = stored.messages,
-                    draft = "",
-                    editingIndex = null,
-                    error = null,
-                )
-            }
-        }
+            _state.update { it.copy(conversationId = id, imageMode = false, projectId = stored.summary.projectId,
+                title = stored.summary.title, messages = stored.messages, draft = "", editingIndex = null, error = null) }
+            restoreDraft(id, stored.summary.projectId)
     }
 
     private fun clearDraftAttachments() {
@@ -941,7 +1087,8 @@ class ChatViewModel(
         attachments?.delete(old)
     }
 
-    private fun resetToNewChat() {
+    private fun resetToNewChat(preserveDraft: Boolean = true) {
+        if (preserveDraft) parkDraft() else discardComposer()
         closePcScreen()
         _state.update { it.copy(pcSessionId=null,pcSession=null) }
         clearDraftAttachments()
@@ -987,6 +1134,7 @@ class ChatViewModel(
     private suspend fun generateTitle() {
         if (!_state.value.privacy.persist) return
         val id = _state.value.conversationId ?: return
+        if (id == com.localfirst.assistant.voice.LiveVoiceConversation.ID) return
         val messages = session.snapshot()
         val firstUser = messages.firstOrNull { it is Message.User } as? Message.User ?: return
         val firstAnswer = messages.firstOrNull { it is Message.Assistant && it.content.isNotBlank() } as? Message.Assistant
@@ -1009,7 +1157,9 @@ class ChatViewModel(
 
     /** The system prompt a turn starts from (before recalled memories), shared with [primeOpening] so they always match. */
     private fun openingPrompt(now: ZonedDateTime): String =
-        AssistantPrompts.system(now, interactiveAnswers = appearance().interactiveAnswers) + (if (_state.value.privacy.freshSlate) "" else knowledgeStore?.context(_state.value.projectId, includeMemories = workspace == null).orEmpty())
+        AssistantPrompts.system(now, interactiveAnswers = appearance().interactiveAnswers) +
+            com.localfirst.assistant.voice.LiveVoiceConversation.instructions(_state.value.conversationId, _state.value.privacy.incognito) +
+            (if (_state.value.privacy.freshSlate) "" else knowledgeStore?.context(_state.value.projectId, includeMemories = workspace == null).orEmpty())
 
     private var primeJob: Job? = null
 
@@ -1971,6 +2121,36 @@ class ChatViewModel(
         _state.update { it.copy(tasks = (0 until jobs.length()).map { i -> BackgroundTask.from(jobs.getJSONObject(i)) }) }
         "Task $action requested."
     }
+    /** Attaches a saved Library file to the draft by reference; no bytes are downloaded or uploaded. */
+    private suspend fun reuseSavedFile(id: String): String {
+        require(Regex("[a-f0-9]{32}").matches(id)) { "Unknown file." }
+        val current = _state.value
+        require(current.draftAttachments.size < MAX_ATTACHMENTS) { "You can attach up to $MAX_ATTACHMENTS files per message." }
+        val info = JSONObject((workspace ?: error("Workspace unavailable.")).request("/workspace/files/$id/reference"))
+        val fileId = info.getString("id")
+        val name = info.optString("name", "file")
+        val mime = info.optString("mime", "application/octet-stream")
+        val image = mime.startsWith("image/")
+        val attachment = Attachment(
+            id = fileId,
+            kind = if (image) AttachmentKind.IMAGE else AttachmentKind.DOCUMENT,
+            name = name,
+            mimeType = mime,
+            path = if (image) "remote:$fileId" else null,
+            text = info.optString("text", null),
+            pageImages = buildList {
+                val pages = info.optJSONArray("pageImageIds")
+                for (i in 0 until (pages?.length() ?: 0)) add("remote:" + pages.getString(i))
+            },
+            note = info.optString("note", null)
+                ?: if (!image && !info.has("text")) "Use the file tool to inspect this document." else null,
+            remoteFileId = fileId,
+        )
+        _state.update {
+            it.copy(draftAttachments = it.draftAttachments + DraftAttachment(UUID.randomUUID().toString(), name, attachment.kind, DraftStatus.READY, attachment))
+        }
+        return "Added $name to this chat."
+    }
     fun deleteWorkspaceFile(id: String) = workspaceAction {
         workspace?.request("/workspace/files/$id", "DELETE") ?: error("Workspace unavailable.")
         _state.update { it.copy(workspaceFiles = it.workspaceFiles.filterNot { f -> f.id == id }) }
@@ -1992,6 +2172,7 @@ class ChatViewModel(
     }
     fun installUpdate() = workspaceAction { workspace?.installUpdate() ?: error("Workspace unavailable.") }
     fun openArtifact(uri: String) = workspaceAction { workspace?.openArtifact(uri); "File downloaded." }
+    fun reuseWorkspaceFile(id: String) = workspaceAction { reuseSavedFile(id) }
 
     // ---- settings ------------------------------------------------------------
 
@@ -2039,6 +2220,8 @@ class ChatViewModel(
     }
 
     companion object {
+        /** The fastest a streamed reply redraws: about 10 times a second. */
+        private const val STREAM_FRAME_MS = 100L
         fun openAiProvider(settings: ServerSettings): ModelProvider {
             return OpenAiCompatibleModelProvider(
                 OpenAiCompatibleConfig(

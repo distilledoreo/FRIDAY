@@ -72,6 +72,21 @@ async def health():
 
 # ---- chat -----------------------------------------------------------------
 
+def reasoning_turn(body, request: Request):
+    """X-Assistant-Reasoning: the phone's chosen thinking level (off, low, medium, high; "1" from 0.25.6 is high), with
+    the settings saved browser chats use. Settings the client chose itself win."""
+    level = request.headers.get("X-Assistant-Reasoning", "")
+    level = "high" if level == "1" else level
+    if level not in ("off", "low", "medium", "high") or not isinstance(body, dict):
+        return body
+    template = body.get("chat_template_kwargs") or {}
+    if "reasoning_effort" in body or "reasoning" in body or "enable_thinking" in template or "reasoning_effort" in template:
+        return body
+    from workspace.integration import chat_sampling
+    sampling = chat_sampling(level)
+    return {**sampling, **body, "chat_template_kwargs": {**template, **sampling["chat_template_kwargs"]}}
+
+
 @app.post("/chat", dependencies=auth)
 @app.post("/v1/chat/completions", dependencies=auth, include_in_schema=False)
 async def chat(request: Request):
@@ -80,8 +95,8 @@ async def chat(request: Request):
         # The app's new-chat opening, sent ahead of the first message; nothing is generated.
         if request.headers.get("X-Assistant-Incognito") == "1":
             return JSONResponse({"primed": "ignored"})
-        return JSONResponse({"primed": openings.prime(prompt_cache.stabilize(await request.json()))})
-    body = await prepare_chat(await request.json(), request.headers.get("X-Assistant-Incognito") == "1", prompt_cache, openings)
+        return JSONResponse({"primed": openings.prime(prompt_cache.stabilize(reasoning_turn(await request.json(), request)))})
+    body = await prepare_chat(reasoning_turn(await request.json(), request), request.headers.get("X-Assistant-Incognito") == "1", prompt_cache, openings)
     req = llm.build_request("POST", "/v1/chat/completions", json=body)
     try:
         upstream = await llm.send(req, stream=True)
@@ -305,7 +320,7 @@ TTS_VOICE = "af_heart"  # Paradee speaks only Kokoro's Heart voice
 
 
 class VoiceModels:
-    """Parakeet TDT 0.6B v3 (int4 encoder, else int8) and Paradee 8M, loaded once in the background and run on the CPU.
+    """CPU Parakeet fallback and Paradee 8M, with optional loopback GPU recognition.
 
     ONNX Runtime's memory arena is off for Parakeet: with it on, the process kept ~1 GB more after a long clip (RAM the
     Strata model and its conversation cache need). Short utterances run at the same speed; a 2-minute clip ~2x slower.
@@ -331,8 +346,12 @@ class VoiceModels:
             # "int*" matches the int4 encoder beside the int8 decoder, or both int8 files
             self.asr = onnx_asr.load_model(
                 "nemo-parakeet-tdt-0.6b-v3", f"{VOICE_MODELS}/{asr_dir}", quantization="int*", sess_options=options)
+            if gpu_asr := os.environ.get("FRIDAY_VOICE_ASR_URL"):
+                from voice_runtime import HybridAsr
+                self.asr = HybridAsr(self.asr, gpu_asr)
             self.tts = Paradee(model_path=f"{VOICE_MODELS}/paradee-8m-v1.0/paradee_int8.onnx",
-                               config_path=f"{VOICE_MODELS}/paradee-8m-v1.0/config.json")
+                               config_path=f"{VOICE_MODELS}/paradee-8m-v1.0/config.json",
+                               threads=max(1, min(16, int(os.environ.get("FRIDAY_TTS_THREADS", "1")))))
             self.error = None
         except Exception as e:  # models missing, Storage drive not mounted, ...
             self.error = f"{e.__class__.__name__}: {e}"
@@ -374,7 +393,8 @@ def decode_audio(body: bytes, content_type: str):
 @app.get("/voice", dependencies=auth)
 async def voice_status():
     voice.require()
-    return {"stt": "parakeet-tdt-0.6b-v3", "tts": "paradee-8m-v1.0", "voices": [TTS_VOICE]}
+    return {"stt": "parakeet-tdt-0.6b-v3", "tts": "paradee-8m-v1.0", "voices": [TTS_VOICE],
+            "stt_backend": getattr(voice.asr, "backend", "cpu")}
 
 
 @app.post("/transcribe", dependencies=auth)
@@ -429,71 +449,9 @@ async def speak(req: SpeakRequest):
 
 
 # ---- documents --------------------------------------------------------------
-
-MAX_DOCUMENT_BYTES = 25 * 1024 * 1024
-MAX_DOCUMENT_CHARS = 60_000
-MAX_SCANNED_PAGES = 4
-TEXT_SUFFIXES = {
-    "txt", "md", "markdown", "csv", "tsv", "json", "jsonl", "xml", "yaml", "yml", "toml", "ini", "log", "html", "htm",
-    "py", "kt", "kts", "java", "js", "ts", "tsx", "jsx", "c", "h", "cpp", "hpp", "cs", "go", "rs", "rb", "php", "swift",
-    "sh", "bash", "zsh", "sql", "css", "scss", "gradle", "properties", "srt", "vtt", "tex", "rtf",
-}
-
-
-def _clip(text: str) -> tuple[str, bool]:
-    text = re.sub(r"[ \t]+\n", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    return (text[:MAX_DOCUMENT_CHARS], True) if len(text) > MAX_DOCUMENT_CHARS else (text, False)
-
-
-def extract_document(data: bytes, name: str, mime: str) -> dict:
-    suffix = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-    if data[:5] == b"%PDF-" or suffix == "pdf" or mime == "application/pdf":
-        import pypdf
-        import pypdfium2
-
-        reader = pypdf.PdfReader(io.BytesIO(data))
-        pages = [(page.extract_text() or "").strip() for page in reader.pages]
-        text = "\n\n".join(f"[Page {i + 1}]\n{t}" for i, t in enumerate(pages) if t)
-        result = {"kind": "pdf", "pages": len(pages), "images": []}
-        if len(re.sub(r"\s+", "", text)) < 40 * max(1, min(len(pages), 3)):
-            # No usable text layer (a scan): send page images for the vision model instead.
-            pdf = pypdfium2.PdfDocument(data)
-            for i in range(min(len(pdf), MAX_SCANNED_PAGES)):
-                page = pdf[i]
-                scale = 1280 / max(page.get_width(), page.get_height())
-                image = page.render(scale=max(scale, 0.5)).to_pil().convert("RGB")
-                out = io.BytesIO()
-                image.save(out, format="JPEG", quality=85)
-                result["images"].append(base64.b64encode(out.getvalue()).decode())
-            result["note"] = (
-                f"No text layer; sent {len(result['images'])} page image(s)"
-                + (f" of {len(pdf)}" if len(pdf) > MAX_SCANNED_PAGES else "")
-                + "."
-            )
-            text = ""
-        result["text"], result["truncated"] = _clip(text)
-        return result
-    if data[:2] == b"PK" and (suffix == "docx" or "wordprocessingml" in mime):
-        import docx
-
-        document = docx.Document(io.BytesIO(data))
-        parts = [p.text for p in document.paragraphs]
-        for table in document.tables:
-            for row in table.rows:
-                parts.append(" | ".join(cell.text.strip() for cell in row.cells))
-        text, truncated = _clip("\n".join(parts))
-        return {"kind": "docx", "text": text, "truncated": truncated}
-    if suffix in TEXT_SUFFIXES or mime.startswith("text/") or mime in ("application/json", "application/xml"):
-        if b"\x00" in data[:4096]:
-            raise HTTPException(415, "that file looks binary, not text")
-        raw = data.decode("utf-8", errors="replace")
-        if suffix in ("html", "htm") or mime == "text/html":
-            raw = re.sub(r"(?is)<(script|style).*?</\1>", " ", raw)
-            raw = re.sub(r"(?s)<[^>]+>", " ", raw)
-        text, truncated = _clip(raw)
-        return {"kind": "text", "text": text, "truncated": truncated}
-    raise HTTPException(415, f"can't read {suffix or mime or 'this'} files yet; try PDF, Word, or a text file")
+# Shared with the workspace file-reference endpoint so attaching a saved file
+# produces the same text, page images and notes as uploading it again.
+from workspace.document import MAX_DOCUMENT_BYTES, extract_document
 
 
 @app.post("/extract", dependencies=auth)
@@ -535,7 +493,15 @@ workspace_store = enable_workspace(app, auth, llm, search, fetch, FetchRequest,
     WorkspacePath(__file__).resolve().parent.parent / "workspace-data")
 
 image_manager = enable_images(app, auth, workspace_store, raw_llm, gpu_gate,
-    WorkspacePath(__file__).resolve().parent / "imagegen" / "config.json")
+    os.environ.get("FRIDAY_IMAGEGEN_CONFIG") or WorkspacePath(__file__).resolve().parent / "imagegen" / "config.json")
+
+# ---- local video generation (optional; needs a private config naming the LTX runtime and both GPUs) ----
+try:
+    from videogen.integration import enable as enable_videos
+except ImportError:  # an install without the videogen module
+    enable_videos = None
+video_manager = enable_videos and enable_videos(app, auth, workspace_store, gpu_gate, image_manager,
+    os.environ.get("FRIDAY_VIDEOGEN_CONFIG") or WorkspacePath(__file__).resolve().parent / "videogen" / "config.json")
 
 from memory.integration import enable as enable_memory
 memory_store = enable_memory(app, auth,

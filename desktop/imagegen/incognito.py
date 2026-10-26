@@ -7,7 +7,8 @@ import shutil
 import tempfile
 import time
 import uuid
-from fastapi import APIRouter,HTTPException,Request
+from fastapi import APIRouter,HTTPException,Query,Request
+from typing import Literal
 from fastapi.responses import FileResponse
 from pydantic import BaseModel,Field
 from .manager import ImageManager
@@ -28,7 +29,7 @@ class EphemeralSessions:
         if shutil.disk_usage(self.ram_root).free<128*1024**2:raise HTTPException(507,'Not enough RAM storage for incognito')
         ident=uuid.uuid4().hex;root=Path(tempfile.mkdtemp(prefix='friday-incognito-',dir=self.ram_root));root.chmod(0o700)
         store=type(self.workspace)(root)
-        images=ImageManager(root/'image-jobs',self.images.gate,self.images.runtime,store)
+        images=ImageManager(root/'image-jobs',self.images.gate,self.images.runtime,store,owns_runtime=False)
         # Only GPU recovery metadata lives on disk. Prompts/artifacts remain on RAM storage.
         images.journal=self.images.journal
         images.worker_task=asyncio.create_task(images.worker())
@@ -65,8 +66,11 @@ def enable(app,auth,workspace,images,image_request,ram_root=Path('/dev/shm')):
     @router.delete('/{ident}')
     async def close(ident:str):await sessions.close(ident);return {'deleted':True}
     @router.get('/{ident}/files')
-    def files(ident:str):
-        with sessions.get(ident).store.db() as db:return [dict(r) for r in db.execute('SELECT * FROM files ORDER BY created DESC')]
+    def files(ident:str, q:str=Query('',max_length=500),
+              kind:Literal['all','images','documents','audio','video','other']='all',
+              sort:Literal['recent','name','size']='recent',
+              limit:int=Query(200,ge=1,le=200), offset:int=Query(0,ge=0), paged:bool=False):
+        return sessions.get(ident).store.list_files(q,kind,sort,limit,offset,paged)
     @router.post('/{ident}/files')
     async def upload(ident:str,request:Request):
         session=sessions.get(ident);data=bytearray()
@@ -78,6 +82,10 @@ def enable(app,auth,workspace,images,image_request,ram_root=Path('/dev/shm')):
     def download(ident:str,file_id:str):
         session=sessions.get(ident);info=session.store.file(file_id)
         return FileResponse(session.store.files/info['id'],media_type=info['mime'],filename=info['name'])
+    @router.get('/{ident}/files/{file_id}/reference')
+    async def reference(ident:str,file_id:str):
+        store=sessions.get(ident).store
+        return await asyncio.to_thread(store.reference,file_id)
     @router.post('/{ident}/create-file')
     def text_file(ident:str,body:TextFile):
         if Path(body.name).suffix.lower() not in {'.txt','.md','.csv','.tsv','.json','.svg','.html'}:raise HTTPException(400,'Unsupported text file format')

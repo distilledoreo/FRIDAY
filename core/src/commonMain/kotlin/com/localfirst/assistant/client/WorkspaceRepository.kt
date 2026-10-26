@@ -69,7 +69,8 @@ class WorkspaceRepository(val gateway: WorkspaceGateway) {
         fun value(key: String) = items.firstOrNull { it.id == "preferences-$key" && !it.deleted }?.payload?.get("preferences")?.jsonPrimitive?.content
             ?.let { wireJson.parseToJsonElement(it).jsonObject["value"]?.jsonPrimitive }
         val prefs = AppearanceSettings.from(value("theme")?.content, value("accent")?.content, value("proactivity")?.content,
-            value("reduced_motion")?.booleanOrNull ?: false, value("display_name")?.content, value("interactive_answers")?.booleanOrNull ?: true)
+            value("reduced_motion")?.booleanOrNull ?: false, value("display_name")?.content, value("interactive_answers")?.booleanOrNull ?: true,
+            value("thinking")?.content)
         return WorkspaceSnapshot(items, chats, knowledge, items.firstOrNull { it.id == "knowledge" }?.revision ?: 0, prefs)
     }
     private fun body(revision: Int, payload: JsonObject, deleted: Boolean = false) = buildJsonObject {
@@ -121,12 +122,13 @@ class WorkspaceRepository(val gateway: WorkspaceGateway) {
 }
 
 /** Per-turn choices sent with a turn: the pre-search evidence note, the user's no-search request, and the chosen model. */
-data class TurnOptions(val note: String = "", val blockWeb: Boolean = false, val model: String? = null, val connection: String? = null) {
+data class TurnOptions(val note: String = "", val blockWeb: Boolean = false, val model: String? = null, val connection: String? = null, val reasoning: String? = null) {
     fun fields(): Map<String, JsonElement> = buildMap {
         if (note.isNotEmpty()) put("turn_note", JsonPrimitive(note.take(40000)))
         if (blockWeb) put("block_web", JsonPrimitive(true))
         connection?.let { put("connection", JsonPrimitive(it)) }
         model?.takeIf { it.isNotBlank() }?.let { put("model", JsonPrimitive(it)) }
+        reasoning?.let { put("reasoning", JsonPrimitive(it)) }
     }
 }
 

@@ -154,6 +154,16 @@ class WorkspaceClient(private val context: Context, private val settings: () -> 
         target
     }
 
+    /** A small authenticated download (a video's poster frame) to [target]. */
+    suspend fun downloadPath(path: String, target: File, limit: Int): File = withContext(Dispatchers.IO) {
+        val s = settings()
+        val (code, bytes) = desktopRequest(s.searchBaseUrl, s.searchApiKey, "GET", privatePath(path), timeoutMs = 30000)
+        require(code == 200 && bytes.size <= limit) { "Preview unavailable." }
+        target.parentFile?.mkdirs()
+        target.writeBytes(bytes)
+        target
+    }
+
     suspend fun downloadPcScreenshot(target: File): File = withContext(Dispatchers.IO) {
         val s=settings()
         val (code,bytes)=desktopRequest(s.searchBaseUrl,s.searchApiKey,"GET",privatePath("/workspace/pc/screenshot"),timeoutMs=30000)

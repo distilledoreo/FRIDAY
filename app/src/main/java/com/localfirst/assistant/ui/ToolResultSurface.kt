@@ -30,9 +30,9 @@ internal fun ToolResultSurface(name:String,content:String,key:String) {
         TextButton(shape = MaterialTheme.shapes.small, onClick={expanded=true}) { Text(if(result.entries.isEmpty())"View result"else "View result · ${result.total} ${if(result.total==1) "item" else "items"}") }
     }
     if(expanded) Dialog(onDismissRequest={expanded=false},properties=DialogProperties(usePlatformDefaultWidth=false,decorFitsSystemWindows=false)) {
-        FridayDialogWindow()
+        FridayDialogWindow(fullScreen = true)
         Scaffold(containerColor=MaterialTheme.colorScheme.background,topBar={TopAppBar(title={Text("Tool result")},navigationIcon={IconButton(onClick={expanded=false}) { Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back to conversation") }},actions={TextButton(shape = MaterialTheme.shapes.small, onClick={clipboard.setText(AnnotatedString(content))}) { Text("Copy") }})}) { padding ->
-            Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(20.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
+            Column(Modifier.fillMaxSize().padding(padding).dialogNavigationBarPadding().verticalScroll(rememberScrollState()).padding(20.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
                 result.entries.forEach { row ->
                     Surface(Modifier.fillMaxWidth(),shape=MaterialTheme.shapes.medium,color=MaterialTheme.colorScheme.surface) {
                         Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) { Text(row.title,style=MaterialTheme.typography.titleSmall);row.details.forEach { Text(it,style=MaterialTheme.typography.bodyMedium) } }

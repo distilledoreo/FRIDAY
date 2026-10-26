@@ -64,6 +64,12 @@ object LineIcons {
             "M4,17L9,12.5L13,16L15.5,13.5L20,17.5")
     }
 
+    val Video by lazy {
+        icon("Video",
+            "M6,5.5H18A2.5,2.5 0 0,1 20.5,8V16A2.5,2.5 0 0,1 18,18.5H6A2.5,2.5 0 0,1 3.5,16V8A2.5,2.5 0 0,1 6,5.5Z",
+            "M10.2,9.2V14.8L14.8,12Z")
+    }
+
     /** Sliders read as settings and stay as light as the rest of the set. */
     val Settings by lazy {
         icon("Settings",

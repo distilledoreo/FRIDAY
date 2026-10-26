@@ -5,8 +5,24 @@ from pathlib import Path
 from .workspace import install
 
 
+# The user's thinking level (ThinkingLevel.kt) and the Qwen template's reasoning effort for it.
+REASONING_EFFORT = {'low': 'low', 'medium': 'medium', 'high': 'xhigh'}
+
+
+def chat_sampling(level='high'):
+    """Settings for a chat turn the user reads. Reasoning catches the trick questions, miscounts and repeated tool
+    calls the model makes without it; it streams separately and is not saved. `level` is off, low, medium or high
+    (True/False are accepted as high/off). FRIDAY_CHAT_THINKING=0 turns it off everywhere."""
+    level = 'high' if level is True else 'off' if level is False else level
+    if level not in REASONING_EFFORT or os.environ.get('FRIDAY_CHAT_THINKING', '1') == '0':
+        return {'temperature': .3, 'max_tokens': 4096, 'chat_template_kwargs': {'enable_thinking': False}}
+    # Qwen's recommended sampling for thinking mode; greedy-ish decoding makes it loop.
+    return {'temperature': .6, 'top_p': .95, 'top_k': 20, 'max_tokens': 12288,
+            'chat_template_kwargs': {'enable_thinking': True, 'reasoning_effort': REASONING_EFFORT[level]}}
+
+
 def enable(app, auth, llm, search, fetch, fetch_request_type, data_dir):
-    async def model(messages, tools, model_id=None):
+    async def model(messages, tools, model_id=None, private=False):
         model_id = model_id or os.environ.get('ASSISTANT_MODEL')
         if not model_id:
             response = await llm.get('/v1/models')
@@ -16,11 +32,12 @@ def enable(app, auth, llm, search, fetch, fetch_request_type, data_dir):
             'model': model_id, 'messages': messages, 'tools': tools, 'stream': False,
             'temperature': 0.3, 'max_tokens': 2048, 'chat_template_kwargs': {'enable_thinking': False},
             'id_slot': 1,  # background slot: keeps the phone chat's cache intact
+            **({'cache_prompt': False} if private else {}),
         })
         response.raise_for_status()
         return response.json()['choices'][0]['message']
 
-    async def stream_model(messages, tools, report, model_id=None):
+    async def stream_model(messages, tools, report, model_id=None, thinking='high', private=False):
         model_id = model_id or os.environ.get('ASSISTANT_MODEL')
         if not model_id:
             response = await llm.get('/v1/models'); response.raise_for_status()
@@ -28,8 +45,9 @@ def enable(app, auth, llm, search, fetch, fetch_request_type, data_dir):
         answer = {'role': 'assistant', 'content': ''}
         calls = {}
         async with llm.stream('POST', '/v1/chat/completions', json={
-            'model': model_id, 'messages': messages, 'tools': tools, 'stream': True,
-            'temperature': .3, 'max_tokens': 2048, 'chat_template_kwargs': {'enable_thinking': False}, 'id_slot': 1,
+            'model': model_id, 'messages': messages, 'tools': tools, 'stream': True, **chat_sampling(thinking), 'id_slot': 1,
+            # A private chat: nothing of it is cached or recorded by the model server.
+            **({'cache_prompt': False} if private else {}),
         }) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():

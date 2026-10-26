@@ -5,7 +5,7 @@ import hashlib
 from html.parser import HTMLParser
 import json
 import re
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from fastapi import APIRouter, HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -13,7 +13,18 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
-from .public_web import read, MAX_BODY, READ_POOL
+from .public_web import read, MAX_BODY, READ_POOL, PageHTTPError
+
+
+def page_http_detail(error):
+    missing = error.status in (404, 410)
+    return {'reason': 'page_not_found' if missing else 'publisher_http_error',
+            'upstream_status': error.status, 'requested_url': error.url,
+            'retryable': error.status == 429 or error.status >= 500,
+            'message': (f'The requested page returned HTTP {error.status}. Use an exact link from '
+                        'search results or the user; do not invent an article address or conclude '
+                        'the whole website is unavailable.' if missing else
+                        f'The publisher returned HTTP {error.status} for this page.')}
 
 
 class Request(BaseModel):
@@ -60,24 +71,44 @@ class Text(HTMLParser):
     blocks={'p','div','article','section','li','h1','h2','h3','h4','h5','h6','br','tr','blockquote','pre'}
     def __init__(self):
         super().__init__(convert_charrefs=True);self.parts=[];self.depth=0;self.in_title=False;self.title=[];self.dates={};self.length=0;self.truncated=False
+        self.links=[];self.anchor=None;self.article_depth=0;self.hidden_marks={}
     def handle_starttag(self,tag,attrs):
-        if tag in self.hidden:self.depth+=1
+        if tag in ('article','main'):self.article_depth+=1
+        if tag in self.hidden:
+            # A publisher's article directory is content too (e.g. WOL meeting cards).
+            # Only outer navigation is page chrome. Track which opens actually hid text.
+            hidden=not(tag=='nav' and self.article_depth and not self.depth)
+            self.hidden_marks.setdefault(tag,[]).append(hidden)
+            if hidden:self.depth+=1
         if self.depth:return
         if tag=='title':self.in_title=True
         if tag in self.blocks:self.append('\n')
         values=dict(attrs)
+        if tag=='a' and values.get('href') and len(self.links)<64:
+            self.anchor={'href':str(values['href'])[:4096],'parts':[],'length':0,
+                         'label':str(values.get('aria-label') or values.get('title') or '')[:160]}
         if tag=='meta':
             key=values.get('property') or values.get('name')
             if key in ('article:published_time','article:modified_time','datePublished','dateModified'):
                 self.dates[key]=str(values.get('content',''))[:100]
     def handle_endtag(self,tag):
-        if tag in self.hidden:self.depth=max(0,self.depth-1);return
+        if tag in ('article','main'):self.article_depth=max(0,self.article_depth-1)
+        if tag in self.hidden:
+            marks=self.hidden_marks.get(tag,[])
+            if marks and marks.pop():self.depth=max(0,self.depth-1)
+            return
         if self.depth:return
+        if tag=='a' and self.anchor is not None:
+            self.links.append({'href':self.anchor['href'],'text':
+                              ' '.join(''.join(self.anchor['parts']).split())[:160] or self.anchor['label']})
+            self.anchor=None
         if tag=='title':self.in_title=False
         if tag in self.blocks:self.append('\n')
     def handle_data(self,text):
         if self.depth:return
         if self.in_title:self.title.append(text[:300]);return
+        if self.anchor is not None and self.anchor['length']<160:
+            self.anchor['parts'].append(text[:160-self.anchor['length']]);self.anchor['length']+=min(len(text),160-self.anchor['length'])
         self.append(text)
     def append(self,text):
         remaining=100000-self.length
@@ -111,14 +142,25 @@ def page_evidence(document,url,query=''):
     if not public_shape(document.get('url')):raise ValueError('Reader returned an unsupported final URL')
     raw=document['content']
     if len(raw.encode())>MAX_BODY:raise ValueError('Page exceeds its wire limit')
+    links=[];links_truncated=False
     if document.get('mime')=='text/plain':text=raw[:100000];title='';metadata={};truncated=len(raw)>100000
     else:
         parser=Text();parser.feed(raw);text,title=parser.result();metadata=parser.dates;truncated=parser.truncated
+        seen=set();link_chars=0
+        for link in parser.links:
+            if link['href'].startswith('#'):continue
+            target=urljoin(document['url'],link['href'])
+            if not public_shape(target) or target in seen:continue
+            if len(links)>=32 or link_chars+len(target)+len(link['text'])>6000:
+                links_truncated=True;continue
+            seen.add(target);links.append({'url':target,'text':link['text']});link_chars+=len(target)+len(link['text'])
+        links_truncated=links_truncated or len(parser.links)>=64
     if not text.strip():raise ValueError('Page has no readable static text')
     selected=passages(text,query)
     return {'url':document['url'],'requested_url':url,'title':title,'status':'retrieved','checked_at':utc(),
             'document_sha256':hashlib.sha256(text.encode()).hexdigest(),'document_chars':len(text),'document_truncated':truncated,
             'publisher_date_metadata':metadata,'passages':selected,'untrusted':True,
+            'links':links,'links_truncated':links_truncated,
             'truth_verified':False,'detail':'Selected exact passages from bounded static text. Dates are publisher metadata, not independently verified. Retrieval does not prove a claim.'}
 
 class Grounding:
@@ -159,12 +201,19 @@ class Grounding:
                 page=await self.page(item['url'],query_terms)
                 return {**item,**page,'title':page['title'] or item['title'],'id':f'S{index+1}'}
             except asyncio.CancelledError:raise
+            except PageHTTPError as error:
+                return {**item,'id':f'S{index+1}','status':'not_found' if error.status in (404,410) else 'unavailable',
+                        'upstream_status':error.status,'untrusted':True,'detail':page_http_detail(error)}
             except Exception:return {**item,'id':f'S{index+1}','status':'unavailable','untrusted':True,'detail':'Static page could not be retrieved safely. Do not treat its snippet as verified evidence.'}
         evidence=await asyncio.gather(*(fetch_one(item,index) for index,item in enumerate(results)))
         # At most three documents are read; the complete wire/model context is capped.
         shortened=False
         while len(json.dumps(evidence,ensure_ascii=False).encode())>24000:
             shortened=True
+            linked=[item for item in evidence if item.get('links')]
+            if linked:
+                item=max(linked,key=lambda value:len(json.dumps(value['links'],ensure_ascii=False).encode()));item['links'].pop();item['links_truncated']=True
+                continue
             values=[item for item in evidence if item.get('passages')]
             if not values:
                 candidates=[item for item in evidence if len(item.get('snippet',''))>150 or len(item.get('title',''))>100]
@@ -202,6 +251,8 @@ def install(app,auth,search=None,reader=read):
     @router.post('/page')
     async def page(body:PageRequest):
         try:return await grounding.page(body.url,body.query)
+        except PageHTTPError as error:
+            raise HTTPException(error.status if error.status in (404,410) else 502,page_http_detail(error)) from None
         except (ValueError,TimeoutError,OSError):raise HTTPException(502,'Public static page could not be retrieved safely') from None
     app.router.add_event_handler('shutdown',grounding.close)
     app.include_router(router)

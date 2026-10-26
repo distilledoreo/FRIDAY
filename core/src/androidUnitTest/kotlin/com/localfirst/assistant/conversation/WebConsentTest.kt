@@ -45,6 +45,15 @@ class WebConsentTest {
         assertEquals(0,webCalls);assertEquals(1,prompts.size);assertTrue(prompts.single(),prompts.single().contains("whitfield"))
         assertFalse(session.snapshot().filterIsInstance<Message.ToolResult>().last().success)
     }
+    @Test fun recallOnTheLatestMessageStillCountsAsPrivate() = runBlocking {
+        var webCalls = 0;val prompts = mutableListOf<String>()
+        val registry = ToolRegistry().apply { register(tool("web_search") { webCalls++ }) }
+        val model = Model({ "OK" }, listOf(ModelResponse.ToolCallResponse(listOf(search("houses near 1420 Oak Hollow Dr")))))
+        val session = ConversationSession(model,registry,"System.",confirmer=ToolConfirmer { prompts += it.prompt;false })
+        session.recallContext = "\n\nRetrieved personal context. Approved memories are user-reviewed facts.\n\nThe user's sister Priya lives at 1420 Oak Hollow Dr."
+        session.submitUserMessage("Find houses near my sister")
+        assertEquals(0,webCalls);assertEquals(1,prompts.size);assertTrue(prompts.single(),prompts.single().contains("1420 Oak Hollow Dr"))
+    }
     @Test fun nonIdentifyingRecalledDetailsGoWithoutAsking() = runBlocking {
         var webCalls = 0;var asked = 0
         val registry = ToolRegistry().apply { register(tool("web_search") { webCalls++ }) }

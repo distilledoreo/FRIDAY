@@ -13,6 +13,7 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -34,7 +35,7 @@ import com.localfirst.assistant.ui.theme.FridaySpacing
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 
-private enum class Page(val label: String) { CHAT("Chat"), PROJECTS("Projects"), MEMORY("Memory"), TASKS("Tasks"), FILES("Library"), IMAGES("Images"), ACTIVITY("FRIDAY"), ACCOUNTS("Accounts"), SETTINGS("Settings"),
+private enum class Page(val label: String) { CHAT("Chat"), PROJECTS("Projects"), MEMORY("Memory"), TASKS("Tasks"), FILES("Library"), IMAGES("Images"), VIDEOS("Videos"), ACTIVITY("FRIDAY"), ACCOUNTS("Accounts"), SETTINGS("Settings"),
     IMPORT("Import ChatGPT"), REVIEW("Review memories"), ARCHIVE("Archive"), SOURCE("Source chat"), CONTEXT("Recall context"), DATA("Data controls"), BRIEF("Dashboard") }
 
 /** Voice mode's controls, supplied by a host that can run spoken conversations. */
@@ -49,7 +50,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
     onShare: ((String) -> Unit)? = null,
     onImportChatGpt: (() -> Unit)? = null, onRestoreBackup: (() -> Unit)? = null,
     briefing: DashboardActions? = null,
-    /** Where a notification leads: "tasks", "activity", "code", "brief" or "chat:<id>". */
+    /** Where a notification leads: "tasks", "activity", "code", "brief", "videos" or "chat:<id>". */
     navigation: kotlinx.coroutines.flow.Flow<String>? = null,
     settingsExtras: @Composable ColumnScope.() -> Unit = {}) {
     var projectPage by remember { mutableStateOf<String?>(null) }
@@ -69,6 +70,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
                 target == "activity" -> { fridayTask = null; fridaySession = null; page = if (features != null) Page.ACTIVITY else Page.TASKS }
                 target == "code" -> code?.open()
                 target == "brief" -> page = Page.BRIEF
+                target == "videos" -> if (features != null && !state.incognito) page = Page.VIDEOS
                 target.startsWith("chat:") -> { vm.select(target.removePrefix("chat:")); page = Page.CHAT }
             }
         }
@@ -81,7 +83,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
         val wide = maxWidth >= 900.dp
         val idle = !state.busy && state.activeJob == null
         fun go(target: Page) {
-            if (target in listOf(Page.FILES, Page.IMAGES, Page.ACTIVITY, Page.ACCOUNTS, Page.TASKS, Page.IMPORT, Page.ARCHIVE, Page.SOURCE, Page.DATA) && state.incognito) { if (!idle) return; vm.newChat() }
+            if (target in listOf(Page.FILES, Page.IMAGES, Page.VIDEOS, Page.ACTIVITY, Page.ACCOUNTS, Page.TASKS, Page.IMPORT, Page.ARCHIVE, Page.SOURCE, Page.DATA) && state.incognito) { if (!idle) return; vm.newChat() }
             if (target == Page.ACTIVITY && page != Page.CHAT) { fridayTask = null; fridaySession = null }
             page = target; scope.launch { drawer.close() }
         }
@@ -107,6 +109,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
                 onActivity = features?.let { { fridayTask = null; fridaySession = null; go(Page.ACTIVITY) } },
                 onFiles = features?.let { { go(Page.FILES) } },
                 onImages = features?.let { { go(Page.IMAGES) } },
+                onVideos = features?.let { { go(Page.VIDEOS) } },
                 destinations = buildList { addAll(listOf(
                     DrawerDestination("Memory", LineIcons.Memory, page == Page.MEMORY) { go(Page.MEMORY) },
                     DrawerDestination("Tasks", LineIcons.Clock, page == Page.TASKS) { go(Page.TASKS) },
@@ -138,7 +141,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
                             if (features != null) add("Accounts" to { go(Page.ACCOUNTS) })
                             add("Data controls" to { go(Page.DATA) })
                             add("Settings" to { page = Page.SETTINGS })
-                            add("Lock" to { vm.lock() })
+                            add("Lock" to { vm.signOut() })
                         },
                     )
                 }
@@ -172,8 +175,9 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
                             onBackup = { vm.exportBackup() }, onRestore = { onRestoreBackup?.invoke() }, onImportChatGpt = { page = Page.IMPORT })
                         Page.TASKS -> TasksScreen(vm, state)
                         Page.SETTINGS -> SettingsScreen(vm, state, settingsExtras)
-                        Page.FILES -> features?.let { LibraryScreen(it, { vm.artifact(it) }, onLibraryUpload) }
+                        Page.FILES -> features?.let { LibraryScreen(it, { vm.artifact(it) }, onLibraryUpload, { id -> vm.reuseFile(id) }) }
                         Page.IMAGES -> features?.let { ImagesScreen(it) { vm.artifact(it) } }
+                        Page.VIDEOS -> features?.let { VideosScreen(it) { vm.artifact(it) } }
                         Page.ACTIVITY -> features?.let { ActivityScreen(it, fridayTask, fridaySession) { report -> vm.newChat(); vm.setDraft("Discuss this report:\n$report"); page = Page.CHAT } }
                         Page.ACCOUNTS -> features?.let { AccountsScreen(it) }
                         Page.BRIEF -> briefing?.let { com.localfirst.assistant.ui.dashboard.BriefSettingsScreen(it, state.projectId.orEmpty(), state.incognito, state.busy, "browser",
@@ -214,6 +218,7 @@ fun WorkspaceApp(vm: WorkspaceController, state: WorkspaceState,
 @Composable
 private fun ConnectScreen(vm: WorkspaceController, state: WorkspaceState) {
     var address by remember { mutableStateOf("") }; var token by remember { mutableStateOf("") }
+    var rememberMe by remember { mutableStateOf(false) }
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(24.dp), contentAlignment = Alignment.Center) {
         Column(Modifier.widthIn(max = 440.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text("FRIDAY", style = MaterialTheme.typography.headlineLarge)
@@ -221,9 +226,14 @@ private fun ConnectScreen(vm: WorkspaceController, state: WorkspaceState) {
             Text("Connect to the same computer as your Android app to share history, projects, memory and preferences.", style = MaterialTheme.typography.bodyMedium)
             OutlinedTextField(address, { address = it }, label = { Text("Computer address (optional)") }, modifier = Modifier.fillMaxWidth(), singleLine = true, enabled = !state.busy)
             OutlinedTextField(token, { token = it }, label = { Text("API token") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), singleLine = true, enabled = !state.busy)
-            Button({ vm.connect(address.trim(), token)?.invokeOnCompletion { if (vm.state.value.connected) token = "" } }, enabled = !state.busy && token.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text(if (state.busy) "Connecting…" else "Connect") }
+            if (vm.savedSignIn != null) Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text("Remember on this browser", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                androidx.compose.material3.Switch(rememberMe, { rememberMe = it }, enabled = !state.busy)
+            }
+            Button({ vm.connect(address.trim(), token, rememberMe)?.invokeOnCompletion { if (vm.state.value.connected) token = "" } }, enabled = !state.busy && token.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text(if (state.busy) "Connecting…" else "Connect") }
             state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            Text("Your token stays in this tab’s memory. Lock to disconnect.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+            Text(if (rememberMe) "Your token is saved in this browser until you lock FRIDAY. Anyone using this browser profile can open it; don't use this on a shared computer."
+                else "Your token stays in this tab’s memory. Lock to disconnect.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
         }
     }
 }
@@ -233,14 +243,16 @@ private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState, code: com
     onAttach: (() -> Unit)?, onDictate: (() -> Unit)?, dictating: Boolean,
     voice: com.localfirst.assistant.voice.VoiceUiState?, voiceControls: VoiceControls?, onShare: ((String) -> Unit)?,
     openFriday: (String?, String?) -> Unit, onDashboard: (() -> Unit)?) {
-    val scroll = rememberLazyListState()
+    val reading = rememberTranscriptScroll(Triple(state.activeId, state.incognito, state.projectId))
+    val scroll = reading.list
+    val scrollScope = rememberCoroutineScope()
     val messages = state.transcript
     val working = state.activeJob != null
     val transcript = remember(messages, working, state.approval != null) { Transcript.items(messages, working && state.approval == null) }
     val clipboard = LocalClipboardManager.current
     val copy: (String) -> Unit = { clipboard.setText(AnnotatedString(it)) }
-    val bottom = transcript.size + listOfNotNull(state.streamingText.takeIf { it.isNotBlank() }, state.approval, state.error).size
-    LaunchedEffect(state.activeId, bottom, state.streamingText.length / 100) { if (bottom > 0) scroll.animateScrollToItem(bottom - 1) }
+    val bottom = transcript.size + listOfNotNull(state.streamingText.takeIf { it.isNotBlank() }, state.approval, state.error, state.detachedReply).size
+    LaunchedEffect(scroll, bottom, state.streamingText.length / 100) { reading.followContent(bottom) }
     val palette = LocalFridayPalette.current
     BoxWithConstraints(Modifier.fillMaxSize()) {
     // As on the phone: FRIDAY's light fills an empty chat and dims behind a conversation, and the composer
@@ -256,7 +268,7 @@ private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState, code: com
                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            LazyColumn(state = scroll, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+            LazyColumn(state = scroll, modifier = Modifier.fillMaxSize().nestedScroll(reading.input), contentPadding = PaddingValues(vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
                 items(transcript, key = { it.key }) { item -> when(item) {
                     is TranscriptItem.User -> SharedUserMessage(item, actionsEnabled = state.idle, onCopy = copy, onEdit = vm::startEditing,
                         onBranch = if (state.incognito) null else ({ index -> vm.branch(index) }))
@@ -268,9 +280,9 @@ private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState, code: com
                         ChatToolResult(step, { vm.artifact(it) }, openFriday, code, { id -> if (!state.incognito) code?.open(id) }, features.takeUnless { state.incognito },
                             discuss = { text -> if (state.draft.isBlank()) vm.setDraft(text) else vm.reportError("Send or clear your draft first.") })
                     }
-                    TranscriptItem.Thinking -> if (state.streamingText.isBlank()) ThinkingIndicator()
+                    TranscriptItem.Thinking -> if (state.streamingText.isBlank()) ThinkingIndicator(state.jobStage)
                 } }
-                if (state.streamingText.isNotBlank()) item(key = "streaming-reply") { NativeResponseContent(state.streamingText) }
+                if (state.streamingText.isNotBlank()) item(key = "streaming-reply") { NativeResponseContent(rememberThrottled(state.streamingText)) }
                 state.approval?.let { approval -> item(key = "approval") {
                     fun text(key: String) = (approval[key] as? JsonPrimitive)?.contentOrNull.orEmpty()
                     ApprovalCard(text("tool"), text("title").ifBlank { "Allow this?" }, text("prompt"), { vm.answerApproval(it) },
@@ -284,6 +296,10 @@ private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState, code: com
                 } }
                 state.detachedReply?.let { reply -> item { Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = RoundedCornerShape(12.dp)) { Column(Modifier.padding(16.dp)) { Text("Reply saved separately because the chat changed", style = MaterialTheme.typography.titleSmall); AssistantReply(reply, state.preferences.interactiveAnswers, vm::setDraft) } } } }
             }
+            if (reading.showJump) FilledTonalButton(
+                onClick = { scrollScope.launch { reading.jump(bottom) } },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
+            ) { Text("Jump to latest") }
         }
         // As on the phone: source checking for the latest turn, its sources, and an offer of larger research.
         state.groundingStatus?.let { status ->
@@ -312,6 +328,8 @@ private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState, code: com
             SharedComposer(state.draft, busy = working, editing = state.editingIndex != null,
                 onDraftChange = vm::setDraft, onSend = { vm.send() }, onStop = { vm.stop() },
                 onCancelEdit = vm::cancelEditing, onVoice = voiceControls?.toggle, voiceActive = voice != null, onDictate = onDictate, dictating = dictating,
+                thinking = state.preferences.thinking,
+                onThinking = { vm.preference("thinking", kotlinx.serialization.json.JsonPrimitive(it.name)) },
                 onAttach = { menu = true }.takeUnless { state.busy || state.editingIndex != null }, hasAttachments = state.attachments.isNotEmpty(),
                 attachmentContent = { AttachmentStrip(state.attachments, !state.busy && state.activeJob == null, vm::removeAttachment) }, sendEnabled = state.canSend,
                 editingHasAttachments = editingHasAttachments,
@@ -359,7 +377,7 @@ private fun SettingsScreen(vm: WorkspaceController, state: WorkspaceState, extra
             save = { key, value, revision -> vm.preference(key, value, revision) })
         HorizontalDivider()
         extras()
-        OutlinedButton(vm::lock) { Text("Lock this client") }
+        OutlinedButton(vm::signOut) { Text("Lock this client") }
     }
 }
 

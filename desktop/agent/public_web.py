@@ -14,6 +14,14 @@ from urllib.parse import urljoin, urlsplit
 MAX_BODY = 2 * 1024 * 1024
 
 
+class PageHTTPError(ValueError):
+    """The publisher responded, but the requested page was not successful."""
+    def __init__(self, status, url):
+        self.status = status
+        self.url = url
+        super().__init__(f'Publisher returned HTTP {status}')
+
+
 class PublicReadPool:
     """Process-wide cap shared by phone evidence reads and approved agent IPC."""
     def __init__(self):self.pending=set()
@@ -82,7 +90,7 @@ def read(url, resolve=socket.getaddrinfo, connection=PinnedHTTPS, clock=time.mon
                 if not location: raise ValueError('Redirect lacks a destination')
                 url = urljoin(url, location)
                 continue
-            if response.status != 200: raise ValueError(f'Page returned HTTP {response.status}')
+            if response.status != 200: raise PageHTTPError(response.status, url)
             mime = response.getheader('Content-Type', '').split(';')[0].strip().lower()
             if mime not in ('text/html', 'text/plain', 'application/xhtml+xml'):
                 raise ValueError('Unsupported page type')

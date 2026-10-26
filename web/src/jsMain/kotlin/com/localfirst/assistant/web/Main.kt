@@ -28,7 +28,7 @@ fun main() = onWasmReady {
         val scope = rememberCoroutineScope()
         val gateway = remember { FetchWorkspaceGateway() }
         val vm = remember { WorkspaceController(WorkspaceRepository(gateway), scope, ::randomConversationId, PlatformSystem::currentTimeMillis,
-            save = { name, mime, bytes -> downloadBytes(name, mime, bytes) }, inflate = browserInflate) }
+            save = { name, mime, bytes -> downloadBytes(name, mime, bytes) }, inflate = browserInflate, savedSignIn = BrowserSavedSignIn, draftRecovery = BrowserDraftRecovery) }
         val state by vm.state.collectAsState()
         val features = remember { FeatureController(gateway, scope, browserOAuth = true) }
         val briefing = remember { BriefingController(gateway, scope) }
@@ -48,6 +48,7 @@ fun main() = onWasmReady {
             onDispose { window.removeEventListener("message", listener); oauthWindow?.close() }
         }
         val images = remember { BrowserImages(gateway) }
+        val videos = remember { BrowserVideos(gateway) }
         val audio = remember { BrowserVoiceIo(gateway, scope) }
         // The same voice loop as the phone: streamed sentences, talking over FRIDAY, and spoken approvals.
         var voiceEngine by remember { mutableStateOf(DeviceChoices.voiceEngine) }
@@ -98,10 +99,14 @@ fun main() = onWasmReady {
             }
         }
         DisposableEffect(vm) {
+            // Leaving clears the token from memory; a remembered sign-in reconnects when the page shows again.
             val leave: (Event) -> Unit = { vm.lock() }
+            val back: (Event) -> Unit = { vm.resumeSavedSignIn() }
             window.addEventListener("pagehide", leave)
-            onDispose { window.removeEventListener("pagehide", leave) }
+            window.addEventListener("pageshow", back)
+            onDispose { window.removeEventListener("pagehide", leave); window.removeEventListener("pageshow", back) }
         }
+        LaunchedEffect(vm) { vm.resumeSavedSignIn() }
         DisposableEffect(Unit) {
             val listener: (Event) -> Unit = { e -> val data = e.asDynamic().data
                 if (data?.kind == "friday-notice" && data.open is String) navigation.tryEmit(data.open as String) }
@@ -121,7 +126,7 @@ fun main() = onWasmReady {
             override fun get(id: String) = values[id]
             override fun set(id: String, json: String) { if (json.length <= 200000 && values.size < 40) values[id] = json }
         } }
-        LaunchedEffect(state.connected) { if (!state.connected) { voice.close(); audio.close(); images.clear(); features.reset(); briefing.reset(); code.reset(); oauthWindow?.close(); oauthWindow = null } }
+        LaunchedEffect(state.connected) { if (!state.connected) { voice.close(); audio.close(); images.clear(); videos.clear(); features.reset(); briefing.reset(); code.reset(); oauthWindow?.close(); oauthWindow = null } }
         // Voice belongs to one conversation; leaving it ends voice mode.
         var voiceChat by remember { mutableStateOf<String?>(null) }
         LaunchedEffect(state.activeId, state.incognito) { if (voice.active && voiceChat != null && state.activeId != voiceChat) voice.close(); voiceChat = state.activeId }
@@ -131,7 +136,7 @@ fun main() = onWasmReady {
             document.addEventListener("visibilitychange", listener)
             onDispose { voice.shutdown(); audio.close(); features.reset(); code.reset(); document.removeEventListener("visibilitychange", listener); vm.close() }
         }
-        CompositionLocalProvider(LocalOAuthLauncher provides { url -> oauthWindow = window.open(url, "friday-account-sign-in", "popup,width=600,height=750") }, LocalFeatureImages provides images::path, LocalReplyImages provides images, LocalReplyApps provides apps, LocalUriHandler provides object : UriHandler {
+        CompositionLocalProvider(LocalOAuthLauncher provides { url -> oauthWindow = window.open(url, "friday-account-sign-in", "popup,width=600,height=750") }, LocalFeatureImages provides images::path, LocalFeatureVideos provides { path -> videos.url(path) }, LocalReplyImages provides images, LocalReplyApps provides apps, LocalUriHandler provides object : UriHandler {
             override fun openUri(uri: String) {
                 val artifact = Regex("^assistant://artifact/([a-f0-9]{32})$").matchEntire(uri)
                 if (artifact != null) vm.artifact(artifact.groupValues[1])
@@ -140,7 +145,14 @@ fun main() = onWasmReady {
         }) { AssistantTheme(state.preferences) { WorkspaceApp(vm, state, features, code,
             onAttach = { pickBrowserFiles(scope, vm) }, onLibraryUpload = { pickBrowserFiles(scope, vm, false) },
             onDictate = { audio.dictate(vm, voice.active) }, dictating = dictating,
-            voice = voiceState, voiceControls = VoiceControls(toggle = { if (voice.active) voice.close() else { voiceChat = state.activeId; voice.start() } },
+            voice = voiceState, voiceControls = VoiceControls(toggle = { if (voice.active) voice.close() else scope.launch {
+                if (!vm.state.value.incognito) {
+                    vm.openLiveVoice()?.join()
+                    if (vm.state.value.activeId != com.localfirst.assistant.voice.LiveVoiceConversation.ID) return@launch
+                }
+                voiceChat = vm.state.value.activeId
+                voice.start()
+            } },
                 pause = { voice.pause("Voice paused. Resume when you're ready.") }, resume = voice::start, interrupt = { voice.interrupt() },
                 close = voice::close, mute = { voice.muteMic(voiceState?.micMuted != true) }),
             onShare = { text -> shareText(text) { vm.reportError(it) } },

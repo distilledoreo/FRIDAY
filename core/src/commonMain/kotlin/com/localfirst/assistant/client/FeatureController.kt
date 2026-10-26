@@ -3,6 +3,7 @@ package com.localfirst.assistant.client
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
+import com.localfirst.assistant.platform.PlatformNet
 
 fun JsonObject.string(key: String) = (this[key] as? JsonPrimitive)?.contentOrNull.orEmpty()
 fun JsonObject.flag(key: String) = (this[key] as? JsonPrimitive)?.booleanOrNull == true
@@ -11,6 +12,10 @@ fun JsonElement.rows(): List<JsonObject> = (this as? JsonArray)?.mapNotNull { it
 data class FeatureState(
     val page: String = "files", val busy: Boolean = false, val error: String? = null,
     val files: List<JsonObject> = emptyList(), val images: List<JsonObject> = emptyList(),
+    /** Video jobs, and the computer's video options (sizes and times per duration); null until first loaded. */
+    val videos: List<JsonObject> = emptyList(), val videoOptions: JsonObject? = null,
+    val fileQuery: String = "", val fileKind: String = "all", val fileSort: String = "recent",
+    val fileLoading: Boolean = false, val fileTotal: Int = 0, val fileNextOffset: Int? = null,
     val tasks: List<JsonObject> = emptyList(), val task: JsonObject? = null, val events: List<JsonObject> = emptyList(),
     val health: JsonObject = JsonObject(emptyMap()), val pc: JsonObject = JsonObject(emptyMap()),
     val sessions: List<JsonObject> = emptyList(), val session: JsonObject? = null,
@@ -23,6 +28,8 @@ data class FeatureState(
     val chatWorkBusy: Boolean = false,
 )
 
+private val TERMINAL = setOf("completed", "failed", "cancelled")
+
 /** Portable service orchestration; optional PC services report their own availability per screen. */
 class FeatureController(val gateway: WorkspaceGateway, private val scope: CoroutineScope, private val browserOAuth: Boolean = false) {
     private val mutable = MutableStateFlow(FeatureState())
@@ -30,12 +37,61 @@ class FeatureController(val gateway: WorkspaceGateway, private val scope: Corout
     private var epoch = 0
     private var eventCursor = 0L
     private var operation: Job? = null
-    fun reset() { epoch++; operation?.cancel(); mutable.value = FeatureState() }
+    private var fileOperation: Job? = null
+    private var fileGeneration = 0
+    /** How long an open screen waits before refreshing: quickly while something there is in progress, slowly otherwise.
+     *  Each refresh of Activity is several requests, so an idle screen polling every few seconds costs battery. */
+    fun refreshDelayMillis(): Long {
+        val s = state.value
+        val working = when (s.page) {
+            "images" -> s.images.any { it.string("status") !in TERMINAL }
+            "videos" -> s.videos.any { it.string("status") !in TERMINAL }
+            "activity" -> s.tasks.any { it.string("status") in setOf("approved", "running") } || s.sessions.any { it.string("state") == "busy" }
+            else -> false
+        }
+        return if (working) 3_000 else 30_000
+    }
+    private var filesLoadedAt = 0L
+    fun reset() { epoch++; operation?.cancel(); fileGeneration++; fileOperation?.cancel(); mutable.value = FeatureState() }
     fun dismissError() { mutable.update { it.copy(error = null) } }
-    fun open(page: String, taskId: String? = null, sessionId: String? = null) { eventCursor = 0; mutable.update { it.copy(page = page, task = taskId?.let { buildJsonObject { put("id", it) } }, session = sessionId?.let { buildJsonObject { put("id", it) } }, events = emptyList(), error = null) }; refresh() }
+    fun open(page: String, taskId: String? = null, sessionId: String? = null) { fileGeneration++; fileOperation?.cancel(); eventCursor = 0; mutable.update { it.copy(page = page, fileLoading = false, task = taskId?.let { buildJsonObject { put("id", it) } }, session = sessionId?.let { buildJsonObject { put("id", it) } }, events = emptyList(), error = null) }; refresh() }
     fun task(id: String?) { eventCursor = 0; mutable.update { it.copy(task = id?.let { buildJsonObject { put("id", it) } }, events = emptyList()) }; refresh() }
     fun session(id: String?) { mutable.update { it.copy(session = id?.let { buildJsonObject { put("id", it) } }) }; refresh() }
-    fun refresh(after: Long = eventCursor): Job? = run { identity -> eventCursor = after; load(identity, after) }
+    fun refresh(after: Long = eventCursor): Job? = if (state.value.page == "files") requestFiles() else run { identity -> eventCursor = after; load(identity, after) }
+    fun searchFiles(query: String) {
+        mutable.update { it.copy(fileQuery = query.take(500)) }
+        requestFiles(debounce = true)
+    }
+    fun filterFiles(kind: String) {
+        require(kind in setOf("all", "images", "documents", "audio", "video", "other"))
+        mutable.update { it.copy(fileKind = kind) }; requestFiles()
+    }
+    fun sortFiles(sort: String) {
+        require(sort in setOf("recent", "name", "size"))
+        mutable.update { it.copy(fileSort = sort) }; requestFiles()
+    }
+    fun moreFiles(): Job? = if (state.value.fileLoading || state.value.fileNextOffset == null) null else requestFiles(append = true)
+    /** File reads have their own generation so typing cannot cancel an upload/delete or publish stale results. */
+    private fun requestFiles(append: Boolean = false, debounce: Boolean = false): Job? {
+        val old = state.value
+        if (old.page != "files") return null
+        val offset = if (append) old.fileNextOffset ?: return null else 0
+        val identity = epoch
+        val generation = ++fileGeneration
+        fileOperation?.cancel()
+        mutable.update { it.copy(fileLoading = true, error = null, files = if (append) it.files else emptyList(), fileTotal = if (append) it.fileTotal else 0, fileNextOffset = if (append) it.fileNextOffset else null) }
+        return scope.launch {
+            try {
+                if (debounce) delay(250)
+                val response = gateway.request("/workspace/files?paged=true&limit=50&offset=$offset&q=${PlatformNet.encodeUrl(old.fileQuery)}&kind=${old.fileKind}&sort=${old.fileSort}").jsonObject
+                if (identity == epoch && generation == fileGeneration && state.value.page == "files") mutable.update {
+                    it.copy(files = ((if (append) old.files else emptyList()) + response["files"]!!.rows()).distinctBy { file -> file.string("id") }, fileTotal = response["total"]!!.jsonPrimitive.int, fileNextOffset = response["next_offset"]?.jsonPrimitive?.intOrNull)
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { if (identity == epoch && generation == fileGeneration) mutable.update { it.copy(error = e.message ?: "Library unavailable") } }
+            finally { if (identity == epoch && generation == fileGeneration) mutable.update { it.copy(fileLoading = false) } }
+        }.also { fileOperation = it }
+    }
     private fun run(block: suspend (Int) -> Unit): Job? {
         if (state.value.busy) return null
         val identity = epoch
@@ -51,8 +107,19 @@ class FeatureController(val gateway: WorkspaceGateway, private val scope: Corout
         val old = state.value
         var next = old
         when (old.page) {
-            "files" -> next = old.copy(files = gateway.request("/workspace/files").rows())
-            "images" -> next = old.copy(images = gateway.request("/workspace/images").rows(), files = gateway.request("/workspace/files").rows())
+            "files" -> { if (identity == epoch) requestFiles()?.join(); return }
+            "images" -> {
+                // The reference picker's file list changes rarely; reload it at most once a minute.
+                val now = com.localfirst.assistant.platform.PlatformSystem.currentTimeMillis()
+                val files = if (old.files.isEmpty() || now - filesLoadedAt > 60_000) gateway.request("/workspace/files").rows().also { filesLoadedAt = now } else old.files
+                next = old.copy(images = gateway.request("/workspace/images").rows(), files = files)
+            }
+            "videos" -> {
+                // The options table only changes with the computer's setup: read it once per connection (until it's available).
+                val options = old.videoOptions?.takeIf { it.flag("available") } ?: try { gateway.request("/workspace/videos/capabilities").jsonObject } catch (e: CancellationException) { throw e } catch (e: Exception) { buildJsonObject { put("available", false); put("detail", e.message ?: "Video service unavailable") } }
+                next = old.copy(videoOptions = options, videos = if (options.flag("available")) gateway.request("/workspace/videos").rows() else emptyList(),
+                    files = if ((options["inputs"] as? JsonArray).isNullOrEmpty()) old.files else gateway.request("/workspace/files").rows())
+            }
             "activity" -> {
                 val tasks = gateway.request("/workspace/agent/tasks").rows()
                 val health = gateway.request("/workspace/agent/health").jsonObject

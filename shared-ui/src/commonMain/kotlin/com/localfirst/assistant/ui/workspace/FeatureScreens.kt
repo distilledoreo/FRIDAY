@@ -21,78 +21,218 @@ import kotlinx.coroutines.delay
 import kotlinx.serialization.json.*
 
 val LocalOAuthLauncher = staticCompositionLocalOf<((String) -> Unit)?> { null }
-val LocalFeatureImages = staticCompositionLocalOf<suspend (String) -> ImageBitmap?> { { null } }
+/** A workspace image by path, decoded to fit `maxEdge` pixels on its longest side (a gallery tile needs far fewer
+ *  than the original's), or null when unavailable. */
+val LocalFeatureImages = staticCompositionLocalOf<suspend (path: String, maxEdge: Int) -> ImageBitmap?> { { _, _ -> null } }
 
 @Composable
 private fun ServiceScreen(title: String, vm: FeatureController, initialTask: String? = null, initialSession: String? = null, content: LazyListScope.(FeatureState) -> Unit) {
     val state by vm.state.collectAsState()
-    LaunchedEffect(title, initialTask, initialSession) { vm.open(when(title) { "Library" -> "files"; "Images" -> "images"; "Accounts" -> "accounts"; else -> "activity" }, initialTask, initialSession) }
-    FridayVisibleEffect(title) { while (true) { delay(3000); vm.refresh() } }
+    LaunchedEffect(title, initialTask, initialSession) { vm.open(when(title) { "Library" -> "files"; "Images" -> "images"; "Videos" -> "videos"; "Accounts" -> "accounts"; else -> "activity" }, initialTask, initialSession) }
+    FridayVisibleEffect(title) { if (title != "Library") while (true) { delay(vm.refreshDelayMillis()); vm.refresh() } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Row(verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium); TextButton({ vm.refresh() }, enabled = !state.busy) { Text("Refresh") } } }
-        state.error?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
-        if (state.busy) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+        item(key = "service-header") { Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium); TextButton({ vm.refresh() }, enabled = !state.busy && !state.fileLoading) { Text("Refresh") } }
+            // Loading must not recreate a focused input or move it to a different lazy-list slot.
+            Box(Modifier.fillMaxWidth().height(4.dp)) { if (state.busy || state.fileLoading) LinearProgressIndicator(Modifier.fillMaxWidth()) }
+        } }
+        state.error?.let { item(key = "service-error") { Text(it, color = MaterialTheme.colorScheme.error) } }
         content(state)
     }
 }
 
 @Composable
-fun LibraryScreen(vm: FeatureController, open: (String) -> Unit, attach: (() -> Unit)? = null) {
+fun LibraryScreen(vm: FeatureController, open: (String) -> Unit, attach: (() -> Unit)? = null, reuse: ((String) -> Unit)? = null) {
+    // Library shows the persistent collection in ordinary chats; hosts leave incognito before opening it,
+    // so reuse always references a saved file into an ordinary draft and never crosses the private boundary.
     var deleting by remember { mutableStateOf<JsonObject?>(null) }
     ServiceScreen("Library", vm) { state ->
+        item(key = "library-controls") { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(state.fileQuery, vm::searchFiles, Modifier.fillMaxWidth(), singleLine = true,
+                label = { Text("Search filenames") }, trailingIcon = { if (state.fileQuery.isNotEmpty()) TextButton({ vm.searchFiles("") }) { Text("Clear") } })
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("all" to "All files", "images" to "Images", "documents" to "Documents", "audio" to "Audio", "video" to "Video", "other" to "Other").forEach { (kind, label) ->
+                    FilterChip(state.fileKind == kind, { vm.filterFiles(kind) }, label = { Text(label) })
+                }
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("recent" to "Newest first", "name" to "Name A–Z", "size" to "Largest first").forEach { (sort, label) ->
+                    FilterChip(state.fileSort == sort, { vm.sortFiles(sort) }, label = { Text(label) })
+                }
+            }
+            if (!state.fileLoading && state.error == null) Text("${state.files.size} of ${state.fileTotal} files", style = MaterialTheme.typography.bodySmall)
+        } }
         if (attach != null) item { Button(attach, enabled = !state.busy) { Text("Upload files") } }
-        if (state.files.isEmpty() && !state.busy) item { Text("Uploaded files and files created by FRIDAY appear here.") }
+        if (state.files.isEmpty() && !state.busy && !state.fileLoading && state.error == null) item {
+            Text(if (state.fileQuery.isNotBlank() || state.fileKind != "all") "No files match this search and file type." else "Uploaded files and files created by FRIDAY appear here.")
+        }
         items(state.files, key = { it.string("id") }) { file -> FridayCard(Modifier.fillMaxWidth()) {
             ListItem(headlineContent = { Text(file.string("name")) }, supportingContent = { Text("${file.string("size")} bytes · ${file.string("mime")}") },
-                modifier = Modifier.clickable { open(file.string("id")) }, trailingContent = { MoreActions(listOf("Delete" to { deleting = file })) })
+                modifier = Modifier.clickable { open(file.string("id")) }, trailingContent = { MoreActions(buildList {
+                    if (reuse != null) add("Add to chat" to { reuse(file.string("id")) })
+                    add("Delete" to { deleting = file })
+                }) })
         } }
+        if (state.fileNextOffset != null) item { TextButton({ vm.moreFiles() }, enabled = !state.fileLoading) { Text("Load more files") } }
     }
     deleting?.let { file -> AlertDialog(onDismissRequest = { deleting = null }, title = { Text("Delete ${file.string("name") }?") }, text = { Text("Chats or tasks using this file may no longer open it.") },
-        confirmButton = { TextButton({ vm.change("/workspace/files/${file.string("id")}", "DELETE"); deleting = null }) { Text("Delete") } }, dismissButton = { TextButton({ deleting = null }) { Text("Cancel") } }) }
+        confirmButton = { TextButton({ vm.change("/workspace/files/${file.string("id")}", "DELETE"); deleting = null }, enabled = !vm.state.value.busy) { Text("Delete") } }, dismissButton = { TextButton({ deleting = null }) { Text("Cancel") } }) }
 }
 
 @Composable
 fun ServiceImage(path: String, label: String, modifier: Modifier = Modifier) {
     val loader = LocalFeatureImages.current
-    val bitmap by produceState<ImageBitmap?>(null, path, loader) { value = runCatching { loader(path) }.getOrNull() }
+    val bitmap by produceState<ImageBitmap?>(null, path, loader) { value = runCatching { loader(path, 1280) }.getOrNull() }
     bitmap?.let { Image(it, label, modifier.heightIn(max = 480.dp), contentScale = ContentScale.Fit) } ?: Text("Preview loading or unavailable", style = MaterialTheme.typography.bodySmall)
 }
 
 @Composable
 fun ImagesScreen(vm: FeatureController, open: (String) -> Unit) {
     var prompt by remember { mutableStateOf("") }
-    var width by remember { mutableStateOf("768") }; var height by remember { mutableStateOf("768") }
-    var steps by remember { mutableStateOf("8") }; var seed by remember { mutableStateOf("") }
-    var transparent by remember { mutableStateOf(false) }; var references by remember { mutableStateOf(setOf<String>()) }
-    val valid = width.toIntOrNull()?.let { it in 256..2000 && it % 16 == 0 } == true && height.toIntOrNull()?.let { it in 256..2000 && it % 16 == 0 } == true && steps.toIntOrNull() in 4..12 && (seed.isBlank() || seed.toIntOrNull()?.let { it >= 0 } == true) && (width.toLongOrNull() ?: 0) * (height.toLongOrNull() ?: 0) * (steps.toLongOrNull() ?: 0) <= 2000L * 2000 * 8
-    ServiceScreen("Images", vm) { state ->
-        item { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(prompt, { prompt = it.take(4000) }, Modifier.fillMaxWidth(), label = { Text("Describe an image") })
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Square" to (768 to 768), "Landscape" to (1024 to 576), "Portrait" to (576 to 1024)).forEach { (label, size) -> TextButton({ width = size.first.toString(); height = size.second.toString() }) { Text(label) } } }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(width, { width = it.take(4) }, Modifier.weight(1f), label = { Text("Width") })
-                OutlinedTextField(height, { height = it.take(4) }, Modifier.weight(1f), label = { Text("Height") })
+    var aspect by remember { mutableStateOf(0) }; var longest by remember { mutableStateOf(DEFAULT_LONGEST) }
+    var seed by remember { mutableStateOf("") }; var transparent by remember { mutableStateOf(false) }
+    var references by remember { mutableStateOf(listOf<String>()) }
+    var picking by remember { mutableStateOf(false) }; var viewing by remember { mutableStateOf<String?>(null) }
+    val state by vm.state.collectAsState()
+    fun generate() {
+        val (width, height) = imageSize(IMAGE_ASPECTS[aspect], longest)
+        vm.change("/workspace/images", body = buildJsonObject {
+            put("prompt", prompt.trim()); put("width", width); put("height", height)
+            // The PC's image setup decides the step count (its distilled schedule); 8 is the request's nominal value.
+            put("steps", 8)
+            put("seed", seed.toIntOrNull() ?: kotlin.random.Random.nextInt(Int.MAX_VALUE)); put("transparent", transparent)
+            put("reference_file_ids", JsonArray(references.map(::JsonPrimitive)))
+        })
+        prompt = ""; references = emptyList()
+    }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        // Newest first, in rows of squares sized to the window: two on a phone, up to six on a wide screen.
+        val columns = ((maxWidth - 40.dp) / 168.dp).toInt().coerceIn(2, 6)
+        ServiceScreen("Images", vm) { state ->
+            item(key = "images-composer") {
+                ImageComposer(prompt, { prompt = it }, aspect, { aspect = it }, longest, { longest = it }, seed, { seed = it },
+                    transparent, { transparent = it }, references, { id -> references = references - id }, { picking = true },
+                    state.busy, ::generate)
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(steps, { steps = it.take(2) }, Modifier.weight(1f), label = { Text("Steps (4–12)") })
-                OutlinedTextField(seed, { seed = it.take(10) }, Modifier.weight(1f), label = { Text("Seed (optional)") })
+            if (state.images.isEmpty()) item(key = "images-empty") {
+                Column(Modifier.fillMaxWidth().padding(vertical = 48.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("No images yet", style = MaterialTheme.typography.titleMedium)
+                    Text("Describe one above, or ask FRIDAY for one in any chat.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
-            Row(verticalAlignment = Alignment.CenterVertically) { Text("Transparent background", Modifier.weight(1f)); Switch(transparent, { transparent = it }) }
-            Text("Reference images · ${references.size}/2", style = MaterialTheme.typography.labelLarge)
-            state.files.filter { it.string("mime").startsWith("image/") }.forEach { file -> Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(file.string("id") in references, { checked -> references = if (checked) references + file.string("id") else references - file.string("id") }, enabled = file.string("id") in references || references.size < 2); Text(file.string("name"))
-            } }
-            Button({ vm.change("/workspace/images", body = buildJsonObject { put("prompt", prompt); put("width", width.toInt()); put("height", height.toInt()); put("steps", steps.toInt()); put("seed", seed.toIntOrNull() ?: kotlin.random.Random.nextInt(Int.MAX_VALUE)); put("transparent", transparent); put("reference_file_ids", JsonArray(references.map(::JsonPrimitive))) }) }, enabled = valid && prompt.isNotBlank() && !state.busy) { Text("Generate image") }
-            if (!valid) Text("Use dimensions 256–2000 in multiples of 16, 4–12 steps, and a non-negative seed. Large images allow fewer steps.")
-        } }
-        if (state.images.isEmpty()) item { Text("No generated images yet.") }
-        items(state.images, key = { it.string("id") }) { job -> FridayCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(job.string("prompt"), style = MaterialTheme.typography.titleSmall); Text(job.string("phase").ifBlank { job.string("status") }.replace('_', ' '))
-            (job["artifact"] as? JsonObject)?.let { artifact -> ServiceImage("/workspace/files/${artifact.string("id")}", "Generated image", Modifier.fillMaxWidth()); TextButton({ open(artifact.string("id")) }) { Text("Open or save image") } }
-            job.string("error").takeIf { it.isNotBlank() }?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            if (job.string("status") !in listOf("completed", "failed", "cancelled")) TextButton({ vm.change("/workspace/images/${job.string("id")}/cancel") }, enabled = !state.busy) { Text("Cancel") }
-            else TextButton({ vm.change("/workspace/images/${job.string("id")}", "DELETE") }, enabled = !state.busy) { Text("Remove from image history") }
-        } } }
+            items(state.images.chunked(columns), key = { row -> "images-" + row.first().string("id") }) { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    row.forEach { job -> ImageTile(job, Modifier.weight(1f)) { viewing = job.string("id") } }
+                    repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+        }
+        viewing?.let { id ->
+            val job = state.images.firstOrNull { it.string("id") == id }
+            if (job == null) viewing = null
+            else ImageViewer(job, state.busy, onClose = { viewing = null }, onSave = open,
+                onEdit = { artifact -> references = listOf(artifact); prompt = ""; viewing = null },
+                onReuse = {
+                    prompt = job.string("prompt")
+                    (job["request"] as? JsonObject)?.let { r ->
+                        val w = r["width"]?.jsonPrimitive?.intOrNull; val h = r["height"]?.jsonPrimitive?.intOrNull
+                        if (w != null && h != null && w > 0 && h > 0) {
+                            // The closest shape and longest side to the original, which may predate these choices.
+                            aspect = IMAGE_ASPECTS.indices.minBy { i -> kotlin.math.abs(IMAGE_ASPECTS[i].first.toDouble() / IMAGE_ASPECTS[i].second - w.toDouble() / h) }
+                            longest = IMAGE_LONGEST.minBy { kotlin.math.abs(it - maxOf(w, h)) }
+                        }
+                    }
+                    viewing = null
+                },
+                onCancel = { vm.change("/workspace/images/$id/cancel") },
+                onDelete = { vm.change("/workspace/images/$id", "DELETE"); viewing = null })
+        }
+    }
+    if (picking) ReferencePicker(state.files, references, onDone = { references = it; picking = false }, onDismiss = { picking = false })
+}
+
+@Composable
+fun VideosScreen(vm: FeatureController, open: (String) -> Unit) {
+    var prompt by remember { mutableStateOf("") }
+    var seconds by remember { mutableStateOf(4) }; var aspect by remember { mutableStateOf("16:9") }; var quality by remember { mutableStateOf(0) }
+    var seed by remember { mutableStateOf("") }
+    var inputs by remember { mutableStateOf(listOf<VideoInputDraft>()) }
+    var picking by remember { mutableStateOf<String?>(null) }; var viewing by remember { mutableStateOf<String?>(null) }
+    val state by vm.state.collectAsState()
+    val options = state.videoOptions
+    fun generate() {
+        vm.change("/workspace/videos", body = buildJsonObject {
+            put("prompt", prompt.trim()); put("duration_seconds", seconds); put("aspect", aspect); put("quality", quality)
+            put("seed", seed.toIntOrNull() ?: kotlin.random.Random.nextInt(Int.MAX_VALUE))
+            put("inputs", JsonArray(inputs.map { input -> buildJsonObject {
+                put("kind", input.kind); put("file_id", input.fileId)
+                // Times are kept inside the chosen length, which may have shortened since the keyframe was placed.
+                input.atSeconds?.let { put("at_seconds", it.coerceIn(0.1f, seconds - 0.1f).toDouble()) }
+            } }))
+        })
+        prompt = ""; inputs = emptyList()
+    }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val columns = ((maxWidth - 40.dp) / 168.dp).toInt().coerceIn(2, 6)
+        ServiceScreen("Videos", vm) { state ->
+            val available = options?.flag("available") == true
+            if (options != null && !available) item(key = "videos-unavailable") {
+                Column(Modifier.fillMaxWidth().padding(vertical = 48.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Video isn't set up on this computer", style = MaterialTheme.typography.titleMedium)
+                    Text(options.string("detail").ifBlank { "It needs the LTX video runtime and a video config on the PC." },
+                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            if (available) {
+                item(key = "videos-composer") {
+                    VideoComposer(options!!, prompt, { prompt = it }, seconds, { seconds = it }, aspect, { aspect = it },
+                        quality, { quality = it }, seed, { seed = it }, inputs, { picking = it },
+                        { index -> inputs = inputs.filterIndexed { i, _ -> i != index } },
+                        { index, at -> inputs = inputs.mapIndexed { i, input -> if (i == index) input.copy(atSeconds = at) else input } },
+                        state.busy, ::generate)
+                }
+                if (state.videos.isEmpty()) item(key = "videos-empty") {
+                    Column(Modifier.fillMaxWidth().padding(vertical = 48.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("No videos yet", style = MaterialTheme.typography.titleMedium)
+                        Text("Describe one above, or ask FRIDAY for one in any chat.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                items(state.videos.chunked(columns), key = { row -> "videos-" + row.first().string("id") }) { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        row.forEach { job -> VideoTile(job, Modifier.weight(1f)) { viewing = job.string("id") } }
+                        repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
+                    }
+                }
+            }
+        }
+        viewing?.let { id ->
+            val job = state.videos.firstOrNull { it.string("id") == id }
+            if (job == null) viewing = null
+            else VideoViewer(job, state.busy, onClose = { viewing = null }, onSave = open,
+                onReuse = {
+                    prompt = job.string("prompt")
+                    (job["request"] as? JsonObject)?.let { r ->
+                        r["duration_seconds"]?.jsonPrimitive?.intOrNull?.let { seconds = it }
+                        r["aspect"]?.jsonPrimitive?.contentOrNull?.let { aspect = it }
+                        r["quality"]?.jsonPrimitive?.intOrNull?.let { quality = it }
+                    }
+                    viewing = null
+                },
+                onCancel = { vm.change("/workspace/videos/$id/cancel") },
+                onDelete = { vm.change("/workspace/videos/$id", "DELETE"); viewing = null },
+                // Continue this video: its frames open the next one.
+                onExtend = if ("source_video" in (options?.videoInputs() ?: emptyList())) { artifact ->
+                    inputs = inputs.filter { it.kind != "source_video" && it.kind != "start_image" } +
+                        VideoInputDraft("source_video", artifact, job.string("prompt").take(60))
+                    prompt = ""; viewing = null
+                } else null)
+        }
+    }
+    picking?.let { kind ->
+        VideoInputPicker(state.files, kind, onPick = { file ->
+            inputs = inputs + VideoInputDraft(kind, file.string("id"), file.string("name"), if (kind == "keyframe") seconds / 2f else null)
+            picking = null
+        }, onDismiss = { picking = null })
     }
 }
 

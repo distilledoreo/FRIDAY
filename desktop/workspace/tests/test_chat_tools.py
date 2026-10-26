@@ -26,7 +26,9 @@ class ChatToolTests(unittest.IsolatedAsyncioTestCase):
         self.models = []
         async def auth(authorization: str = Header(default='')):
             if authorization != 'Bearer synthetic': raise HTTPException(401)
-        async def model(messages, tools, model_id=None):
+        self.private = []
+        async def model(messages, tools, model_id=None, private=False):
+            self.private.append(private)
             self.inputs.append((json.loads(json.dumps(messages)), tools))
             self.models.append(model_id)
             return self.script.pop(0)
@@ -176,8 +178,9 @@ class ChatToolTests(unittest.IsolatedAsyncioTestCase):
         await self.until(job_id, 'completed')
         self.assertEqual(self.calls, [])
         self.assertIn('declined', self.saved()[2]['content'])
-        # Recalled memories sit last in the system prompt; project text is not mistaken for them.
-        self.assertTrue(self.inputs[0][0][0]['content'].endswith('1420 Oak Hollow Dr.'))
+        # Recalled memories ride on the latest user turn, before the sent-at note; the system prompt stays fixed.
+        self.assertNotIn('1420 Oak Hollow Dr', self.inputs[0][0][0]['content'])
+        self.assertTrue(self.inputs[0][0][-1]['content'][-2]['text'].endswith('1420 Oak Hollow Dr.'))
 
     async def test_custom_model_job_continues_after_its_client_connection_closes(self):
         from unittest.mock import patch
@@ -245,6 +248,7 @@ class ChatToolTests(unittest.IsolatedAsyncioTestCase):
         await self.until(job_id, 'completed')
         self.assertEqual(self.calls[0][1], '/grounding')
         self.assertIn('IDENTIFYING or OK', self.inputs[1][0][0]['content'])
+        self.assertEqual(self.private[1], True)  # The privacy check quotes private details.
 
     async def test_no_search_requests_block_web_tools_and_turn_notes_are_never_saved(self):
         self.script = [self.call('web_search', {'query': 'tea'}), {'role': 'assistant', 'content': 'Offline answer.'}]
@@ -276,7 +280,7 @@ class ChatToolTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(.3)
         names = {t['function']['name'] for t in self.inputs[0][1]}
         self.assertEqual(names, {'web_search', 'fetch_page', 'create_file', 'generate_image', 'search_memory'})
-        self.assertIn('priya.k@example.org', self.inputs[0][0][0]['content'])
+        self.assertIn('priya.k@example.org', json.dumps(self.inputs[0][0][-1]['content']))
         # Only the waiting stream's own session can answer.
         denied = await self.client.post('/workspace/chat/ephemeral/unknown/approval', json={'call_id': 'call-1', 'approve': True})
         self.assertEqual(denied.status_code, 409)
@@ -350,3 +354,25 @@ class PrivateLeakTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ImageToolTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sizes_snap_to_sixteen_and_refusals_keep_their_reason(self):
+        from desktop.workspace.chat_tools import ToolError
+        calls = []
+        async def call(method, path, body=None):
+            calls.append((method, path, body))
+            if method == 'POST' and body['prompt'] == 'refused':
+                raise ToolError('400: Use at most two distinct reference images')
+            return {'status': 'queued'} if method == 'POST' else {'status': 'completed', 'artifact': {'id': 'f' * 32}}
+        tools = ChatTools(None, call, None, None, pause=lambda: asyncio.sleep(0))
+        job = await tools.run('generate_image', {'prompt': 'poster', 'width': 1920, 'height': 1080})
+        big = await tools.run('generate_image', {'prompt': 'poster', 'width': 2000, 'height': 1008})
+        self.assertEqual((calls[-2][2]['width'], calls[-2][2]['height']), (1984, 1024))
+        self.assertEqual(job['status'], 'completed')
+        self.assertEqual((calls[0][2]['width'], calls[0][2]['height']), (1920, 1088))
+        calls.clear()
+        with self.assertRaisesRegex(ToolError, 'two distinct reference'):
+            await tools.run('generate_image', {'prompt': 'refused', 'width': 100})
+        self.assertEqual(calls[0][2]['width'], 256)
+        self.assertEqual([c[0] for c in calls], ['POST'])

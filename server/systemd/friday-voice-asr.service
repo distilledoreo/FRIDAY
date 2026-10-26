@@ -1,0 +1,20 @@
+[Unit]
+Description=FRIDAY optional GPU Parakeet recognition
+PartOf=assistant-strata.service
+BindsTo=assistant-strata.service
+After=assistant-strata.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/assistant-server/api
+EnvironmentFile=%h/.config/friday/voice-asr.env
+ExecStart=%h/assistant-server/api/.venv/bin/python -m voice_runtime.asr_server
+Restart=on-failure
+RestartSec=3
+KillMode=control-group
+MemoryHigh=3G
+MemoryMax=4G
+MemorySwapMax=1G
+
+[Install]
+WantedBy=assistant-strata.service

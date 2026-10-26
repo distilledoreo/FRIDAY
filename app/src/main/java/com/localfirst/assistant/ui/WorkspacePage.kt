@@ -32,7 +32,7 @@ enum class WorkspaceDestination(val title: String) {
     SETTINGS("Settings"), COMPUTER_ACCESS("Computer access"), APPEARANCE("Appearance"), BRIEF("Dashboard"), ACCOUNTS("Accounts"), MEMORY("Memory"), ACTIVITY("FRIDAY"), PROJECTS("Projects"), PROJECT("Project"),
 
     EDIT_PROJECT("Project settings"), TASKS("Tasks"), TASK("Task"), NEW_TASK("New task"),
-    FILES("Library"), DATA("Data controls"), NEW_MEMORY("Add memory"), IMAGES("Images"), IMPORT_CHATGPT("Import ChatGPT"), MEMORY_REVIEW("Review memories"), MEMORY_ARCHIVE("PC archive"), MEMORY_SOURCE("Source chat"), MEMORY_CONTEXT("Recall context")
+    FILES("Library"), DATA("Data controls"), NEW_MEMORY("Add memory"), IMAGES("Images"), VIDEOS("Videos"), IMPORT_CHATGPT("Import ChatGPT"), MEMORY_REVIEW("Review memories"), MEMORY_ARCHIVE("PC archive"), MEMORY_SOURCE("Source chat"), MEMORY_CONTEXT("Recall context")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -81,7 +81,7 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
         if ((state.workspaceStatus == "Task scheduled." && page == WorkspaceDestination.NEW_TASK) || (state.workspaceStatus == "Task removed." && page == WorkspaceDestination.TASK)) page = WorkspaceDestination.TASKS
     }
     Dialog(onDismissRequest = ::goBack, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        FridayDialogWindow()
+        FridayDialogWindow(fullScreen = true)
         Surface(Modifier.fillMaxSize(),color=MaterialTheme.colorScheme.background) {
             Scaffold(containerColor=MaterialTheme.colorScheme.background, modifier = Modifier.imePadding(), topBar = {
                 TopAppBar(title = { FridayDialogWindow(); Text(if (page == WorkspaceDestination.PROJECT) project?.name ?: "Project" else page.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -98,10 +98,11 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                         }
                     })
             }) { padding ->
-                Column(Modifier.fillMaxSize().padding(padding)) {
+                Column(Modifier.fillMaxSize().padding(padding).dialogNavigationBarPadding()) {
                     if (state.workspaceBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
                     state.workspaceStatus?.takeIf { it.isNotBlank() && !it.startsWith("Computer online") }?.let { Text(it, Modifier.padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall) }
-                    CompositionLocalProvider(com.localfirst.assistant.ui.workspace.LocalFeatureImages provides vm::loadFeatureImage) {
+                    CompositionLocalProvider(com.localfirst.assistant.ui.workspace.LocalFeatureImages provides vm::loadFeatureImage,
+                        com.localfirst.assistant.ui.workspace.LocalFeatureVideos provides vm::loadFeatureVideo) {
                     when (page) {
                         WorkspaceDestination.COMPUTER_ACCESS -> PcSettingsPage(state,vm)
                         WorkspaceDestination.APPEARANCE -> AppearancePage()
@@ -109,6 +110,7 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                         WorkspaceDestination.ACCOUNTS -> AccountsPage(state, vm)
                         WorkspaceDestination.ACTIVITY -> AgentActivity(state, vm)
                         WorkspaceDestination.IMAGES -> ImageJobs(state, vm)
+                        WorkspaceDestination.VIDEOS -> com.localfirst.assistant.ui.workspace.VideosScreen(vm.features) { vm.openArtifact("assistant://artifact/$it") }
                         WorkspaceDestination.SETTINGS -> ScreenList {
                             item { SectionLabel("Personalization") }
                             item { SettingsRow("Appearance", "Theme, accent, proactivity and motion") { parent = page; page = WorkspaceDestination.APPEARANCE } }
@@ -165,7 +167,7 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
                             }
                         }
                         WorkspaceDestination.NEW_TASK -> TaskEditor(state.workspaceBusy, vm::scheduleTaskAt)
-                        WorkspaceDestination.FILES -> com.localfirst.assistant.ui.workspace.LibraryScreen(vm.features, { vm.openArtifact("assistant://artifact/$it") })
+                        WorkspaceDestination.FILES -> com.localfirst.assistant.ui.workspace.LibraryScreen(vm.features, { vm.openArtifact("assistant://artifact/$it") }, reuse = { vm.reuseWorkspaceFile(it) })
                         WorkspaceDestination.DATA -> ScreenList {
                             item { SettingsRow("Sync now", "Share chats, projects and memories with your computer", vm::syncChats) }
                             items(state.syncConflicts, key = { it.id }) { conflict -> SyncComparison(conflict, state.workspaceBusy, vm) }

@@ -37,7 +37,7 @@ object SpeechText {
  * until they close. Call [update] with the full text so far; it returns only
  * what hasn't been returned yet.
  */
-class SpeechChunker(private val minChars: Int = 24) {
+class SpeechChunker(private val minChars: Int = 24, private val earlyClauses: Boolean = false) {
     private var consumed = 0
     private var source = ""
 
@@ -90,6 +90,13 @@ class SpeechChunker(private val minChars: Int = 24) {
             if (!inFence) {
                 val c = text[i]
                 if (c == '\n') return i + 1
+                if (earlyClauses && (c == ',' || c == ';' || c == ':') &&
+                    i + 1 < text.length && text[i + 1].isWhitespace() &&
+                    text.substring(from, i).trim().split(platformRegex("\\s+")).size >= 8) {
+                    // Wait for a connective after commas: adjective/list commas are not complete clauses.
+                    if (c != ',' || platformRegex("^\\s+(and|but|then|so|because|which|while|before|after|or|yet|as)(?=\\s)", RegexOption.IGNORE_CASE)
+                            .containsMatchIn(text.substring(i + 1))) return i + 1
+                }
                 if ((c == '.' || c == '!' || c == '?') && i + 1 < text.length && text[i + 1].isWhitespace()) {
                     // Skip decimals like 3.5 and common abbreviations.
                     val prev = text.substring(maxOf(from, i - 3), i)

@@ -12,6 +12,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import uuid
 
 import httpx
 
@@ -31,9 +32,10 @@ def strata_payload(body):
     result = dict(body)
     result['model'] = 'qwen3.8-flash-next'
     result.pop('id_slot', None)
-    private = result.pop('cache_prompt', None) is False
-    if private:
-        result['strata_checkpoint'] = False
+    # cache_prompt false marks a private turn (incognito, a one-shot helper): the client sends x-memory-private, and
+    # the gateway answers it natively without keeping anything. Strata's own no-checkpoint mode (strata_checkpoint
+    # false) isn't used: with it, answers came back garbled or from other requests' text (2026-10-25).
+    if result.pop('cache_prompt', None) is False:
         result.pop('strata_prefix', None)
     # Ordinary chat keeps native conversation parking. Explicit pinning is only
     # used by warmup: pinning every turn suppresses parking sibling chats.
@@ -56,7 +58,15 @@ class StrataClient:
 
     def build_request(self, method, url, **kwargs):
         if str(url).split('?')[0].endswith('/v1/chat/completions') and 'json' in kwargs:
-            kwargs = dict(kwargs, json=strata_payload(kwargs['json']))
+            # Orchid can replay identical bodies as retries. A newly submitted
+            # turn needs a fresh identity even if a deleted chat is recreated.
+            headers = httpx.Headers(kwargs.get('headers'))
+            if 'x-request-id' not in headers:
+                headers['x-request-id'] = uuid.uuid4().hex
+            # A private (incognito) request: the ORCHID gateway keeps nothing of it in its event store.
+            if isinstance(kwargs['json'], dict) and kwargs['json'].get('cache_prompt') is False:
+                headers['x-memory-private'] = '1'
+            kwargs = dict(kwargs, json=strata_payload(kwargs['json']), headers=headers)
         return self.client.build_request(method, url, **kwargs)
 
     async def send(self, request, **kwargs):
@@ -66,8 +76,9 @@ class StrataClient:
         if not kwargs.get('stream', False) and request.url.path == '/v1/chat/completions':
             body = json.loads(request.content)
             if isinstance(body, dict) and not body.get('tools'):
-                body.setdefault('strata_checkpoint', False)
+                # A one-shot helper (a title, a memory note, a check): private, so it neither parks nor is kept.
                 headers = dict(request.headers)
+                headers['x-memory-private'] = '1'
                 headers.pop('content-length', None)
                 request = httpx.Request(request.method, request.url, headers=headers,
                                         json=body, extensions=request.extensions)

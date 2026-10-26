@@ -13,6 +13,8 @@ import com.localfirst.assistant.ui.ChatViewModel
 import com.localfirst.assistant.ui.theme.AssistantTheme
 import com.localfirst.assistant.settings.AppearanceSettingsStore
 import androidx.compose.runtime.remember
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -30,8 +32,11 @@ class MainActivity : ComponentActivity() {
             val appearanceStore=remember { AppearanceSettingsStore(applicationContext) }
             val appearance by appearanceStore.state.collectAsState()
             DisposableEffect(appearanceStore) { onDispose { appearanceStore.close() } }
+            val navigationBar=androidx.compose.foundation.layout.WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
             AssistantTheme(preferences=appearance,onPreferencesChange=appearanceStore::save) {
-                ChatScreen(viewModel)
+                androidx.compose.runtime.CompositionLocalProvider(com.localfirst.assistant.ui.LocalAppNavigationBar provides navigationBar) {
+                    ChatScreen(viewModel)
+                }
             }
         }
     }
@@ -62,11 +67,13 @@ class MainActivity : ComponentActivity() {
     /** Opened as the phone's assistant or from a headset's voice button: start a voice chat. */
     private fun handleLaunch(intent: Intent?) {
         when (intent?.action) {
+            "com.localfirst.assistant.CAR_VOICE" -> viewModel.startCarVoice(fromCar = false)
             Intent.ACTION_VIEW -> { viewModel.handleAccountCallback(intent.data); intent.data = null }
             "com.localfirst.assistant.BRIEF" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.BRIEF)
             "com.localfirst.assistant.ACTIVITY" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.ACTIVITY)
             "com.localfirst.assistant.CODE" -> viewModel.openCode(intent.getStringExtra("task")?.takeIf { it.matches(Regex("[a-f0-9]{12}")) })
             "com.localfirst.assistant.TASKS" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.TASKS)
+            "com.localfirst.assistant.VIDEOS" -> viewModel.openWorkspace(com.localfirst.assistant.ui.WorkspaceDestination.VIDEOS)
             Intent.ACTION_ASSIST, Intent.ACTION_VOICE_COMMAND,
             com.localfirst.assistant.voice.WakeWordService.WAKE_ACTION,
             -> viewModel.startAssistantSession()

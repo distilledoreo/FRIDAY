@@ -15,13 +15,15 @@ class BrowserChatTests(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.app = FastAPI()
         self.inputs = []
+        self.private = []
         async def auth(authorization: str = Header(default='')):
             if authorization != 'Bearer synthetic': raise HTTPException(401)
         async def model(messages, tools):
             self.inputs.append((messages[:], tools))
             return {'role': 'assistant', 'content': 'Private answer'}
-        async def streaming(messages, tools, report):
+        async def streaming(messages, tools, report, private=False):
             self.inputs.append((messages[:], tools))
+            self.private.append(private)
             await report('Private')
             await asyncio.sleep(.01)
             await report('Private answer')
@@ -55,6 +57,8 @@ class BrowserChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[1]['text'], 'Private')
         self.assertEqual(events[-1], {'text': 'Private answer', 'entries': [{'role': 'assistant', 'content': 'Private answer'}], 'done': True})
         self.assertEqual(self.workspace.items(), [])
+        # The model server is told the turn is private, so it caches and records nothing of it.
+        self.assertEqual(self.private, [True])
         self.assertEqual(self.workspace.jobs(), [])
         self.assertEqual((self.workspace.root / 'workspace.sqlite').read_bytes(), before)
         self.assertEqual({t['function']['name'] for t in self.inputs[0][1]}, {'web_search', 'fetch_page'})

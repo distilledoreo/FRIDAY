@@ -1,5 +1,68 @@
 # Local image generation
 
+## Resident images on a dedicated GPU
+
+A private runtime config with `"placement":"dedicated"` keeps the managed image server warm between
+successful requests. Set `environment.CUDA_VISIBLE_DEVICES` to the spare card's physical `GPU-...` UUID
+and `CUDA_DEVICE_ORDER` to `PCI_BUS_ID`. Inside that isolated process the spare card is `cuda0`, regardless
+of its host ordinal. Place diffusion and VAE compute/parameters on `cuda0`, and the encoder on `cpu`
+or a spare Vulkan card (below).
+The existing shared-card handoff remains the default for installations without a dedicated profile.
+
+Dedicated jobs do not acquire the chat GPU lease, stop/restart the LLM, wait for its active requests, or
+write a borrowed-GPU journal. Startup warms the image service in the background. Ordinary and incognito
+jobs share one image lock; successful jobs leave the service loaded. Cancellation, timeout or failure
+recycles only the image unit so uncertain sampler work cannot linger. The next image
+reloads it. API shutdown stops the owned unit. Closing a private session also clears the image process's
+RAM job records, waiting for another session's render to finish first; the next image reloads. Parakeet
+and the selector remain on the spare card and consume part of its memory budget.
+
+`configure_dedicated` writes a new private config with verified asset metadata, the Q8 Turbo transformer,
+Q4 encoder, CPU text encoding, GPU VAE/DiT and tiled VAE decoding (512 px tiles). It preserves the base config's
+sampling profile, step count, sigma schedule and LoRA adapters, including the existing four-step
+Turbo/Lightning setup. Changing GPU placement does not require changing the sampling setup:
+
+```sh
+python3 -m desktop.imagegen.configure_dedicated --base-config /private/current.json \
+  --binary /private/sd-server --transformer /private/turbo-Q8_0.gguf \
+  --encoder /private/encoder-Q4_K_M.gguf --vision /private/mmproj-F16.gguf \
+  --vae /private/qwen_image_2.1_vae_bf16.safetensors --gpu-uuid GPU-... \
+  --output /private/imagegen-resident.json
+```
+
+### Text encoder on a spare Vulkan card
+
+The Qwen3-VL encoder dominates edits on the CPU: it reads the reference image as well as the prompt.
+An otherwise idle AMD card can run it through Vulkan while the CUDA card keeps diffusion and VAE. Build
+stable-diffusion.cpp with both backends (Polaris and Pascal need no special flags beyond the CUDA arch):
+
+```sh
+cmake -S stable-diffusion.cpp -B build-vulkan -DCMAKE_BUILD_TYPE=Release -DSD_CUDA=ON -DSD_VULKAN=ON \
+  -DCMAKE_CUDA_ARCHITECTURES=60 -DSD_BUILD_EXAMPLES=ON -DSD_SERVER_BUILD_FRONTEND=OFF -DGGML_NATIVE=ON
+cmake --build build-vulkan -j --target sd-server
+build-vulkan/bin/sd-server --list-devices   # the AMD card should appear as Vulkan0
+```
+
+Then pass `--binary build-vulkan/bin/sd-server --encoder-device vulkan0` to `configure_dedicated`
+(`--encoder-vram` caps the card's budget, default 7 GiB). The Q4 encoder uses about 6.6 GB on an 8 GB
+RX 580. Measured at 1024×1024 with four steps, P100 for diffusion:
+
+| | Encoder on CPU (4 threads) | Encoder on RX 580 |
+|---|---|---|
+| New prompt | 68 s (encoder 30 s) | 39 s (encoder 0.8 s) |
+| Edit, one 512 px reference | 229 s (encoder 145 s) | 93 s (encoder 10 s) |
+
+Output matches the CPU encoder (mean pixel difference under 1/255 on edits). The vision projector gains
+nothing from moving, so it stays on its default placement. Server start-up takes about 40 s longer.
+
+Select it through `FRIDAY_IMAGEGEN_CONFIG`, deploy the imagegen module with the existing setup script,
+and restart only the API. Check `/workspace/images/health`: `placement`, `loaded`, `runtime_available`
+and `missing_files` distinguish configuration from a responding renderer. Test a full 1024×1024 image
+while checking chat and GPU ASR; measured peaks and latency determine whether it fits. A warm process
+does not guarantee every activation/graph allocation persists. Before an experiment that needs both GPUs,
+pause image/background work through the maintenance endpoint and stop `assistant-qwen-image.service`.
+Unpause afterward; the next image request reloads the service.
+
 The Android `generate_image` tool submits a durable, idempotent job to the authenticated existing workspace API. The assistant chooses dimensions, steps, seed, transparency and up to two uploaded reference images. The composer’s plus menu → Create image activates image mode; its chip opens aspect ratio and other manual overrides; Images shows progress, cancellation and previous results. Completed PNGs appear directly in the conversation and in Library.
 
 Server policy is authoritative: dimensions are multiples of 16 from 256 to 2000, at most 2000×2000 pixels, 4–12 Euler steps and at most 32 million pixel-steps (8 steps at the largest size). Defaults are 768×768 and 8 steps. Reference images are resized to at most 512 pixels. Rendering has a hard 15-minute timeout; loading and chat restoration have separate bounded waits. Maximum dimensions do not guarantee completion within the render deadline.
@@ -11,6 +74,21 @@ During the swap, HTTP chat requests receive 503 with `X-Assistant-GPU-Busy: 1`; 
 Deployment wraps the existing `llm` client with `prepare(raw_llm)` before installing workspace routes, then calls `enable(app, auth, workspace_store, raw_llm, gate, config_path)`. The local configuration contains the existing pinned launch command, the chat service name, and verified binary/model SHA-256 hashes, sizes and modification timestamps. Reverify changed runtime files before use. Installation reuses existing model files and never modifies the panorama runtime or resumes its jobs. The image unit binds to the API service so an API crash cannot leave an orphaned GPU process.
 
 No new public listener or connected-service account is introduced. Artifact downloads and image job controls require the existing workspace authentication. Cancellation preserves any already-saved artifact. Removing an image history entry does not remove its Library file.
+
+Set `FRIDAY_IMAGEGEN_CONFIG` to use a separate local runtime configuration without replacing the installed config. Its optional `sample_params` object overrides request sampling settings. Qwen Image 2.1 Turbo needs Euler, CFG 1 and the fixed eight-step schedule documented in [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp/blob/master/docs/qwen_image_2.1.md#turbo):
+
+```json
+"sample_params": {
+  "sample_method": "euler",
+  "sample_steps": 8,
+  "guidance": {"txt_cfg": 1},
+  "custom_sigmas": [1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568, 0.0]
+}
+```
+
+Keep the model's path and verified checksum/metadata in sync with the configuration. The existing text encoder, vision projector and Qwen Image 2.1 VAE can be reused.
+
+For [LightX2V's four-step Lightning adapter](https://huggingface.co/lightx2v/Qwen-Image-2.1-Lightning), set `sampling_profile` to `qwen-image-2.1-lightning` and `lora` to an array of `{"path":"adapter.safetensors","multiplier":1.0}`. Paths are relative to the runtime's `--lora-model-dir`; include the adapter's absolute path in the verified `files` list. The profile uses Euler, CFG 1 and resolution-dependent exponential sigma shifting with the adapter's 256/8192 sequence anchors and 0.5/0.9 shifts, without terminal stretching. It overrides caller step counts to four. The publisher documents the standard Qwen Image 2.1 base; combining this adapter with Turbo is experimental and requires separate quality and timing checks.
 
 Checks: `python -m unittest desktop.imagegen.tests.test_manager` in an environment containing FastAPI, httpx and Pillow; Android checks follow the repository's normal Gradle workflow.
 

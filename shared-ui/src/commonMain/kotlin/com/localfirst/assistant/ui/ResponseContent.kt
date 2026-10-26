@@ -1,5 +1,6 @@
 package com.localfirst.assistant.ui
 
+import kotlinx.coroutines.flow.conflate
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -19,6 +20,18 @@ import com.localfirst.assistant.presentation.ResponsePattern
 import com.mikepenz.markdown.m3.Markdown
 
 /** Native rows avoid the third-party table renderer's invisible intrinsic-measurement semantics. */
+/** The latest [value], at most every [frameMillis]: a streaming reply's Markdown is re-parsed whole on every redraw, so
+ *  showing each token as it arrives costs CPU and battery that grow with the reply's length. */
+@Composable
+fun rememberThrottled(value: String, frameMillis: Long = 100): String {
+    val latest by rememberUpdatedState(value)
+    var shown by remember { mutableStateOf(value) }
+    LaunchedEffect(frameMillis) {
+        snapshotFlow { latest }.conflate().collect { shown = it; kotlinx.coroutines.delay(frameMillis) }
+    }
+    return shown
+}
+
 @Composable
 fun NativeResponseContent(content:String) {
     if(ResponseLayout.requiresTextFallback(content)) {

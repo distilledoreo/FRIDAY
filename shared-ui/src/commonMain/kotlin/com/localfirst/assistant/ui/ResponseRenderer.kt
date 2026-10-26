@@ -28,9 +28,9 @@ fun ResponseRenderer(content:String,pattern:ResponsePattern,onCopy:()->Unit) {
         TextButton(shape = MaterialTheme.shapes.small, onClick={expanded=true}) { Text("Expand response") }
     } else NativeResponseContent(content)
     if(expanded)Dialog(onDismissRequest={expanded=false},properties=DialogProperties(usePlatformDefaultWidth=false)) {
-        FridayDialogWindow()
+        FridayDialogWindow(fullScreen = true)
         Scaffold(containerColor=MaterialTheme.colorScheme.background,topBar={TopAppBar(title={Text("Response")},navigationIcon={IconButton(onClick={expanded=false}) { Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back to conversation") }},actions={TextButton(shape = MaterialTheme.shapes.small, onClick=onCopy) { Text("Copy") }})}) { padding ->
-            Column(Modifier.fillMaxSize().padding(padding).navigationBarsPadding().verticalScroll(rememberScrollState()).padding(20.dp)) { NativeResponseContent(content) }
+            Column(Modifier.fillMaxSize().padding(padding).navigationBarsPadding().dialogNavigationBarPadding().verticalScroll(rememberScrollState()).padding(20.dp)) { NativeResponseContent(content) }
         }
     }
 }

@@ -200,7 +200,7 @@ private fun documentDetail(doc: Attachment): String {
 @Composable
 internal fun ImageViewer(path: String, onDismiss: () -> Unit) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        FridayDialogWindow()
+        FridayDialogWindow(fullScreen = true)
         val image = rememberImage(path, maxEdgePx = 2048)
         Box(
             contentAlignment = Alignment.Center,

@@ -75,6 +75,25 @@ class TaskPollService : JobService() {
                     }
                 }
                 if (manager.areNotificationsEnabled()) {
+                    // Videos render for minutes to tens of minutes: say when one is ready, or couldn't be made.
+                    val videos = runCatching { JSONArray(client.request("/workspace/videos")) }.getOrElse { if (it is CancellationException) throw it; JSONArray() }
+                    for (i in 0 until videos.length()) {
+                        val video = videos.getJSONObject(i)
+                        val status = video.optString("status")
+                        val key = "video-" + video.optString("id")
+                        if (status !in listOf("completed", "failed") || prefs.getString(key, null) == status) continue
+                        if (sent++ < 5) {
+                            val open = PendingIntent.getActivity(this@TaskPollService, key.hashCode(),
+                                Intent(this@TaskPollService, MainActivity::class.java).setAction("com.localfirst.assistant.VIDEOS"),
+                                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                            val notification = NotificationCompat.Builder(this@TaskPollService, TaskNotifications.CHANNEL)
+                                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                                .setContentTitle(if (status == "completed") "Your video is ready" else "Your video couldn't be made")
+                                .setContentText(video.optString("prompt").take(120)).setContentIntent(open).setAutoCancel(true).build()
+                            runCatching { manager.notify(key.hashCode(), notification) }
+                        }
+                        prefs.edit().putString(key, status).apply()
+                    }
                     val agentTasks = JSONArray(client.request("/workspace/agent/tasks?limit=100"))
                     for (i in 0 until agentTasks.length()) {
                         val task = agentTasks.getJSONObject(i)

@@ -46,3 +46,19 @@ class Tests(unittest.TestCase):
         with self.assertRaises(ValueError):self.store.remember('api_key=sk-secretsecretsecretsecret')
         self.store.commit(self.store.stage([self.source()],0,[])['id'],False)
         self.store.suggest('chatgpt-one',[{'text':'User owns a cat','quote':'Your cat is named Fiction.','category':'personal'}]);self.assertEqual(self.store.suggestions(),[])
+
+
+class RecallNoiseTests(unittest.TestCase):
+    """A shared filler word or short number is not enough to recall a personal fact into an unrelated chat."""
+    def setUp(self):self.tmp=tempfile.TemporaryDirectory();self.store=MemoryStore(Path(self.tmp.name)/'store')
+    def tearDown(self):self.tmp.cleanup()
+    def test_keyword_recall_needs_two_content_words(self):
+        self.store.remember('The user works Monday through Friday from 8 AM to 5 PM.')
+        self.store.remember('The user worries about always being right.')
+        self.store.remember('The user plays bass guitar in a jazz band.')
+        def recalled(query):return self.store.context(query,include_situations=False)['context']
+        self.assertNotIn('Monday through Friday',recalled("Hey Friday, compute the SHA-256 of the string 'friday'"))
+        self.assertNotIn('being right',recalled('Who leads the championship right now?'))
+        self.assertEqual(recalled('Which is bigger, 9.11 or 9.9?'),'')
+        self.assertIn('bass guitar',recalled('Which jazz band songs suit bass guitar?'))
+        self.assertIn('bass guitar',recalled('What guitar do I play?'))

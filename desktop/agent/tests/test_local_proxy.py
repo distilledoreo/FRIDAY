@@ -20,7 +20,7 @@ class LocalProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body['model'],'qwen3.8-flash-next')
         self.assertNotIn('id_slot',body)
         self.assertNotIn('strata_prefix',body)
-        self.assertFalse(body['strata_checkpoint'])
+        self.assertNotIn('strata_checkpoint',body)  # Strata's no-checkpoint mode garbled answers
         self.assertEqual(body['reasoning_effort'], 'low')
         self.assertEqual(body['reasoning_budget_tokens'], 0)
 

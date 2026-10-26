@@ -1,0 +1,10 @@
+[Unit]
+Description=Check every minute that the FRIDAY gateway answers
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1min
+Unit=friday-api-watchdog.service
+
+[Install]
+WantedBy=timers.target
