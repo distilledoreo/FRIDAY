@@ -22,6 +22,8 @@ private val WEB_TOOLS = setOf("web_search", "fetch_page")
 data class WorkspaceState(
     val incognito: Boolean = false, val privateChat: StoredConversation? = null,
     val attachments: List<Attachment> = emptyList(), val streamingText: String = "",
+    /** What the computer's job for this chat is doing (waiting its turn, thinking, running a tool), while it works. */
+    val jobStage: String? = null,
     val connected: Boolean = false, val busy: Boolean = false, val activeJob: String? = null,
     val activeId: String? = null, val draft: String = "", val projectId: String? = null, val query: String = "",
     val tasks: List<JsonObject> = emptyList(), val detachedReply: String? = null,
@@ -339,11 +341,14 @@ class WorkspaceController(
                     if (identity == epoch && state.value.activeJob == jobId) {
                         val entries = (event["entries"] as? JsonArray)?.let { decodeMessages(it.toString()) }
                         val done = (event["done"] as? JsonPrimitive)?.booleanOrNull == true
+                        // The computer says what the job is doing (waiting its turn, thinking, running a tool) in place of a bare spinner.
+                        val stage = (event["stage"] as? JsonPrimitive)?.contentOrNull
                         mutable.update { it.copy(streamingText = (event["text"] as? JsonPrimitive)?.contentOrNull ?: it.streamingText,
-                            liveEntries = entries ?: it.liveEntries, approval = if (done) null else event["approval"] as? JsonObject) }
+                            liveEntries = entries ?: it.liveEntries, approval = if (done) null else event["approval"] as? JsonObject,
+                            jobStage = if (done) null else stage ?: it.jobStage) }
                     }
                 }
-                if (identity == epoch && state.value.activeJob == jobId) { refreshSnapshot(identity); mutable.update { it.copy(streamingText = "", liveEntries = emptyList()) }; finishGrounding() }
+                if (identity == epoch && state.value.activeJob == jobId) { refreshSnapshot(identity); mutable.update { it.copy(streamingText = "", liveEntries = emptyList(), jobStage = null) }; finishGrounding() }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { /* The change feed still retrieves the durable result after a stream disconnect. */ }
         }

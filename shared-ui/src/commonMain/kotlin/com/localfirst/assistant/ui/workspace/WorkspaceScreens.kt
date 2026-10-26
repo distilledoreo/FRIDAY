@@ -280,7 +280,7 @@ private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState, code: com
                         ChatToolResult(step, { vm.artifact(it) }, openFriday, code, { id -> if (!state.incognito) code?.open(id) }, features.takeUnless { state.incognito },
                             discuss = { text -> if (state.draft.isBlank()) vm.setDraft(text) else vm.reportError("Send or clear your draft first.") })
                     }
-                    TranscriptItem.Thinking -> if (state.streamingText.isBlank()) ThinkingIndicator()
+                    TranscriptItem.Thinking -> if (state.streamingText.isBlank()) ThinkingIndicator(state.jobStage)
                 } }
                 if (state.streamingText.isNotBlank()) item(key = "streaming-reply") { NativeResponseContent(state.streamingText) }
                 state.approval?.let { approval -> item(key = "approval") {

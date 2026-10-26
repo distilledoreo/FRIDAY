@@ -571,6 +571,50 @@ class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
         job = await self.run_research('Released in October 2024 per https://peps.python.org/pep-0719/.')
         self.assertNotIn('Note:', job['result'])
 
+    async def test_a_long_task_does_not_hold_up_a_short_one(self):
+        # Assessment R06: one long job used to run to its end before any other job started.
+        release = asyncio.Event()
+        async def model(messages, tools):
+            if 'Long' in messages[-1]['content']:
+                await release.wait()  # A long research loop.
+                return {'role': 'assistant', 'content': 'Long done'}
+            return {'role': 'assistant', 'content': 'Short done'}
+        self.workspace_model(model)
+        long_job = (await self.client.post('/workspace/jobs', json={'prompt': 'Long'})).json()['id']
+        await asyncio.sleep(.1)
+        short = await self.run_job('Short')
+        self.assertEqual(short['result'], 'Short done')
+        self.assertEqual(next(j for j in self.workspace.jobs() if j['id'] == long_job)['status'], 'running')
+        release.set()
+
+    def test_format_problems_are_found_without_false_alarms(self):
+        def problem(asked, text):
+            found = module._format_problem([{'role': 'user', 'content': asked + '\n\n[Sent Sunday, October 25, 2026, 9:41 PM EDT]'}], text)
+            return found and found[0]
+        self.assertEqual(problem('Reply only ACK.', 'Got it: the project is Kestrel.'), 'exact')
+        self.assertIsNone(problem('Reply only ACK.', 'ACK'))
+        self.assertEqual(problem('Update it to 615. Respond with JSON only.', 'The budget is now 615.'), 'json')
+        self.assertIsNone(problem('Return JSON only', '```json\n{"budget": 615}\n```'))
+        self.assertEqual(problem('Two draws: same colour?', 'It is **1/3**.\n\nWait — let me recompute.\n\n31/105'), 'corrected')
+        self.assertIsNone(problem('Please reply only in English.', 'Hola'))
+        self.assertIsNone(problem('What is 2+2?', 'Four.'))
+
+    async def test_a_broken_format_gets_one_fixing_retry(self):
+        async def model(messages, tools):
+            if messages[-1]['content'].startswith('(Reply with only valid JSON'):
+                return {'role': 'assistant', 'content': '{"original_budget": 840, "current_budget": 615}'}
+            return {'role': 'assistant', 'content': 'The original budget was 840 and it is now 615.'}
+        self.workspace_model(model)
+        job = await self.run_job('The budget went from 840 to 615. Respond with JSON only.')
+        self.assertEqual(json.loads(job['result']), {'original_budget': 840, 'current_budget': 615})
+
+    async def test_a_retry_that_still_breaks_the_format_keeps_the_first_answer(self):
+        async def model(messages, tools):
+            return {'role': 'assistant', 'content': 'Still prose.' if messages[-1]['content'].startswith('(Reply') else 'Prose.'}
+        self.workspace_model(model)
+        job = await self.run_job('Respond with JSON only.')
+        self.assertEqual(job['result'], 'Prose.')
+
     def test_attached_files_are_found_newest_first(self):
         messages = [{'role': 'user', 'content': 'File a.csv; file_id=' + 'a' * 32},
                     {'role': 'user', 'content': [{'type': 'text', 'text': 'x'}, {'type': 'text', 'text': 'File b; file_id=' + 'b' * 32}]}]

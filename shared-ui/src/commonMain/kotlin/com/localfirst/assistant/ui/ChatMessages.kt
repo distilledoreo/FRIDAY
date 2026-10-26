@@ -357,12 +357,16 @@ fun toolIcon(name: String): ImageVector = when (name) {
 }
 
 @Composable
-fun ThinkingIndicator() {
+fun ThinkingIndicator(label: String? = null) {
     Row(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.padding(vertical = 8.dp),
     ) {
         repeat(3) { i -> PulsingDot(delayMillis = i * 160) }
+        // Says what the wait is for: another task's turn, thinking, or a tool.
+        label?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 6.dp)) }
     }
 }
 

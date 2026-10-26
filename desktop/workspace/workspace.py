@@ -145,6 +145,8 @@ GROUNDING = (' The latest user message ends with when it was sent, like [Sent Sa
 LIVE_VOICE_ID = 'd9b5c8e4-71b8-4fc0-a42f-e92360ce9481'
 # The research budget's last model call has no tools, so the user gets an answer rather than a paused task.
 STEP_LIMIT = 20
+# Jobs that run at once (they take turns with the model a step at a time).
+JOB_SLOTS = 3
 STEP_LIMIT_NOTE = ('(Tool limit reached for this message. Answer now from the results above, '
                    'and say plainly what is still unverified.)')
 # Status tools are read again on purpose while work runs elsewhere.
@@ -260,6 +262,74 @@ async def _plain_answer(answer, request, regenerate, tools=True):
     last = next((m.get('content') or '' for m in reversed(request) if m.get('role') == 'tool'), '')
     return {'role': 'assistant', 'content': "I couldn't finish writing the answer." +
             (' The last result was:\n\n```\n' + str(last)[:4000] + '\n```' if last else '')}
+
+
+# Exact-format requests a model sometimes ignores, and answers that change their result partway (assessment R09).
+# The instruction words match in any case; the expected reply must start with a capital or a digit (ACK, OK, PRIVATE-732).
+EXACT_REPLY = re.compile(r'\b(?i:reply|respond|answer|say)\s+(?i:with\s+)?(?i:only|just|exactly)\s*(?i:with\s*)?'
+                         r'(?i:this(?:\s+and\s+nothing\s+else)?\s*)?[:\-–]?\s*["“\'`]?([A-Z0-9][A-Za-z0-9_\-]{0,40})["”\'`]?(?=[\s.,;!]|$)')
+JSON_ONLY = re.compile(r'\b(?:only|just|exclusively)\s+(?:valid\s+)?json\b|\bjson\s+only\b|\bjson\b[^.]{0,40}\b(?:no|without)\s+(?:other\s+)?(?:text|prose|explanation)', re.I)
+SELF_CORRECTION = re.compile(r'(?im)^\W*(?:wait\b|hold on\b|hmm\b|let me (?:re-?)?(?:check|compute|recompute|redo|recalculate)\b|'
+                             r'actually,? (?:that|this|the (?:answer|result)) (?:is|was) (?:wrong|incorrect)|correction\b)')
+FORMAT_NOTES = {
+    'exact': '(Reply with exactly {expected} and nothing else.)',
+    'json': '(Reply with only valid JSON: no other text, no explanation.)',
+    'corrected': ('(Your answer changed its result partway. Rewrite it cleanly: give the correct result first, then a short '
+                  'derivation, with no earlier wrong value and no "wait" or second attempt.)'),
+}
+
+
+def _latest_request(messages):
+    """The user's latest own words, without FRIDAY's notes or the sent tag."""
+    notes = {STEP_LIMIT_NOTE, TOOL_MARKUP_NOTE}
+    for message in reversed(messages):
+        if message.get('role') != 'user':
+            continue
+        content = message.get('content')
+        text = ' '.join(p.get('text') or '' for p in content if isinstance(p, dict)) if isinstance(content, list) else str(content or '')
+        if text in notes or text.startswith('(Reply with') or text.startswith('(Your answer changed'):
+            continue
+        return re.sub(r'\s*\[Sent [^\]]*\]\s*$', '', text)
+    return ''
+
+
+def _json_ok(text):
+    body = text.strip()
+    fenced = re.fullmatch(r'```(?:json)?\s*(.*?)\s*```', body, re.S)
+    try:
+        json.loads(fenced.group(1) if fenced else body)
+        return True
+    except ValueError:
+        return False
+
+
+def _format_problem(request, text):
+    """('exact'|'json'|'corrected', note) when the answer breaks a format the user asked for, else None."""
+    asked = _latest_request(request)
+    exact = EXACT_REPLY.search(asked)
+    if exact and text.strip().strip('"\'`.').strip() != exact.group(1):
+        return 'exact', FORMAT_NOTES['exact'].format(expected=exact.group(1))
+    if JSON_ONLY.search(asked) and not _json_ok(text):
+        return 'json', FORMAT_NOTES['json']
+    if SELF_CORRECTION.search(text):
+        return 'corrected', FORMAT_NOTES['corrected']
+    return None
+
+
+async def _formatted_answer(answer, request, regenerate):
+    """One retry, without tools, when the answer breaks a requested exact reply or JSON-only format, or corrects itself
+    partway. The retry is kept only if it fixes the problem; otherwise the original answer stands."""
+    text = answer.get('content') or ''
+    if answer.get('tool_calls') or not text.strip():
+        return answer
+    problem = _format_problem(request, text)
+    if problem is None:
+        return answer
+    retry = await regenerate(request + [{'role': 'assistant', 'content': text}, {'role': 'user', 'content': problem[1]}], False)
+    fixed = retry.get('content') or ''
+    if retry.get('tool_calls') or not fixed.strip() or TOOL_MARKUP.search(fixed) or _format_problem(request, fixed) is not None:
+        return answer
+    return {'role': 'assistant', 'content': fixed}
 
 
 URL = re.compile(r'https?://[^\s<>()\[\]"\'`*]+')
@@ -929,6 +999,20 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
         await report(answer.get('content') or '')
         return answer
 
+    def job_stage(job_id, status):
+        """What a job is doing, in words, so a client can show more than a spinner."""
+        if status == 'waiting':
+            return 'Waiting for your approval'
+        if status == 'scheduled':
+            ahead = sum(1 for j in running if j != job_id)
+            return f'Waiting for {ahead} other task{"s" if ahead != 1 else ""} to finish' if ahead >= JOB_SLOTS else 'Starting'
+        phase = phases.get(job_id, '')
+        if phase.startswith('tool:'):
+            return 'Running ' + phase[5:].replace('_', ' ')
+        if phase == 'model':
+            return 'Writing' if progress.get(job_id) else 'Thinking'
+        return 'Working'
+
     @router.get('/jobs/{job_id}/events')
     async def job_events(job_id: str, request: Request):
         with workspace.db() as db:
@@ -944,6 +1028,8 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                     return
                 done = row['status'] not in ('scheduled', 'running', 'waiting')
                 value = {'text': row['result'] if done else progress.get(job_id, ''), 'done': done, 'status': row['status']}
+                if not done:
+                    value['stage'] = job_stage(job_id, row['status'])
                 if not done and row['initial_count'] is not None:
                     # Tool steps so far, in the shared conversation format, so the chat shows them as they happen.
                     messages = live.get(job_id) or json.loads(row['messages'] or '[]')
@@ -1040,6 +1126,8 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                         answer = await _plain_answer(answer, request, lambda retry, with_tools: asyncio.wait_for(
                             generate(retry, _step_tools(available, messages, initial) if with_tools else [], report, body.model,
                                      body.connection, reasoning=body.reasoning, private=True), 900), tools=not last)
+                        answer = await _formatted_answer(answer, request, lambda retry, with_tools: asyncio.wait_for(
+                            generate(retry, [], report, body.model, body.connection, reasoning=body.reasoning, private=True), 900))
                         if not answer.get('tool_calls'):
                             answer = dict(answer, content=(answer.get('content') or '') + _unread_note(messages, initial, answer.get('content')))
                         messages.append(answer)
@@ -1336,6 +1424,8 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                     answer = await _plain_answer(answer, request, lambda retry, with_tools: asyncio.wait_for(generate(
                         retry, _step_tools(available, messages, start) if with_tools else [], report, options.get('model'),
                         options.get('connection'), job['id'], options.get('reasoning')), timeout=900), tools=not last)
+                    answer = await _formatted_answer(answer, request, lambda retry, with_tools: asyncio.wait_for(generate(
+                        retry, [], report, options.get('model'), options.get('connection'), job['id'], options.get('reasoning')), timeout=900))
                     if status() != 'running':
                         if status() == 'cancelled':
                             keep_partial(job, messages, answer.get('content') or progress.get(job['id'], ''))
@@ -1362,6 +1452,7 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                     if status() != 'running':
                         break
                     name = call['function']['name']
+                    phases[job['id']] = 'tool:' + name
                     repeated = _repeated_call(messages, job.get('initial_count') or 0, call)
                     if toolkit is not None and not repeated:
                         approval = await approval_needed(toolkit, call, messages, decisions, options)
@@ -1392,29 +1483,42 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
             live.pop(job['id'], None)
 
     async def worker():
+        """Runs up to JOB_SLOTS jobs at once, chat replies before background tasks, one at a time per chat. The model
+        answers one request at a time, so jobs share it step by step: a short reply goes between a long task's steps
+        instead of waiting for the whole task."""
         with workspace.db() as db:
             db.execute("UPDATE jobs SET status='scheduled' WHERE status='running'")
-        while True:
-            with workspace.db() as db:
-                job = db.execute("SELECT * FROM jobs WHERE status='scheduled' AND run_at<=? ORDER BY run_at LIMIT 1", (time.time(),)).fetchone()
+        chats = {}  # running job -> its chat
+        def finished(job_id):
+            def done(_):
+                running.pop(job_id, None); chats.pop(job_id, None)
+                phases.pop(job_id, None); progress.pop(job_id, None)
+                wake.set()
+            return done
+        try:
+            while True:
+                job = None
+                if len(running) < JOB_SLOTS:
+                    with workspace.db() as db:
+                        due = db.execute("SELECT * FROM jobs WHERE status='scheduled' AND run_at<=? "
+                                         "ORDER BY item_id IS NULL, run_at", (time.time(),)).fetchall()
+                        job = next((j for j in due if not j['item_id'] or j['item_id'] not in chats.values()), None)
+                        if job:
+                            db.execute("UPDATE jobs SET status='running' WHERE id=? AND status='scheduled'", (job['id'],))
                 if job:
-                    db.execute("UPDATE jobs SET status='running' WHERE id=? AND status='scheduled'", (job['id'],))
-            if job:
-                run_task = asyncio.create_task(run(dict(job)))
-                running[job['id']] = run_task
-                try:
-                    await run_task
-                except asyncio.CancelledError:
-                    if asyncio.current_task().cancelling():
-                        raise
-                finally:
-                    running.pop(job['id'], None)
-                    phases.pop(job['id'], None)
-                    progress.pop(job['id'], None)
-            else:
+                    run_task = asyncio.create_task(run(dict(job)))
+                    running[job['id']] = run_task
+                    chats[job['id']] = job['item_id']
+                    run_task.add_done_callback(finished(job['id']))
+                    continue
                 wake.clear()
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(wake.wait(), 5)
+        finally:
+            # Shutting down: stop the running jobs; their checkpoints resume them on the next start.
+            for run_task in list(running.values()):
+                run_task.cancel()
+            await asyncio.gather(*running.values(), return_exceptions=True)
 
     task = None
 
