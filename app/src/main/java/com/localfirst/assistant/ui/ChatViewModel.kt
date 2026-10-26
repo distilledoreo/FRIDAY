@@ -448,6 +448,11 @@ class ChatViewModel(
         if (_state.value.settings.wakeWord &&
             com.localfirst.assistant.phone.PermissionBroker.isGranted(context, android.Manifest.permission.RECORD_AUDIO)) {
             com.localfirst.assistant.voice.WakeWordService.start(context)
+            // The listener rests through the Dashboard's quiet hours; keep the phone's copy of them current.
+            viewModelScope.launch(Dispatchers.IO) {
+                val settings = runCatching { workspace?.request("/workspace/agent/briefing/settings")?.let(::JSONObject) }.getOrNull()
+                if (settings != null) com.localfirst.assistant.voice.WakeQuietHours.save(context, settings.optString("quiet_start"), settings.optString("quiet_end"))
+            }
         } else {
             com.localfirst.assistant.voice.WakeWordService.stop(context)
         }
@@ -1231,6 +1236,7 @@ class ChatViewModel(
     private suspend fun loadBrief() {
         val client = workspace ?: error("Computer unavailable.")
         val prefs = JSONObject(client.request("/workspace/agent/briefing/settings"))
+        app?.let { com.localfirst.assistant.voice.WakeQuietHours.save(it, prefs.optString("quiet_start"), prefs.optString("quiet_end")) }
         val scope = Uri.encode(_state.value.projectId.orEmpty())
         val followups = JSONArray(client.request("/workspace/agent/briefing/followups?scope=$scope"))
         val proposals = JSONObject(client.request("/workspace/agent/briefing/proposals?scope=$scope"))

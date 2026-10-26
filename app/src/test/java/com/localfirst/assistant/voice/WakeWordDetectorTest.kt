@@ -60,6 +60,7 @@ class WakeWordDetectorTest {
         val random = Random(7)
         play(ShortArray(10 * WakeWordDetector.SAMPLE_RATE) { random.nextInt(-30, 30).toShort() })
         assertEquals(0, detector.embeddingRuns)
+        assertEquals(0, detector.melRuns)
     }
 
     @Test fun speechWakesTheModelOnlyAroundIt() {

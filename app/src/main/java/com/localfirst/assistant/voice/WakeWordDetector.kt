@@ -11,10 +11,10 @@ import kotlin.math.sqrt
  * shared speech embedding, small keyword classifier) run with ONNX Runtime on
  * the phone. Feed it 80 ms frames of 16 kHz mono audio.
  *
- * The mel step is cheap and always runs; the embedding is most of the cost, so
- * it only runs while there has been sound in the last two seconds, and when
- * sound returns it backfills the embeddings the classifier needs from the mel
- * history. A detection needs [needed] frames in a row at or above [threshold]:
+ * Nothing runs during silence: the last two seconds of raw audio are only
+ * kept, and when sound returns they go through the mel step first, so the
+ * embeddings the classifier needs are backfilled as if it had been listening.
+ * While there has been sound in the last two seconds, every frame runs. A detection needs [needed] frames in a row at or above [threshold]:
  * a lone "Friday" peaks briefly, the full phrase stays high for longer.
  */
 class WakeWordDetector(
@@ -34,6 +34,10 @@ class WakeWordDetector(
     private val melFrames = ArrayDeque<FloatArray>()
     private var melCount = 0
     private val embeddings = ArrayDeque<FloatArray>()
+    // Raw frames heard while asleep, reused in a ring; replayed through the mel step when sound returns.
+    private val backlog = Array(BACKLOG) { ShortArray(FRAME) }
+    private var backlogStart = 0
+    private var backlogSize = 0
     private var embeddedAt = 0
     private var quietFrames = AWAKE_FRAMES
     private var noise = -1f
@@ -41,6 +45,10 @@ class WakeWordDetector(
 
     /** Embedding model calls so far; the costly step, counted so tests can see silence skip it. */
     var embeddingRuns = 0
+        private set
+
+    /** Mel model calls so far; silence skips these too. */
+    var melRuns = 0
         private set
 
     /** The classifier's latest score, 0 while asleep in silence. */
@@ -57,6 +65,7 @@ class WakeWordDetector(
         melCount = WINDOW
         embeddings.clear()
         embeddedAt = 0
+        backlogSize = 0
         streak = 0
         score = 0f
     }
@@ -64,8 +73,12 @@ class WakeWordDetector(
     /** Takes one [FRAME]-sample frame; true when the wake phrase has just been heard. */
     fun accept(frame: ShortArray): Boolean {
         require(frame.size == FRAME)
+        if (!soundRecently(frame)) { keep(frame); streak = 0; score = 0f; return false }
+        while (backlogSize > 0) {
+            appendMel(backlog[backlogStart])
+            backlogStart = (backlogStart + 1) % BACKLOG; backlogSize--
+        }
         appendMel(frame)
-        if (!soundRecently(frame)) { streak = 0; score = 0f; return false }
         embedNewPositions()
         score = if (embeddings.size == FEATURES) classify() else 0f
         streak = if (score >= threshold) streak + 1 else 0
@@ -74,7 +87,14 @@ class WakeWordDetector(
         return true
     }
 
+    /** Keeps [frame] as the newest of the last [BACKLOG] silent frames. */
+    private fun keep(frame: ShortArray) {
+        frame.copyInto(backlog[(backlogStart + backlogSize) % BACKLOG])
+        if (backlogSize < BACKLOG) backlogSize++ else backlogStart = (backlogStart + 1) % BACKLOG
+    }
+
     private fun appendMel(frame: ShortArray) {
+        melRuns++
         val input = FloatArray(CONTEXT + FRAME)
         context.copyInto(input)
         for (i in frame.indices) input[CONTEXT + i] = frame[i].toFloat()
@@ -149,6 +169,8 @@ class WakeWordDetector(
         private const val EMBEDDING = 96
         private const val MEL_KEEP = WINDOW + STRIDE * (FEATURES - 1)
         private const val AWAKE_FRAMES = 25
+        /** Silent frames kept for replay: enough mel history (196 frames) for a full classifier window. */
+        private const val BACKLOG = 25
         private const val MIN_RMS = 40f
         private const val LOUDER = 2f
         private const val NOISE_RISE = 0.002f

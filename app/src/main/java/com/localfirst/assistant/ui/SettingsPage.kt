@@ -319,7 +319,8 @@ private fun VoiceSection(
             Text("“Hey FRIDAY” wake phrase", style = MaterialTheme.typography.bodyLarge)
             Text(
                 text = "Listens for the wake phrase and opens a voice chat. A small wake-phrase model runs on the phone, " +
-                    "so audio never leaves it, and it mostly idles during silence. " +
+                    "so audio never leaves it. To save battery it only listens while the phone is locked, " +
+                    "outside your quiet hours (Dashboard), and not in a pocket or face down. " +
                     "Runs a foreground microphone service with a persistent notification.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
