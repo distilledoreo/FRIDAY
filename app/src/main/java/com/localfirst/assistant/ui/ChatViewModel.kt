@@ -242,7 +242,17 @@ class ChatViewModel(
         override suspend fun request(path: String, method: String, body: kotlinx.serialization.json.JsonObject?) =
             com.localfirst.assistant.client.wireJson.parseToJsonElement((workspace ?: error("Computer unavailable")).request(path, method, body?.let { JSONObject(it.toString()) }))
     }, viewModelScope)
-    internal suspend fun loadFeatureImage(path: String): androidx.compose.ui.graphics.ImageBitmap? = withContext(Dispatchers.IO) {
+    /** Decoded workspace images by path and size; galleries scroll tiles in and out of view, and each decode costs. */
+    private val featureImages = object : android.util.LruCache<String, androidx.compose.ui.graphics.ImageBitmap>(
+        (Runtime.getRuntime().maxMemory() / 8).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()) {
+        override fun sizeOf(key: String, value: androidx.compose.ui.graphics.ImageBitmap) = value.width * value.height * 4
+    }
+    internal suspend fun loadFeatureImage(path: String, maxEdge: Int): androidx.compose.ui.graphics.ImageBitmap? {
+        val key = "$path@$maxEdge"
+        featureImages.get(key)?.let { return it }
+        return decodeFeatureImage(path, maxEdge)?.also { featureImages.put(key, it) }
+    }
+    private suspend fun decodeFeatureImage(path: String, maxEdge: Int): androidx.compose.ui.graphics.ImageBitmap? = withContext(Dispatchers.IO) {
         val file = when {
             path.startsWith("/workspace/files/") -> loadImage(path.substringAfterLast('/'))
             path == "/workspace/pc/screenshot" -> (workspace ?: error("Computer unavailable")).downloadPcScreenshot(File(app?.cacheDir ?: error("Preview unavailable"), "pc-preview.png"))
@@ -252,11 +262,11 @@ class ChatViewModel(
             }
             else -> return@withContext null
         }
-        // The Images gallery shows many at once; decode no larger than 2048 px on the long side.
+        // Decode no larger than needed: a gallery tile asks for a few hundred pixels, the viewer for up to 2048.
         val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
         android.graphics.BitmapFactory.decodeFile(file.absolutePath, bounds)
         var sample = 1
-        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 2048) sample *= 2
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxEdge.coerceIn(64, 4096)) sample *= 2
         android.graphics.BitmapFactory.decodeFile(file.absolutePath, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
     }
     /** A saved video as a cached file the platform player can open; videos are never part of an incognito chat. */
@@ -886,9 +896,33 @@ class ChatViewModel(
                     }
                 } else _state.update { it.copy(groundingStatus = if (grounding.privateRequest(pendingRecallQuery)) grounding.PRIVATE_STATUS else null, groundingSources = emptyList()) }
                 if (grounding.blocksWeb(pendingRecallQuery)) session.latestUserNote = session.latestUserNote.orEmpty() + grounding.OPT_OUT_NOTE
+                // A streamed reply arrives a few tokens at a time; redrawing (and re-parsing its Markdown) for each one
+                // costs CPU and battery that grow with the reply's length. The first update shows at once, the rest at
+                // most every STREAM_FRAME_MS; the turn's end below writes the final messages either way.
+                val frame = Any()  // Deltas can arrive on the network thread.
+                var pending: List<Message>? = null
+                var lastShown = 0L
+                var flush: Job? = null
                 outcome = block { messages ->
-                    _state.update { it.copy(messages = messages, turnMessagesReady = true) }
+                    synchronized(frame) {
+                        val now = System.currentTimeMillis()
+                        if (now - lastShown >= STREAM_FRAME_MS && flush?.isActive != true) {
+                            lastShown = now
+                            _state.update { it.copy(messages = messages, turnMessagesReady = true) }
+                        } else {
+                            pending = messages
+                            if (flush?.isActive != true) flush = viewModelScope.launch {
+                                kotlinx.coroutines.delay((STREAM_FRAME_MS - (System.currentTimeMillis() - lastShown)).coerceAtLeast(0))
+                                synchronized(frame) {
+                                    pending?.let { latest -> lastShown = System.currentTimeMillis(); pending = null
+                                        _state.update { it.copy(messages = latest, turnMessagesReady = true) } }
+                                }
+                            }
+                        }
+                    }
                 }
+                synchronized(frame) { flush?.cancel() }
+                synchronized(frame) { pending }?.let { latest -> _state.update { it.copy(messages = latest, turnMessagesReady = true) } }
             } catch (e: CancellationException) {
                 // Stopped by the user; the session already kept the partial answer.
             } catch (e: Exception) {
@@ -2186,6 +2220,8 @@ class ChatViewModel(
     }
 
     companion object {
+        /** The fastest a streamed reply redraws: about 10 times a second. */
+        private const val STREAM_FRAME_MS = 100L
         fun openAiProvider(settings: ServerSettings): ModelProvider {
             return OpenAiCompatibleModelProvider(
                 OpenAiCompatibleConfig(

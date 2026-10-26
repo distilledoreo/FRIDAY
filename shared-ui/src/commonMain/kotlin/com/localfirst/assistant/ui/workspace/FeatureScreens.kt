@@ -21,13 +21,15 @@ import kotlinx.coroutines.delay
 import kotlinx.serialization.json.*
 
 val LocalOAuthLauncher = staticCompositionLocalOf<((String) -> Unit)?> { null }
-val LocalFeatureImages = staticCompositionLocalOf<suspend (String) -> ImageBitmap?> { { null } }
+/** A workspace image by path, decoded to fit `maxEdge` pixels on its longest side (a gallery tile needs far fewer
+ *  than the original's), or null when unavailable. */
+val LocalFeatureImages = staticCompositionLocalOf<suspend (path: String, maxEdge: Int) -> ImageBitmap?> { { _, _ -> null } }
 
 @Composable
 private fun ServiceScreen(title: String, vm: FeatureController, initialTask: String? = null, initialSession: String? = null, content: LazyListScope.(FeatureState) -> Unit) {
     val state by vm.state.collectAsState()
     LaunchedEffect(title, initialTask, initialSession) { vm.open(when(title) { "Library" -> "files"; "Images" -> "images"; "Videos" -> "videos"; "Accounts" -> "accounts"; else -> "activity" }, initialTask, initialSession) }
-    FridayVisibleEffect(title) { if (title != "Library") while (true) { delay(3000); vm.refresh() } }
+    FridayVisibleEffect(title) { if (title != "Library") while (true) { delay(vm.refreshDelayMillis()); vm.refresh() } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item(key = "service-header") { Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium); TextButton({ vm.refresh() }, enabled = !state.busy && !state.fileLoading) { Text("Refresh") } }
@@ -80,7 +82,7 @@ fun LibraryScreen(vm: FeatureController, open: (String) -> Unit, attach: (() -> 
 @Composable
 fun ServiceImage(path: String, label: String, modifier: Modifier = Modifier) {
     val loader = LocalFeatureImages.current
-    val bitmap by produceState<ImageBitmap?>(null, path, loader) { value = runCatching { loader(path) }.getOrNull() }
+    val bitmap by produceState<ImageBitmap?>(null, path, loader) { value = runCatching { loader(path, 1280) }.getOrNull() }
     bitmap?.let { Image(it, label, modifier.heightIn(max = 480.dp), contentScale = ContentScale.Fit) } ?: Text("Preview loading or unavailable", style = MaterialTheme.typography.bodySmall)
 }
 

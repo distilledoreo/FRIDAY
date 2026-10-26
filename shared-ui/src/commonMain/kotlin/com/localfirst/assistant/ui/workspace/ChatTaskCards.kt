@@ -147,7 +147,7 @@ private fun GeneratedImageCard(result: String, openArtifact: (String) -> Unit) {
     val loader = LocalFeatureImages.current
     var image by remember(id) { mutableStateOf<ImageBitmap?>(null) }
     var failed by remember(id) { mutableStateOf(false) }
-    LaunchedEffect(id) { runCatching { loader("/workspace/files/$id") }.onSuccess { image = it; failed = it == null }.onFailure { failed = true } }
+    LaunchedEffect(id) { runCatching { loader("/workspace/files/$id", 1280) }.onSuccess { image = it; failed = it == null }.onFailure { failed = true } }
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         image?.let { Image(it, "Generated image", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().heightIn(max = 480.dp).clickable { openArtifact(id) }) }
             ?: if (!failed) LinearProgressIndicator(Modifier.fillMaxWidth()) else Text("Preview unavailable.", style = MaterialTheme.typography.bodySmall)

@@ -17,6 +17,8 @@ import com.localfirst.assistant.voice.*
 import kotlin.math.*
 
 /** Saved videos as blob URLs for the page's <video> player: the gateway needs the sign-in token, which a plain src can't send. */
+private const val CACHE_BYTES = 96L * 1024 * 1024
+
 class BrowserVideos(private val gateway: FetchWorkspaceGateway) {
     private val cache = linkedMapOf<String, String>()
     fun clear() { cache.values.forEach { org.w3c.dom.url.URL.revokeObjectURL(it) }; cache.clear() }
@@ -34,16 +36,33 @@ class BrowserVideos(private val gateway: FetchWorkspaceGateway) {
 }
 
 class BrowserImages(private val gateway: FetchWorkspaceGateway) : GenUiImages {
+    /** Decoded images by path and size, least recently used first, within a memory budget: a gallery scrolls tiles in
+     *  and out of view, and each decode costs. */
     private val cache = linkedMapOf<String, ImageBitmap>()
-    fun clear() { cache.clear() }
-    suspend fun path(path: String): ImageBitmap? {
-        cache[path]?.let { return it }
-        val image = Image.makeFromEncoded(gateway.bytes(path)).toComposeImageBitmap()
-        if (cache.size >= 24) cache.remove(cache.keys.first())
-        cache[path] = image
+    private var cachedBytes = 0L
+    fun clear() { cache.clear(); cachedBytes = 0 }
+    suspend fun path(path: String, maxEdge: Int = 2048): ImageBitmap? {
+        val key = "$path@$maxEdge"
+        cache.remove(key)?.let { cache[key] = it; return it }  // Re-inserted: now the most recently used.
+        val image = fit(Image.makeFromEncoded(gateway.bytes(path)), maxEdge).toComposeImageBitmap()
+        cache[key] = image
+        cachedBytes += image.width.toLong() * image.height * 4
+        while (cachedBytes > CACHE_BYTES && cache.size > 1) {
+            val oldest = cache.keys.first()
+            cache.remove(oldest)?.let { cachedBytes -= it.width.toLong() * it.height * 4 }
+        }
         return image
     }
-    override suspend fun load(url: String, maxEdge: Int) = path("/image?url=" + com.localfirst.assistant.platform.PlatformNet.encodeUrl(url))
+    /** Shrinks an image to fit `maxEdge` on its longest side; tiles need a fraction of a photo's pixels. */
+    private fun fit(image: Image, maxEdge: Int): Image {
+        val scale = maxEdge.toFloat() / maxOf(image.width, image.height)
+        if (scale >= 1f) return image
+        val width = maxOf(1, (image.width * scale).toInt()); val height = maxOf(1, (image.height * scale).toInt())
+        val surface = org.jetbrains.skia.Surface.makeRasterN32Premul(width, height)
+        surface.canvas.drawImageRect(image, org.jetbrains.skia.Rect.makeWH(width.toFloat(), height.toFloat()))
+        return surface.makeImageSnapshot().also { image.close(); surface.close() }
+    }
+    override suspend fun load(url: String, maxEdge: Int) = path("/image?url=" + com.localfirst.assistant.platform.PlatformNet.encodeUrl(url), maxEdge)
     override suspend fun search(query: String, count: Int): List<ImageHit> {
         val result = gateway.request("/images?n=${count.coerceIn(1,12)}&q=" + com.localfirst.assistant.platform.PlatformNet.encodeUrl(query)).jsonObject
         return result["results"]?.rows().orEmpty().map { ImageHit(it.string("image"), it.string("thumbnail"), it.string("title"), it.string("source")) }

@@ -37,6 +37,9 @@ import kotlinx.serialization.json.*
 internal val IMAGE_ASPECTS = listOf(1 to 1, 4 to 3, 3 to 4, 3 to 2, 2 to 3, 16 to 9, 9 to 16)
 internal val IMAGE_LONGEST = listOf(1024, 1344, 1536, 1984)
 internal const val DEFAULT_LONGEST = 1344
+/** Decoded sizes: gallery tiles and pickers are small; the viewer fills the screen. */
+internal const val THUMB_EDGE = 512
+internal const val FULL_EDGE = 2048
 
 /** Width and height for a shape at a longest side, the short side snapped to a multiple of 32. */
 internal fun imageSize(aspect: Pair<Int, Int>, longest: Int): Pair<Int, Int> {
@@ -65,9 +68,10 @@ internal fun JsonObject.progressFraction(): Float? = when (val p = this["progres
 }?.coerceIn(0f, 1f)
 
 @Composable
-internal fun ImageThumb(path: String, label: String, modifier: Modifier = Modifier, contentScale: ContentScale = ContentScale.Crop) {
+internal fun ImageThumb(path: String, label: String, modifier: Modifier = Modifier, contentScale: ContentScale = ContentScale.Crop,
+                        maxEdge: Int = THUMB_EDGE) {
     val loader = LocalFeatureImages.current
-    val bitmap by produceState<ImageBitmap?>(null, path, loader) { value = runCatching { loader(path) }.getOrNull() }
+    val bitmap by produceState<ImageBitmap?>(null, path, maxEdge, loader) { value = runCatching { loader(path, maxEdge) }.getOrNull() }
     Box(modifier, contentAlignment = Alignment.Center) {
         bitmap?.let { Image(it, label, Modifier.fillMaxSize(), contentScale = contentScale) }
             ?: CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
@@ -186,7 +190,7 @@ internal fun ImageViewer(job: JsonObject, busy: Boolean, onClose: () -> Unit, on
                     IconButton(onClose) { Icon(LineIcons.Close, "Close", tint = Color.White) }
                 }
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    if (artifact != null) ImageThumb("/workspace/files/$artifact", job.string("prompt").take(120), Modifier.fillMaxSize(), ContentScale.Fit)
+                    if (artifact != null) ImageThumb("/workspace/files/$artifact", job.string("prompt").take(120), Modifier.fillMaxSize(), ContentScale.Fit, FULL_EDGE)
                     else ImageTile(job, Modifier.widthIn(max = 280.dp).fillMaxWidth()) {}
                 }
                 // A long prompt scrolls in its own space instead of pushing the buttons off the screen.

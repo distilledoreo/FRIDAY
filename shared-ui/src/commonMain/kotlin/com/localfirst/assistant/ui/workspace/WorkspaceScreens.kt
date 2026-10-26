@@ -282,7 +282,7 @@ private fun ChatScreen(vm: WorkspaceController, state: WorkspaceState, code: com
                     }
                     TranscriptItem.Thinking -> if (state.streamingText.isBlank()) ThinkingIndicator(state.jobStage)
                 } }
-                if (state.streamingText.isNotBlank()) item(key = "streaming-reply") { NativeResponseContent(state.streamingText) }
+                if (state.streamingText.isNotBlank()) item(key = "streaming-reply") { NativeResponseContent(rememberThrottled(state.streamingText)) }
                 state.approval?.let { approval -> item(key = "approval") {
                     fun text(key: String) = (approval[key] as? JsonPrimitive)?.contentOrNull.orEmpty()
                     ApprovalCard(text("tool"), text("title").ifBlank { "Allow this?" }, text("prompt"), { vm.answerApproval(it) },

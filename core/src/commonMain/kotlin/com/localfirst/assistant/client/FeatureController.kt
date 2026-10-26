@@ -28,6 +28,8 @@ data class FeatureState(
     val chatWorkBusy: Boolean = false,
 )
 
+private val TERMINAL = setOf("completed", "failed", "cancelled")
+
 /** Portable service orchestration; optional PC services report their own availability per screen. */
 class FeatureController(val gateway: WorkspaceGateway, private val scope: CoroutineScope, private val browserOAuth: Boolean = false) {
     private val mutable = MutableStateFlow(FeatureState())
@@ -37,6 +39,19 @@ class FeatureController(val gateway: WorkspaceGateway, private val scope: Corout
     private var operation: Job? = null
     private var fileOperation: Job? = null
     private var fileGeneration = 0
+    /** How long an open screen waits before refreshing: quickly while something there is in progress, slowly otherwise.
+     *  Each refresh of Activity is several requests, so an idle screen polling every few seconds costs battery. */
+    fun refreshDelayMillis(): Long {
+        val s = state.value
+        val working = when (s.page) {
+            "images" -> s.images.any { it.string("status") !in TERMINAL }
+            "videos" -> s.videos.any { it.string("status") !in TERMINAL }
+            "activity" -> s.tasks.any { it.string("status") in setOf("approved", "running") } || s.sessions.any { it.string("state") == "busy" }
+            else -> false
+        }
+        return if (working) 3_000 else 30_000
+    }
+    private var filesLoadedAt = 0L
     fun reset() { epoch++; operation?.cancel(); fileGeneration++; fileOperation?.cancel(); mutable.value = FeatureState() }
     fun dismissError() { mutable.update { it.copy(error = null) } }
     fun open(page: String, taskId: String? = null, sessionId: String? = null) { fileGeneration++; fileOperation?.cancel(); eventCursor = 0; mutable.update { it.copy(page = page, fileLoading = false, task = taskId?.let { buildJsonObject { put("id", it) } }, session = sessionId?.let { buildJsonObject { put("id", it) } }, events = emptyList(), error = null) }; refresh() }
@@ -93,7 +108,12 @@ class FeatureController(val gateway: WorkspaceGateway, private val scope: Corout
         var next = old
         when (old.page) {
             "files" -> { if (identity == epoch) requestFiles()?.join(); return }
-            "images" -> next = old.copy(images = gateway.request("/workspace/images").rows(), files = gateway.request("/workspace/files").rows())
+            "images" -> {
+                // The reference picker's file list changes rarely; reload it at most once a minute.
+                val now = com.localfirst.assistant.platform.PlatformSystem.currentTimeMillis()
+                val files = if (old.files.isEmpty() || now - filesLoadedAt > 60_000) gateway.request("/workspace/files").rows().also { filesLoadedAt = now } else old.files
+                next = old.copy(images = gateway.request("/workspace/images").rows(), files = files)
+            }
             "videos" -> {
                 // The options table only changes with the computer's setup: read it once per connection (until it's available).
                 val options = old.videoOptions?.takeIf { it.flag("available") } ?: try { gateway.request("/workspace/videos/capabilities").jsonObject } catch (e: CancellationException) { throw e } catch (e: Exception) { buildJsonObject { put("available", false); put("detail", e.message ?: "Video service unavailable") } }
