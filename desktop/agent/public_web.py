@@ -9,9 +9,13 @@ import time
 import ipaddress
 import socket
 import ssl
+import zlib
 from urllib.parse import urljoin, urlsplit
 
 MAX_BODY = 2 * 1024 * 1024
+# Publishers' CDNs often compress even when asked not to (python.org's release pages did), so gzip and deflate are
+# accepted and decoded as they arrive; MAX_BODY bounds the decoded page, so a small compressed body can't expand past it.
+ENCODINGS = {'gzip': 16 + zlib.MAX_WBITS, 'x-gzip': 16 + zlib.MAX_WBITS, 'deflate': zlib.MAX_WBITS}
 
 
 class PageHTTPError(ValueError):
@@ -72,6 +76,17 @@ class PinnedHTTPS(http.client.HTTPSConnection):
             raise
 
 
+def inflate(decoder, chunk, room):
+    """Decodes a compressed chunk, producing at most room bytes; a page that would decode to more is refused."""
+    try:
+        data = decoder.decompress(chunk, room) if chunk else decoder.flush()
+    except zlib.error:
+        raise ValueError('Compressed page could not be decoded') from None
+    if decoder.unconsumed_tail or len(data) >= room:
+        raise ValueError('Page exceeds 2 MB')
+    return data
+
+
 def read(url, resolve=socket.getaddrinfo, connection=PinnedHTTPS, clock=time.monotonic):
     deadline=clock()+45
     def remaining():
@@ -83,7 +98,7 @@ def read(url, resolve=socket.getaddrinfo, connection=PinnedHTTPS, clock=time.mon
         client = connection(host, address)
         try:
             client.timeout=remaining()
-            client.request('GET', path, headers={'Host': host, 'Accept-Encoding': 'identity', 'User-Agent': 'FRIDAY-ReadOnly/1'})
+            client.request('GET', path, headers={'Host': host, 'Accept-Encoding': 'gzip, deflate, identity;q=0.5', 'User-Agent': 'FRIDAY-ReadOnly/1'})
             response = client.getresponse()
             if response.status in (301, 302, 303, 307, 308):
                 location = response.getheader('Location')
@@ -94,16 +109,25 @@ def read(url, resolve=socket.getaddrinfo, connection=PinnedHTTPS, clock=time.mon
             mime = response.getheader('Content-Type', '').split(';')[0].strip().lower()
             if mime not in ('text/html', 'text/plain', 'application/xhtml+xml'):
                 raise ValueError('Unsupported page type')
-            if response.getheader('Content-Encoding', 'identity') != 'identity':
-                raise ValueError('Compressed responses are not accepted')
-            body=bytearray()
+            encoding = (response.getheader('Content-Encoding', '') or 'identity').strip().lower()
+            if encoding not in ('identity', *ENCODINGS):
+                raise ValueError(f'Page uses unsupported {encoding} compression')
+            decoder = zlib.decompressobj(ENCODINGS[encoding]) if encoding != 'identity' else None
+            body=bytearray();wire=0
             while True:
                 timeout=remaining()
                 sock=getattr(client,'sock',None)
                 if sock is not None:sock.settimeout(timeout)
-                chunk=(response.read1 if hasattr(response,'read1') else response.read)(min(65536,MAX_BODY+1-len(body)))
+                chunk=(response.read1 if hasattr(response,'read1') else response.read)(min(65536,MAX_BODY+1-wire))
                 if not chunk:break
+                wire+=len(chunk)
+                if wire>MAX_BODY:raise ValueError('Page exceeds 2 MB')
+                if decoder is not None:
+                    chunk=inflate(decoder,chunk,MAX_BODY+1-len(body))
                 body.extend(chunk)
+                if len(body)>MAX_BODY:raise ValueError('Page exceeds 2 MB')
+            if decoder is not None:
+                body.extend(inflate(decoder,b'',MAX_BODY+1-len(body)))
                 if len(body)>MAX_BODY:raise ValueError('Page exceeds 2 MB')
             return {'url': url, 'mime': mime, 'content': body.decode('utf-8', errors='replace'), 'untrusted': True}
         finally: client.close()

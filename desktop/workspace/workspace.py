@@ -140,6 +140,8 @@ GROUNDING = (' The latest user message ends with when it was sent, like [Sent Sa
     'so search before answering anything that may have changed (versions, prices, news, sports, schedules, who holds a role), '
     "and if something is scheduled after that date, say it hasn't happened yet. Cite only pages a tool returned in this chat; "
     "never write a source or URL you didn't get from a tool. Once the results answer the question, stop searching and answer. "
+    'For the latest or current version of something, confirm it on the publisher\'s index or downloads page and the matching '
+    "release page; a version's own notes don't show what is newest. If you can't confirm it, say so rather than guess. "
     'When asked to write code, answer with the code; run it in the sandbox at most once, and only when it is tricky or the user asks.')
 # Live voice (LiveVoiceConversation.kt) answers without reasoning first: a spoken reply can't wait for it.
 LIVE_VOICE_ID = 'd9b5c8e4-71b8-4fc0-a42f-e92360ce9481'
@@ -268,9 +270,24 @@ async def _plain_answer(answer, request, regenerate, tools=True):
                              [{'role': 'user', 'content': TOOL_MARKUP_NOTE}], False)
     if not retry.get('tool_calls') and not TOOL_MARKUP.search(retry.get('content') or '') and (retry.get('content') or '').strip():
         return {'role': 'assistant', 'content': retry['content']}
-    last = next((m.get('content') or '' for m in reversed(request) if m.get('role') == 'tool'), '')
-    return {'role': 'assistant', 'content': "I couldn't finish writing the answer." +
-            (' The last result was:\n\n```\n' + str(last)[:4000] + '\n```' if last else '')}
+    return {'role': 'assistant', 'content': "I couldn't finish writing the answer." + _last_result_note(request)}
+
+
+def _last_result_note(request):
+    """What the user is shown of the last tool result when the answer couldn't be written: Python's output as is (it
+    is often the answer), a plain line for an empty search, and nothing for other tools' raw data."""
+    calls = {c.get('id'): (c.get('function') or {}).get('name') for m in request if m.get('role') == 'assistant' for c in m.get('tool_calls') or []}
+    last = next((m for m in reversed(request) if m.get('role') == 'tool'), None)
+    if last is None:
+        return ''
+    content = str(last.get('content') or '')
+    if calls.get(last.get('tool_call_id')) == 'execute_python':
+        return ' The last result was:\n\n```\n' + content[:4000] + '\n```'
+    if '"search_status": "empty"' in content:
+        return (' The web search returned nothing (the search engines may be limiting requests), so I couldn\'t verify '
+                'this. Try again in a few minutes.')
+    return ''
+
 
 
 # Exact-format requests a model sometimes ignores, and answers that change their result partway (assessment R09). Only
@@ -319,7 +336,7 @@ def _latest_request(messages):
             text = next((p.get('text') or '' for p in content if isinstance(p, dict) and p.get('type') == 'text'), '')
         else:
             text = str(content or '')
-        if text in notes or text.startswith(('(Reply with', '(Your answer changed', '(You carried out')):
+        if text in notes or text.startswith(('(Reply with', '(Your answer changed', '(You carried out', '(You said you would', '(Answer now')):
             continue
         return re.sub(r'\s*\[Sent [^\]]*\]\s*$', '', text)
     return ''
@@ -410,6 +427,42 @@ async def _formatted_answer(answer, request, regenerate):
     return {'role': 'assistant', 'content': fixed}
 
 
+# An answer that ends by promising a step ("I'll try fetching the release page.") instead of taking it. Codex's grounding
+# assessment saw three jobs complete with only that; the step is asked for again, then an answer without it.
+PROMISE = re.compile(r"(?:^|[.!?:]\s+|\n\s*)(?:(?:next|now|first|then),?\s+)?(?:i'll|i will|let me|i'm going to|i am going to|i need to|"
+                     r"i should|i can now)\s+(?:now\s+|first\s+|also\s+|quickly\s+)?(?:try\s+(?:to\s+)?|go\s+(?:and\s+)?)?"
+                     r"(?:fetch|open|check|verify|look|search|read|confirm|visit|retrieve|pull|browse|get|find|run|calculate|"
+                     r"compute|load|access|query|consult|review)(?:ing)?\b[^.!?\n]*[.!?:…]*\s*$", re.I)
+PROMISE_NOTE = ('(You said you would take another step but ended your turn without taking it. Make that tool call now. '
+                'If you cannot, answer from what you already have and say plainly what you could not verify.)')
+FINISH_NOTE = ('(Answer now from the results above. Say plainly what you could not verify, and do not say you will check '
+               'anything further.)')
+UNFINISHED = '\n\n_FRIDAY stopped before finishing this check, so the answer above is incomplete._'
+
+
+def _promises_only(text):
+    return bool(PROMISE.search(text.strip()[-400:]))
+
+
+async def _followed_through(answer, request, regenerate, tools=True):
+    """An answer that ends promising a step it didn't take gets the step asked for again (with tools, when there are
+    any), then one answer without tools; if it still only promises, it is kept with a line saying so."""
+    text = answer.get('content') or ''
+    if answer.get('tool_calls') or not text.strip() or not _promises_only(text):
+        return answer
+    if tools:
+        retry = await regenerate(request + [{'role': 'assistant', 'content': text}, {'role': 'user', 'content': PROMISE_NOTE}], True)
+        if retry.get('tool_calls'):
+            return retry
+        if (retry.get('content') or '').strip() and not TOOL_MARKUP.search(retry['content']) and not _promises_only(retry['content']):
+            return {'role': 'assistant', 'content': retry['content']}
+    final = await regenerate(request + [{'role': 'assistant', 'content': text}, {'role': 'user', 'content': FINISH_NOTE}], False)
+    fixed = final.get('content') or ''
+    if not final.get('tool_calls') and fixed.strip() and not TOOL_MARKUP.search(fixed) and not _promises_only(fixed):
+        return {'role': 'assistant', 'content': fixed}
+    return {'role': 'assistant', 'content': text.rstrip() + UNFINISHED}
+
+
 URL = re.compile(r'https?://[^\s<>()\[\]"\'`*]+')
 
 
@@ -418,7 +471,9 @@ def _url_key(url):
 
 
 def _unread_pages(messages, start, text):
-    """Pages the answer cites that no tool read this message: found by a search but not retrieved, or a failed fetch."""
+    """Pages the answer cites that no tool read this message, as (url, how): 'snippet' when a search found it but it
+    wasn't retrieved, 'failed' when fetching it failed and no search showed it, and 'unseen' when no tool, earlier
+    message or the user ever gave that address (the answer wrote it from memory)."""
     read, unread = set(), {}
     calls = {c.get('id'): c for m in messages[start:] if m.get('role') == 'assistant' for c in m.get('tool_calls') or []}
     for message in messages[start:]:
@@ -429,7 +484,7 @@ def _unread_pages(messages, start, text):
             if source.get('contentRead'):
                 read.add(key)
             else:
-                unread.setdefault(key, source['url'])
+                unread[key] = (source['url'], 'snippet')
         call = calls.get(message.get('tool_call_id')) or {}
         if (call.get('function') or {}).get('name') == 'fetch_page' and '"error"' in str(message.get('content', ''))[:200]:
             try:
@@ -437,41 +492,128 @@ def _unread_pages(messages, start, text):
             except ValueError:
                 url = ''
             if url:
-                unread.setdefault(_url_key(url), url)
-    return list(dict.fromkeys(unread[_url_key(u)] for u in URL.findall(text or '') if _url_key(u) in unread and _url_key(u) not in read))
+                unread.setdefault(_url_key(url), (url, 'failed'))
+    # Addresses from memory are only questioned in a researched answer: a casual reply's links aren't held to it.
+    researched = any(m.get('role') == 'tool' for m in messages[start:])
+    seen = {_url_key(u) for m in messages for u in URL.findall(_message_text(m))}
+    cited = []
+    for url in URL.findall(text or ''):
+        key = _url_key(url)
+        if key in read:
+            continue
+        if key in unread:
+            cited.append(unread[key])
+        elif researched and key not in seen:
+            cited.append((url.rstrip('.,;:!?)'), 'unseen'))
+    return list(dict.fromkeys(cited))
 
 
-UNREAD_NOTE = ('(You did not read {pages}: you only saw search snippets. Rewrite your answer so it does not quote '
-               '{them} or say what {them} state; attribute those details to search results. Keep the links.)')
+def _message_text(message):
+    """All the text of a message, tool calls' arguments included, for finding addresses and quoted wording."""
+    content = message.get('content')
+    parts = [p.get('text') or '' for p in content if isinstance(p, dict)] if isinstance(content, list) else [str(content or '')]
+    parts += [(c.get('function') or {}).get('arguments') or '' for c in message.get('tool_calls') or []]
+    return '\n'.join(parts)
+
+
+# Quoted wording the answer presents as a source's ("…", “…”, or a > block quote), checked against what the tools returned.
+ANSWER_QUOTE = re.compile(r'“([^”\n]{20,400})”|"([^"\n]{20,400})"|^\s*>\s*(.{20,400})$', re.M)
+
+
+def _words(text):
+    return ' '.join(re.findall(r'[0-9a-z]+', text.lower().replace('’', "'")))
+
+
+def _unsupported_quotes(messages, start, text):
+    """Quotations of six words or more that appear in no tool result this message and nowhere the user wrote, after
+    a web tool ran; models volunteer quotes that sound like the source but aren't in what they retrieved."""
+    results = [m for m in messages[start:] if m.get('role') == 'tool']
+    if not results:
+        return []
+    evidence = ' '.join(_words(_tool_text(m.get('content'))) for m in results)
+    evidence += ' ' + ' '.join(_words(_message_text(m)) for m in messages if m.get('role') == 'user')
+    quotes = [next(g for g in match.groups() if g) for match in ANSWER_QUOTE.finditer(text or '')]
+    def supported(quote):
+        # Bracketed insertions ("[the asteroid]") are the quoter's; an ellipsis joins separately quoted pieces.
+        pieces = [_words(piece) for piece in re.split(r'\.\.\.|…', re.sub(r'\[[^\]]*\]', ' ', quote))]
+        return all(piece in evidence for piece in pieces if len(piece.split()) >= 4)
+    return [q for q in dict.fromkeys(quotes) if len(_words(q).split()) >= 6 and not supported(q)]
+
+
+def _tool_text(content):
+    """A tool result's readable text: JSON results give their string values, so escaped quotes and unicode match."""
+    try:
+        value = json.loads(content) if isinstance(content, str) else content
+    except ValueError:
+        return str(content or '')
+    found = []
+    def walk(item):
+        if isinstance(item, str): found.append(item)
+        elif isinstance(item, dict): [walk(v) for v in item.values()]
+        elif isinstance(item, list): [walk(v) for v in item]
+    walk(value)
+    return ' '.join(found)
+
+
+HOW_UNREAD = {
+    'snippet': 'you only saw it in search snippets',
+    'failed': 'it failed to open and no search showed it',
+    'unseen': 'no search or page in this chat gave you that address',
+}
+UNREAD_NOTE = ('(Some sources in your answer were not read: {pages}. Rewrite your answer so it does not quote them or '
+               'say what they state; attribute details only to text the tools actually returned, and say plainly what '
+               'you could not verify. Keep links you got from a tool.)')
+REWRITE_ONLY = (' Reply with the complete revised answer only, written for the user as your answer: do not mention this '
+                'request, apologize or say what you changed.')
+# The first paragraph of a rewrite that answers the request instead of rewriting ("You're right — I fabricated …").
+REWRITE_PREAMBLE = re.compile(r"^\s*(?:you'?re right|you are right|good catch|i apologi[sz]e|sorry|apologies|here(?:'s| is) the "
+                              r"(?:corrected|revised|updated)|corrected (?:answer|version))[^\n]*\n+", re.I)
+QUOTE_NOTE_SOURCES = ('(These quotations are not in the text the tools returned: {quotes}. Paraphrase them instead, or '
+                      'quote only wording that appears in the results.)')
 
 
 async def _honest_sources(answer, request, messages, start, regenerate):
-    """An answer that cites pages it never read is rewritten once, to attribute those details to search snippets
-    instead of quoting the pages; any page still cited gets a plain note at the end."""
+    """An answer that cites pages it never read, or quotes wording no tool returned, is rewritten once to attribute
+    details only to what was retrieved; any page still cited that way gets a plain note at the end saying how."""
     text = answer.get('content') or ''
     if answer.get('tool_calls') or not text.strip():
         return answer
     pages = _unread_pages(messages, start, text)
-    if pages:
-        them = 'it' if len(pages) == 1 else 'them'
-        retry = await regenerate(request + [{'role': 'assistant', 'content': text}, {'role': 'user', 'content':
-            UNREAD_NOTE.format(pages=', '.join(pages), them=them)}], False)
-        fixed = retry.get('content') or ''
-        if fixed.strip() and not retry.get('tool_calls') and not TOOL_MARKUP.search(fixed):
+    quotes = _unsupported_quotes(messages, start, text)
+    if pages or quotes:
+        asks = []
+        if pages:
+            asks.append(UNREAD_NOTE.format(pages='; '.join(f'{url} ({HOW_UNREAD[how]})' for url, how in pages)))
+        if quotes:
+            asks.append(QUOTE_NOTE_SOURCES.format(quotes='; '.join(f'«{q}»' for q in quotes)))
+        retry = await regenerate(request + [{'role': 'assistant', 'content': text}, {'role': 'user', 'content': ' '.join(asks) + REWRITE_ONLY}], False)
+        fixed = REWRITE_PREAMBLE.sub('', retry.get('content') or '', count=1)
+        if fixed.strip() and not retry.get('tool_calls') and not TOOL_MARKUP.search(fixed) and not _promises_only(fixed):
             text = fixed
     return dict(answer, content=text + _unread_note(messages, start, text))
 
 
 def _unread_note(messages, start, text):
-    """A note for each page the answer cites that no tool read this message. Models cite such pages as if they'd
-    read them; the note says plainly that they didn't."""
-    cited = _unread_pages(messages, start, text)
-    if not cited:
-        return ''
-    one = len(set(cited)) == 1
-    pages = ', '.join(dict.fromkeys(cited))
-    return (f'\n\n_Note: I didn\'t read the full {"page" if one else "pages"} at {pages}, so anything attributed to '
-            f'{"it" if one else "them"} above comes from search snippets, not the {"page itself" if one else "pages themselves"}._')
+    """A note for pages the answer still cites without having read them, saying what the answer actually rests on."""
+    lines, unread = [], _unread_pages(messages, start, text)
+    for how in ('snippet', 'failed', 'unseen'):
+        pages = [url for url, kind in unread if kind == how]
+        if not pages:
+            continue
+        one = len(pages) == 1
+        listed = ', '.join(pages)
+        if how == 'snippet':
+            lines.append(f'I didn\'t read the full {"page" if one else "pages"} at {listed}, so anything attributed to '
+                         f'{"it" if one else "them"} above comes from search snippets, not the {"page itself" if one else "pages themselves"}.')
+        elif how == 'failed':
+            lines.append(f'I couldn\'t open {listed}, so nothing above comes from {"that page" if one else "those pages"}.')
+        else:
+            lines.append(f'{listed} didn\'t come from a search or a page I opened here, so treat '
+                         f'{"that link" if one else "those links"} as unverified.')
+    quotes = _unsupported_quotes(messages, start, text)
+    if quotes:
+        lines.append('Some quoted wording above isn\'t in the text I retrieved, so read it as paraphrase.')
+    return ''.join(f'\n\n_Note: {line}_' for line in lines)
 
 
 def _unanswered(messages):
@@ -1232,6 +1374,9 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                                      body.connection, reasoning=body.reasoning, private=True), 900), tools=not last)
                         answer = await _formatted_answer(answer, request, lambda retry, with_tools: asyncio.wait_for(
                             generate(retry, [], report, body.model, body.connection, reasoning=body.reasoning, private=True), 900))
+                        answer = await _followed_through(answer, request, lambda retry, with_tools: asyncio.wait_for(
+                            generate(retry, _step_tools(available, messages, initial) if with_tools else [], report, body.model,
+                                     body.connection, reasoning=body.reasoning, private=True), 900), tools=not last)
                         answer = await _honest_sources(answer, request, messages, initial, lambda retry, with_tools: asyncio.wait_for(
                             generate(retry, [], report, body.model, body.connection, reasoning=body.reasoning, private=True), 900))
                         messages.append(answer)
@@ -1534,6 +1679,9 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                         options.get('connection'), job['id'], options.get('reasoning')), timeout=900), tools=not last)
                     answer = await _formatted_answer(answer, request, lambda retry, with_tools: asyncio.wait_for(generate(
                         retry, [], report, options.get('model'), options.get('connection'), job['id'], options.get('reasoning')), timeout=900))
+                    answer = await _followed_through(answer, request, lambda retry, with_tools: asyncio.wait_for(generate(
+                        retry, _step_tools(available, messages, start) if with_tools else [], report, options.get('model'),
+                        options.get('connection'), job['id'], options.get('reasoning')), timeout=900), tools=not last)
                     if status() != 'running':
                         if status() == 'cancelled':
                             keep_partial(job, messages, answer.get('content') or progress.get(job['id'], ''))

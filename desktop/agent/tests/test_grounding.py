@@ -43,6 +43,19 @@ class GroundingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(passages('Some unrelated source text.','nonmatching topic'),[])
         empty=await Grounding().research(Request(query='frontier'));self.assertEqual(empty['search_status'],'unavailable');self.assertEqual(empty['evidence'],[])
         await service.close()
+    async def test_an_empty_search_is_retried_once_and_explained(self):
+        # Codex's grounding assessment: throttled engines returned nothing three times; minutes later the query found five.
+        answers=iter([{'results':[]},{'results':[{'url':'https://example.test/release','title':'Release','snippet':'3.13.0'}]}])
+        async def search(query):return next(answers)
+        service=Grounding(search,lambda url:{},empty_retry_delay=0)
+        result=await service.research(Request(query='python 3.13.0 release date'))
+        self.assertEqual(result['search_status'],'available');self.assertEqual(result['evidence'][0]['url'],'https://example.test/release')
+        calls=[]
+        async def nothing(query):calls.append(query);return {'results':[]}
+        result=await Grounding(nothing,lambda url:{},empty_retry_delay=0).research(Request(query='python 3.13.0 release date'))
+        self.assertEqual(len(calls),2);self.assertEqual(result['search_status'],'empty')
+        self.assertIn('does not mean no source exists',result['search_detail'])
+        await service.close()
     async def test_explicit_reference_bypasses_search_and_fetches_only_three_distinct_pages(self):
         calls=[]
         async def search(query):self.fail('Explicit source should not be sent to search')
@@ -115,7 +128,8 @@ class GroundingTests(unittest.IsolatedAsyncioTestCase):
                 invalid=await client.post('/grounding',json={'query':{'secret':'synthetic-not-persisted'}})
                 self.assertEqual(invalid.status_code,422);self.assertNotIn('synthetic-not-persisted',invalid.text)
                 result=await client.post('/grounding',json={'query':'synthetic'})
-                self.assertEqual(result.status_code,200);self.assertFalse(result.json()['truth_verified']);self.assertEqual(calls,['synthetic'])
+                self.assertEqual(result.status_code,200);self.assertFalse(result.json()['truth_verified'])
+                self.assertEqual(calls,['synthetic','synthetic'])  # An empty search is retried once.
                 self.assertEqual((await client.post('/grounding/page',json={'url':'http://127.0.0.1'})).status_code,502)
     async def test_health_reports_timed_out_host_work_for_idle_deployment(self):
         from pathlib import Path

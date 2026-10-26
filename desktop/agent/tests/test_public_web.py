@@ -1,5 +1,7 @@
+import gzip
 import socket
 import unittest
+import zlib
 from desktop.agent.public_web import MAX_BODY, destination, read
 
 
@@ -44,8 +46,23 @@ class PublicWebTests(unittest.TestCase):
         with self.assertRaises(ValueError): read('https://example.com', resolve, Connection)
         self.assertEqual(calls, ['8.8.8.8'])
 
+    def test_compressed_pages_are_decoded(self):
+        # Codex's grounding assessment: python.org's release page came back gzipped and was refused outright.
+        page = b'<p>Python 3.13.0 was released on October 7, 2024.</p>' * 50
+        deflated = zlib.compressobj(wbits=zlib.MAX_WBITS); deflated = deflated.compress(page) + deflated.flush()
+        for encoding, body in (('gzip', gzip.compress(page)), ('deflate', deflated), ('identity', page)):
+            class Connection:
+                def __init__(self, *a): pass
+                def request(self, method, path, headers): self.headers = headers
+                def getresponse(self): return Response(headers={'Content-Encoding': encoding}, body=body)
+                def close(self): pass
+            with self.subTest(encoding=encoding):
+                self.assertEqual(read('https://example.com', resolver('8.8.8.8'), Connection)['content'], page.decode())
+
     def test_body_and_compression_are_bounded(self):
-        for response in [Response(body=b'x' * (MAX_BODY + 1)), Response(headers={'Content-Encoding': 'gzip'})]:
+        bomb = gzip.compress(b'\0' * (MAX_BODY + 1))
+        for response in [Response(body=b'x' * (MAX_BODY + 1)), Response(headers={'Content-Encoding': 'gzip'}),
+                         Response(headers={'Content-Encoding': 'gzip'}, body=bomb), Response(headers={'Content-Encoding': 'br'})]:
             class Connection:
                 def __init__(self, *a): pass
                 def request(self, *a, **k): pass

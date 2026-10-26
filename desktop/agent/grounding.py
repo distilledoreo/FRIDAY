@@ -164,8 +164,9 @@ def page_evidence(document,url,query=''):
             'truth_verified':False,'detail':'Selected exact passages from bounded static text. Dates are publisher metadata, not independently verified. Retrieval does not prove a claim.'}
 
 class Grounding:
-    def __init__(self,search=None,reader=read,timeout=18):
+    def __init__(self,search=None,reader=read,timeout=18,empty_retry_delay=2.5):
         self.search=search;self.reader=reader;self.timeout=timeout;self.jobs=READ_POOL.pending;self.searches=0
+        self.empty_retry_delay=empty_retry_delay
     @property
     def active(self):return len(self.jobs)+self.searches
     async def page(self,url,query=''):
@@ -185,6 +186,12 @@ class Grounding:
             try:
                 response=await asyncio.wait_for(self.search(query),12)
                 candidates=response.get('results',[])
+                # The engines behind search throttle bursts (CAPTCHAs, "too many requests") and then answer nothing;
+                # the same query found five results minutes later in Codex's assessment, so an empty answer is retried once.
+                if not candidates:
+                    await asyncio.sleep(self.empty_retry_delay)
+                    response=await asyncio.wait_for(self.search(query),12)
+                    candidates=response.get('results',[])
                 for hit in candidates[:request.limit]:
                     if not isinstance(hit,dict) or not public_shape(hit.get('url')):continue
                     if any(item['url']==hit['url'] for item in results):continue
@@ -224,7 +231,9 @@ class Grounding:
                 continue
             largest=max(values,key=lambda item:len(json.dumps(item,ensure_ascii=False).encode()));largest['passages'].pop();largest['passages_shortened']=True
         usable=sum(bool(item.get('passages')) for item in evidence)
-        return {'query':query,'checked_at':utc(),'search_status':search_status,'evidence':evidence,'usable_pages':usable,'page_limit':3,'evidence_shortened':shortened,
+        empty={'search_detail':'The search engines returned nothing for this query, probably because they are throttling '
+               'requests. That does not mean no source exists: try different words, or fetch a known official page directly.'} if search_status=='empty' else {}
+        return {**empty,'query':query,'checked_at':utc(),'search_status':search_status,'evidence':evidence,'usable_pages':usable,'page_limit':3,'evidence_shortened':shortened,
                 'untrusted':True,'truth_verified':False,'detail':'Cite only passages that support each material claim, using the source URL. Check source dates, primary authority and conflicts. State missing/uncertain evidence; do not infer truth from rankings or snippets. Larger research must be proposed to Activity and explicitly approved, never automatically started.'}
     async def close(self):
         # Shutdown is normally idle-checked. These are reads only; no mutation can replay.

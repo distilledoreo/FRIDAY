@@ -396,7 +396,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         checkpoint = [{'role': 'system', 'content': 'Research'}, {'role': 'user', 'content': 'Resume'},
             {'role': 'assistant', 'content': '', 'tool_calls': [{'id': 'prior', 'type': 'function',
                 'function': {'name': 'web_search', 'arguments': '{"query":"already searched"}'}}]},
-            {'role': 'tool', 'tool_call_id': 'prior', 'content': '{"result":"done"}'}]
+            {'role': 'tool', 'tool_call_id': 'prior', 'content': '{"result":"done","url":"https://example.com"}'}]
         self.workspace.update_job(jid, status='running', messages=json.dumps(checkpoint))
         self.lifespan = self.app.router.lifespan_context(self.app)
         await self.lifespan.__aenter__()
@@ -413,7 +413,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         initial = [{'role': 'system', 'content': 'Research'}, {'role': 'user', 'content': 'Research'}]
         checkpoint = initial + [{'role': 'assistant', 'content': '', 'tool_calls': [{'id': 'prior', 'type': 'function',
             'function': {'name': 'web_search', 'arguments': '{"query":"searched"}'}}]},
-            {'role': 'tool', 'tool_call_id': 'prior', 'content': '{"result":"done"}'}]
+            {'role': 'tool', 'tool_call_id': 'prior', 'content': '{"result":"done","url":"https://example.com"}'}]
         self.workspace.update_job(jid, status='running', messages=json.dumps(checkpoint))
         with self.workspace.db() as db:
             db.execute('UPDATE jobs SET item_id=?,base_revision=?,chat=?,initial_count=? WHERE id=?',
@@ -578,13 +578,57 @@ class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
             if step:
                 return {'role': 'assistant', 'content': '', 'tool_calls': [{'id': 's1', 'type': 'function',
                     'function': {'name': step[0], 'arguments': json.dumps(step[1])}}]}
-            if messages[-1]['content'].startswith('(You did not read'):
+            if messages[-1]['content'].startswith('(Some sources in your answer were not read'):
                 return {'role': 'assistant', 'content': f'Search results give October 7, 2024 ({page}).'}
             return {'role': 'assistant', 'content': f'This page states "Release date: Oct. 7, 2024" ({page}).'}
         self.workspace_model(model)
         job = await self.run_job('When was Python 3.13.0 released?')
         self.assertNotIn('This page states', job['result'])
         self.assertIn('Search results give October 7, 2024', job['result'])
+
+    def test_notes_name_the_evidence_actually_used(self):
+        # Codex's grounding assessment: a 404 with no search got a footer about snippets; a link no tool returned went
+        # unflagged; a volunteered quote wasn't in the returned excerpts.
+        missing = 'https://docs.python.org/3/nonexistent-page.html'
+        call = {'id': 'f1', 'type': 'function', 'function': {'name': 'fetch_page', 'arguments': json.dumps({'url': missing})}}
+        messages = [{'role': 'user', 'content': 'What does ' + missing + ' say?'}, {'role': 'assistant', 'content': '', 'tool_calls': [call]},
+                    {'role': 'tool', 'tool_call_id': 'f1', 'content': '{"error": "Publisher returned HTTP 404"}'}]
+        note = module._unread_note(messages, 1, 'The page ' + missing + ' returned 404.')
+        self.assertIn("I couldn't open " + missing, note)
+        self.assertNotIn('snippets', note)
+        invented = 'https://www.python.org/downloads/release/python-3151/'
+        self.assertEqual(module._unread_pages(messages, 1, 'See ' + invented), [(invented, 'unseen')])
+        self.assertIn('treat that link as unverified', module._unread_note(messages, 1, 'See ' + invented))
+        # A casual answer that ran no tools isn't held to it.
+        self.assertEqual(module._unread_pages(messages[:1], 1, 'See ' + invented), [])
+
+    def test_quotes_must_be_in_what_the_tools_returned(self):
+        excerpt = {'url': 'https://docs.python.org/3.13/whatsnew/3.13.html', 'passages': [
+            'CPython now has experimental support for running in a free-threaded mode.']}
+        messages = [{'role': 'user', 'content': 'Is the JIT experimental?'},
+                    {'role': 'assistant', 'content': '', 'tool_calls': [{'id': 'f1', 'type': 'function', 'function': {'name': 'fetch_page', 'arguments': '{}'}}]},
+                    {'role': 'tool', 'tool_call_id': 'f1', 'content': json.dumps(excerpt)}]
+        supported = 'It says “CPython now has experimental support for running in a free-threaded mode.”'
+        invented = 'It says “JIT compilation is an experimental feature in this release.”'
+        self.assertEqual(module._unsupported_quotes(messages, 1, supported), [])
+        self.assertEqual(module._unsupported_quotes(messages, 1, invented), ['JIT compilation is an experimental feature in this release.'])
+        self.assertEqual(module._unsupported_quotes(messages, 1, 'The "JIT" is short.'), [])
+        # The quoter's own brackets and ellipses aren't held against the quote.
+        self.assertEqual(module._unsupported_quotes(messages, 1, 'It says “CPython [3.13] now has experimental support … in a free-threaded mode.”'), [])
+
+    def test_a_rewrite_that_answers_the_request_keeps_only_the_answer(self):
+        self.assertEqual(module.REWRITE_PREAMBLE.sub('', "You're right — I fabricated that quote. Here is the fix:\n\n**Yes, both are experimental.**", count=1),
+                         '**Yes, both are experimental.**')
+        self.assertEqual(module.REWRITE_PREAMBLE.sub('', '**Yes, both are experimental.**', count=1), '**Yes, both are experimental.**')
+
+    def test_a_failed_answer_shows_python_output_but_not_raw_search_data(self):
+        def request(name, content):
+            return [{'role': 'assistant', 'content': '', 'tool_calls': [{'id': 'c', 'type': 'function', 'function': {'name': name, 'arguments': '{}'}}]},
+                    {'role': 'tool', 'tool_call_id': 'c', 'content': content}]
+        self.assertIn('TOTAL 173.85', module._last_result_note(request('execute_python', 'TOTAL 173.85')))
+        empty = module._last_result_note(request('web_search', json.dumps({'search_status': 'empty', 'evidence': []})))
+        self.assertIn("couldn't verify", empty);self.assertNotIn('evidence', empty)
+        self.assertEqual(module._last_result_note(request('fetch_page', '{"title": "x"}')), '')
 
     async def test_pages_that_were_read_get_no_note(self):
         job = await self.run_research('Released in October 2024 per https://peps.python.org/pep-0719/.')
@@ -684,6 +728,39 @@ class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.workspace_model(model)
         job = await self.run_job('Respond with JSON only.')
         self.assertEqual(job['result'], 'Prose.')
+
+    def test_promises_are_told_apart_from_answers(self):
+        promised = ["I'll try fetching the official release page to confirm the date.",
+                    'The search came back empty. Let me check the downloads page directly.',
+                    'Python 3.15 notes mention new features.\n\nNext, I will verify the release on the downloads page:',
+                    "I'm going to open the documentation now."]
+        answered = ['Python 3.13.0 was released on October 7, 2024 (python.org).',
+                    "I couldn't verify the date: the search returned nothing and the page didn't load.",
+                    'I checked the downloads page; the latest release is 3.15.1.',
+                    'If you want, I can also check the changelog.']
+        for text in promised:
+            self.assertTrue(module._promises_only(text), text)
+        for text in answered:
+            self.assertFalse(module._promises_only(text), text)
+
+    async def test_a_promise_without_the_step_is_sent_back(self):
+        # Codex's grounding assessment: jobs completed with only "I'll try fetching…" and no answer.
+        async def model(messages, tools):
+            last = messages[-1]['content']
+            if isinstance(last, str) and last.startswith('(You said you would'):
+                return {'role': 'assistant', 'content': 'Python 3.13.0 was released on October 7, 2024.'}
+            return {'role': 'assistant', 'content': "I'll try fetching the release page to confirm."}
+        self.workspace_model(model)
+        job = await self.run_job('When was Python 3.13.0 released?')
+        self.assertEqual(job['result'], 'Python 3.13.0 was released on October 7, 2024.')
+
+    async def test_a_promise_that_never_resolves_says_it_is_unfinished(self):
+        async def model(messages, tools):
+            return {'role': 'assistant', 'content': "Let me check the downloads page."}
+        self.workspace_model(model)
+        job = await self.run_job('What is the latest Python release?')
+        self.assertTrue(job['result'].startswith('Let me check the downloads page.'))
+        self.assertIn('stopped before finishing', job['result'])
 
     def test_attached_files_are_found_newest_first(self):
         messages = [{'role': 'user', 'content': 'File a.csv; file_id=' + 'a' * 32},
