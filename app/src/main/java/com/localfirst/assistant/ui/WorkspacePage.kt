@@ -80,6 +80,7 @@ internal fun WorkspacePage(state: ChatUiState, vm: ChatViewModel) {
         if (state.workspaceStatus == "Memory saved." && page == WorkspaceDestination.NEW_MEMORY) { memory = ""; page = WorkspaceDestination.MEMORY }
         if ((state.workspaceStatus == "Task scheduled." && page == WorkspaceDestination.NEW_TASK) || (state.workspaceStatus == "Task removed." && page == WorkspaceDestination.TASK)) page = WorkspaceDestination.TASKS
     }
+    LaunchedEffect(page) { if (page == WorkspaceDestination.IMAGES) vm.warmImages() }
     Dialog(onDismissRequest = ::goBack, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         FridayDialogWindow(fullScreen = true)
         Surface(Modifier.fillMaxSize(),color=MaterialTheme.colorScheme.background) {

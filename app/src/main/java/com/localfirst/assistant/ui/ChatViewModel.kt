@@ -2037,9 +2037,15 @@ class ChatViewModel(
         _state.update { it.copy(projectId = id) }
         viewModelScope.launch { persist() }
     }
+    /** Gets the PC loading its image model when someone is about to make an image (it may have lent the card to video). */
+    fun warmImages() {
+        viewModelScope.launch(Dispatchers.IO) { runCatching { workspace?.request("/workspace/images/warm", "POST", JSONObject()) } }
+    }
+
     fun setImageMode(enabled: Boolean) {
         if (_state.value.busy || _state.value.editingIndex != null) return
         _state.update { it.copy(imageMode = enabled, showWorkspace = false) }
+        if (enabled) warmImages()
         if (enabled) viewModelScope.launch {
             runCatching {
                 val files = JSONArray(workspace?.request("/workspace/files") ?: return@launch)

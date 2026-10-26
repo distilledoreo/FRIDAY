@@ -250,8 +250,9 @@ class VideoManager:
                 update(status='cancelled' if was_cancelled else 'failed' if error else 'completed',
                        phase='cancelled' if was_cancelled else 'failed' if error else 'completed',
                        error=error, finished=time.time())
-        if self.rewarm and not self.stopping:
-            # Bring the resident image model back now rather than on the next image request.
+        if self.rewarm and not self.stopping and not any(j['status'] == 'queued' for j in self.jobs()):
+            # Bring the resident image model back now rather than on the next image request; with more videos
+            # queued it would only be unloaded again, so it waits for the last one.
             asyncio.create_task(self.rewarm())
 
     async def worker(self):

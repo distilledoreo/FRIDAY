@@ -99,6 +99,17 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(m.store.saved[0][2], 25 * 1024 * 1024)
         self.assertTrue(m.poster(job['id']).is_file())
 
+    async def test_the_image_model_comes_back_after_the_last_queued_video_only(self):
+        m = self.manager(); rewarms = []
+        async def rewarm(): rewarms.append(True)
+        m.rewarm = rewarm
+        first = m.create(self.request())
+        m.create(self.request(id='b' * 32))
+        await m.execute(first); await asyncio.sleep(0)
+        self.assertEqual(rewarms, [])  # Another video is waiting: reloading now would only be undone.
+        await m.execute(m.get('b' * 32)); await asyncio.sleep(0)
+        self.assertEqual(rewarms, [True])
+
     async def test_two_card_video_stops_chat_and_restores_it(self):
         m = self.manager()
         job = m.create(self.request(quality=4))

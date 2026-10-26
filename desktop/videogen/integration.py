@@ -49,6 +49,8 @@ def enable(app, auth, workspace, gate, images, config_path):
         manager = VideoManager(workspace.root / 'video-jobs', gate, VideoRuntime(config, workspace.root / 'video-jobs'),
                                planner, workspace, images, config)
         manager.rewarm = getattr(images, 'rewarm', None)
+        if hasattr(images, 'video_busy'):
+            images.video_busy = lambda: manager.current_job_id is not None or any(j['status'] == 'queued' for j in manager.jobs())
 
     def required():
         if manager is None:

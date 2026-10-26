@@ -762,6 +762,13 @@ class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(job['result'].startswith('Let me check the downloads page.'))
         self.assertIn('stopped before finishing', job['result'])
 
+    def test_an_attachment_says_where_python_finds_it(self):
+        # Codex's comparison: the model guessed /work/inputs/orders.csv, which didn't exist, and spent a turn listing files.
+        message = module._user_message({'content': 'Total this.', 'attachments': [
+            {'name': 'orders.csv', 'remoteFileId': 'a' * 32, 'text': 'sku,qty'}]}, None)
+        self.assertIn('in Python: /work/inputs/orders.csv', message['content'][1]['text'])
+        self.assertEqual(module._attached_files([message]), ['a' * 32])
+
     def test_attached_files_are_found_newest_first(self):
         messages = [{'role': 'user', 'content': 'File a.csv; file_id=' + 'a' * 32},
                     {'role': 'user', 'content': [{'type': 'text', 'text': 'x'}, {'type': 'text', 'text': 'File b; file_id=' + 'b' * 32}]}]

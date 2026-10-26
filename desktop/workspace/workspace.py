@@ -89,7 +89,10 @@ def _user_message(entry, store, structured=False):
     parts = [{'type': 'text', 'text': entry.get('content', '')}]
     for attachment in entry.get('attachments', []):
         if not isinstance(attachment, dict): raise HTTPException(400, 'Invalid attachment')
-        parts.append({'type': 'text', 'text': f"\nFile {attachment.get('name', 'file')}; file_id={attachment.get('remoteFileId', '')}\n" + str(attachment.get('text') or '')[:24000]})
+        name = attachment.get('name', 'file')
+        # Python sees the file at this path, so code can open it directly instead of searching for it.
+        where = f"; in Python: /work/inputs/{Path(str(name)).name or 'file'}" if attachment.get('remoteFileId') else ''
+        parts.append({'type': 'text', 'text': f"\nFile {name}; file_id={attachment.get('remoteFileId', '')}{where}\n" + str(attachment.get('text') or '')[:24000]})
         paths = [attachment.get('path')] if attachment.get('kind') == 'image' else attachment.get('pageImages', [])
         for path in paths:
             if path and isinstance(path, str) and path.startswith('remote:'):
@@ -142,6 +145,8 @@ GROUNDING = (' The latest user message ends with when it was sent, like [Sent Sa
     "never write a source or URL you didn't get from a tool. Once the results answer the question, stop searching and answer. "
     'For the latest or current version of something, confirm it on the publisher\'s index or downloads page and the matching '
     "release page; a version's own notes don't show what is newest. If you can't confirm it, say so rather than guess. "
+    "If a page you read doesn't contain the specific fact you were asked for, open the most authoritative source you have "
+    'already found (usually the primary or official page) before settling for a partial answer. '
     'When asked to write code, answer with the code; run it in the sandbox at most once, and only when it is tricky or the user asks.')
 # Live voice (LiveVoiceConversation.kt) answers without reasoning first: a spoken reply can't wait for it.
 LIVE_VOICE_ID = 'd9b5c8e4-71b8-4fc0-a42f-e92360ce9481'
@@ -860,8 +865,11 @@ class Workspace:
             inputs = work / 'inputs'
             inputs.mkdir()
             for file_id in file_ids:
-                info = self.file(file_id)
-                shutil.copyfile(self.files / file_id, inputs / f'{file_id}-{info["name"]}')
+                # Under its own name, where code naturally looks (the attachment line gives this path too); a second
+                # file with the same name keeps its id in front.
+                name = Path(self.file(file_id)['name']).name or 'file'
+                target = inputs / name
+                shutil.copyfile(self.files / file_id, target if not target.exists() else inputs / f'{file_id}-{name}')
             (work / 'analysis.py').write_text(code)
             # Resource limits apply inside the sandbox, before executing untrusted code.
             (work / 'runner.py').write_text('''import resource, runpy, os

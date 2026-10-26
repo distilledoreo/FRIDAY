@@ -48,6 +48,11 @@ def enable(app, auth, workspace, raw_llm, gate, config_path):
     async def jobs():
         return manager.jobs()
 
+    @router.post('/warm')
+    async def warm():
+        # The Images page opened: get the model loading now, as chat prepares while you type. Answers at once.
+        return {'warming': await manager.warm()}
+
     @router.post('')
     async def create(body: ImageRequest):
         return manager.create(body.model_dump() if hasattr(body, 'model_dump') else body.dict())

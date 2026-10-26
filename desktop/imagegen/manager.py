@@ -369,6 +369,9 @@ class ImageManager:
         self.dedicated = getattr(runtime, 'dedicated', False)
         self.owns_runtime = owns_runtime
         self.warm_error = None
+        # True while a video is rendering or queued (set by the video service); a warm-up then would only be undone.
+        self.video_busy = lambda: False
+        self.warming = None
 
     def path(self, job_id):
         try:
@@ -520,6 +523,16 @@ class ImageManager:
                 update(status='cancelled' if was_cancelled else 'failed' if error else 'completed',
                        phase='cancelled' if was_cancelled else 'failed' if error else 'completed', error=error)
                 self.gate.phase = 'chat_ready'
+
+    async def warm(self):
+        """Starts loading the resident model in the background when someone is about to want it (the Images page
+        opened), unless it is loaded, already loading, or a video needs the card. Says whether it started."""
+        if not self.dedicated or self.stopping or self.video_busy() or (self.warming and not self.warming.done()):
+            return False
+        if await self.runtime.image_ready():
+            return False
+        self.warming = asyncio.create_task(self.rewarm())
+        return True
 
     async def rewarm(self):
         """Reload the resident image model after something else borrowed its card (a video render)."""

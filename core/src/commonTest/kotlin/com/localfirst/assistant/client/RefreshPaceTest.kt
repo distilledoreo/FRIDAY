@@ -38,4 +38,12 @@ class RefreshPaceTest {
         assertEquals(4, pc.calls.count { it == "/workspace/images" })
         assertEquals(1, pc.calls.count { it == "/workspace/files" })
     }
+
+    @Test fun openingImagesGetsTheModelLoading() = runTest {
+        val pc = Pc("completed"); val vm = FeatureController(pc, this)
+        vm.open("images"); advanceUntilIdle()
+        assertEquals(1, pc.calls.count { it == "/workspace/images/warm" })
+        vm.open("tasks"); advanceUntilIdle()
+        assertEquals(1, pc.calls.count { it == "/workspace/images/warm" })
+    }
 }

@@ -54,7 +54,13 @@ class FeatureController(val gateway: WorkspaceGateway, private val scope: Corout
     private var filesLoadedAt = 0L
     fun reset() { epoch++; operation?.cancel(); fileGeneration++; fileOperation?.cancel(); mutable.value = FeatureState() }
     fun dismissError() { mutable.update { it.copy(error = null) } }
-    fun open(page: String, taskId: String? = null, sessionId: String? = null) { fileGeneration++; fileOperation?.cancel(); eventCursor = 0; mutable.update { it.copy(page = page, fileLoading = false, task = taskId?.let { buildJsonObject { put("id", it) } }, session = sessionId?.let { buildJsonObject { put("id", it) } }, events = emptyList(), error = null) }; refresh() }
+    fun open(page: String, taskId: String? = null, sessionId: String? = null) {
+        fileGeneration++; fileOperation?.cancel(); eventCursor = 0
+        mutable.update { it.copy(page = page, fileLoading = false, task = taskId?.let { buildJsonObject { put("id", it) } }, session = sessionId?.let { buildJsonObject { put("id", it) } }, events = emptyList(), error = null) }
+        // The image model may have been unloaded (a video borrowed its card); start loading it while the page is read.
+        if (page == "images") scope.launch { runCatching { gateway.request("/workspace/images/warm", "POST", buildJsonObject {}) } }
+        refresh()
+    }
     fun task(id: String?) { eventCursor = 0; mutable.update { it.copy(task = id?.let { buildJsonObject { put("id", it) } }, events = emptyList()) }; refresh() }
     fun session(id: String?) { mutable.update { it.copy(session = id?.let { buildJsonObject { put("id", it) } }) }; refresh() }
     fun refresh(after: Long = eventCursor): Job? = if (state.value.page == "files") requestFiles() else run { identity -> eventCursor = after; load(identity, after) }
