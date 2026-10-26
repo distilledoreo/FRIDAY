@@ -63,11 +63,14 @@ class SavedSignInTest {
         assertTrue(drafts.saved.isEmpty())
     }
 
-    @Test fun withoutARememberedSignInDraftsStayInMemory() = runTest {
+    @Test fun withoutARememberedSignInTheHostStillKeepsTheDraftForTheTab() = runTest {
+        // The browser keeps it in session storage then: through a reload, gone when the tab closes.
         val drafts = Drafts()
         val vm = WorkspaceController(WorkspaceRepository(Pc()), this, { "new" }, { 5 }, savedSignIn = Memory(), draftRecovery = drafts)
         vm.connect("", "token")!!.join()
         vm.setDraft("Shared computer")
+        assertEquals(mapOf("new:" to "Shared computer"), drafts.saved)
+        vm.signOut()
         assertTrue(drafts.saved.isEmpty())
     }
 }

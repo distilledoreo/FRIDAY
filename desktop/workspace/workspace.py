@@ -204,6 +204,7 @@ TOOL_MARKUP_NOTE = ('(Your last reply could not be shown: it was empty, or a too
                     'now: answer in plain words from the results above, and say what is still unverified.)')
 # Calculations repeat when a model loops on its own results; after this many in one message it has to answer.
 PYTHON_LIMIT = 4
+SEARCH_LIMIT = 8
 FILE_ID = re.compile(r'file_id=([a-f0-9]{32})')
 
 
@@ -228,16 +229,22 @@ def _with_attachments(name, args, messages):
     return dict(args, file_ids=(given + [f for f in _attached_files(messages) if f not in given])[:6])
 
 
-def _python_runs(messages, start):
-    return sum(c.get('function', {}).get('name') == 'execute_python'
+def _calls(messages, start, names):
+    return sum(c.get('function', {}).get('name') in names
                for m in messages[start:] if m.get('role') == 'assistant' for c in m.get('tool_calls') or [])
 
 
 def _step_tools(available, messages, start):
-    """The tools offered for the next step: Python is withdrawn once a message has used it PYTHON_LIMIT times."""
-    if _python_runs(messages, start) < PYTHON_LIMIT:
-        return available
-    return [t for t in available if (t.get('function') or {}).get('name') != 'execute_python']
+    """The tools offered for the next step: none when the user said not to use tools; Python is withdrawn after
+    PYTHON_LIMIT runs in one message, and web search after SEARCH_LIMIT searches (a trivial request once ran 17)."""
+    if _wants_no_tools(messages):
+        return []
+    withdrawn = set()
+    if _calls(messages, start, {'execute_python'}) >= PYTHON_LIMIT:
+        withdrawn.add('execute_python')
+    if _calls(messages, start, {'web_search'}) >= SEARCH_LIMIT:
+        withdrawn |= {'web_search', 'fetch_page'}
+    return [t for t in available if (t.get('function') or {}).get('name') not in withdrawn]
 
 
 async def _plain_answer(answer, request, regenerate, tools=True):
@@ -264,11 +271,17 @@ async def _plain_answer(answer, request, regenerate, tools=True):
             (' The last result was:\n\n```\n' + str(last)[:4000] + '\n```' if last else '')}
 
 
-# Exact-format requests a model sometimes ignores, and answers that change their result partway (assessment R09).
-# The instruction words match in any case; the expected reply must start with a capital or a digit (ACK, OK, PRIVATE-732).
+# Exact-format requests a model sometimes ignores, and answers that change their result partway (assessment R09). Only
+# the user's own words of the latest message count (never recalled memories or attached files), and never words inside
+# quotation marks: those are text being discussed ("summarize: \"Reply only X\""), not instructions.
 EXACT_REPLY = re.compile(r'\b(?i:reply|respond|answer|say)\s+(?i:with\s+)?(?i:only|just|exactly)\s*(?i:with\s*)?'
-                         r'(?i:this(?:\s+and\s+nothing\s+else)?\s*)?[:\-–]?\s*["“\'`]?([A-Z0-9][A-Za-z0-9_\-]{0,40})["”\'`]?(?=[\s.,;!]|$)')
+                         r'(?i:this(?:\s+and\s+nothing\s+else)?\s*)?[:\-–]?\s*')
+QUOTED = re.compile(r'"([^"\n]{1,200})"|“([^”\n]{1,200})”|`([^`\n]{1,200})`')
+# An unquoted expected reply is enforced only when it is one word ending its sentence ("Reply only ACK."); anything
+# longer ("Reply with exactly: OLD -> NEW") is a template, which a check could only get wrong.
+LONE_WORD = re.compile(r'([A-Z0-9][A-Za-z0-9_\-]{0,40})[.!]?(?=\s*$|\s*\n|[.!]?\s+[A-Z(])')
 JSON_ONLY = re.compile(r'\b(?:only|just|exclusively)\s+(?:valid\s+)?json\b|\bjson\s+only\b|\bjson\b[^.]{0,40}\b(?:no|without)\s+(?:other\s+)?(?:text|prose|explanation)', re.I)
+NO_TOOLS = re.compile(r"\b(?:do\s+not|don't|dont|without|no)\s+(?:use\s+|using\s+)?(?:any\s+)?(?:tools?|browsing|browse|web\s+search(?:es)?|searching|the\s+web)\b", re.I)
 SELF_CORRECTION = re.compile(r'(?im)^\W*(?:wait\b|hold on\b|hmm\b|let me (?:re-?)?(?:check|compute|recompute|redo|recalculate)\b|'
                              r'actually,? (?:that|this|the (?:answer|result)) (?:is|was) (?:wrong|incorrect)|correction\b)')
 FORMAT_NOTES = {
@@ -280,17 +293,45 @@ FORMAT_NOTES = {
 
 
 def _latest_request(messages):
-    """The user's latest own words, without FRIDAY's notes or the sent tag."""
+    """The user's own words in the latest message: its first text part (recalled memories and files come after it),
+    without the sent tag. FRIDAY's own retry notes are skipped."""
     notes = {STEP_LIMIT_NOTE, TOOL_MARKUP_NOTE}
     for message in reversed(messages):
         if message.get('role') != 'user':
             continue
         content = message.get('content')
-        text = ' '.join(p.get('text') or '' for p in content if isinstance(p, dict)) if isinstance(content, list) else str(content or '')
+        if isinstance(content, list):
+            text = next((p.get('text') or '' for p in content if isinstance(p, dict) and p.get('type') == 'text'), '')
+        else:
+            text = str(content or '')
         if text in notes or text.startswith('(Reply with') or text.startswith('(Your answer changed'):
             continue
         return re.sub(r'\s*\[Sent [^\]]*\]\s*$', '', text)
     return ''
+
+
+def _unquoted(text):
+    """The text with quoted passages blanked out, positions kept."""
+    return QUOTED.sub(lambda m: ' ' * len(m.group(0)), text)
+
+
+def _expected_reply(asked):
+    """The exact reply the user asked for, or None. The instruction itself must be outside quotation marks."""
+    outside = _unquoted(asked)
+    for match in EXACT_REPLY.finditer(outside):
+        # The pattern's trailing spaces may run into a blanked quote: the expected reply starts after the words.
+        rest = asked[match.start() + len(outside[match.start():match.end()].rstrip()):].lstrip()
+        quoted = QUOTED.match(rest)
+        if quoted:
+            return next(g for g in quoted.groups() if g is not None)
+        word = LONE_WORD.match(rest)
+        if word:
+            return word.group(1)
+    return None
+
+
+def _wants_no_tools(messages):
+    return bool(NO_TOOLS.search(_unquoted(_latest_request(messages))))
 
 
 def _json_ok(text):
@@ -306,10 +347,10 @@ def _json_ok(text):
 def _format_problem(request, text):
     """('exact'|'json'|'corrected', note) when the answer breaks a format the user asked for, else None."""
     asked = _latest_request(request)
-    exact = EXACT_REPLY.search(asked)
-    if exact and text.strip().strip('"\'`.').strip() != exact.group(1):
-        return 'exact', FORMAT_NOTES['exact'].format(expected=exact.group(1))
-    if JSON_ONLY.search(asked) and not _json_ok(text):
+    expected = _expected_reply(asked)
+    if expected is not None and text.strip().strip('"\'`').strip() not in (expected, expected + '.'):
+        return 'exact', FORMAT_NOTES['exact'].format(expected=expected)
+    if JSON_ONLY.search(_unquoted(asked)) and not _json_ok(text):
         return 'json', FORMAT_NOTES['json']
     if SELF_CORRECTION.search(text):
         return 'corrected', FORMAT_NOTES['corrected']
@@ -339,9 +380,8 @@ def _url_key(url):
     return url.rstrip('.,;:!?)').rstrip('/').lower()
 
 
-def _unread_note(messages, start, text):
-    """A note for each page the answer cites that no tool read this message: found by a search but not retrieved, or a
-    fetch that failed. Models cite such pages as if they'd read them; the note says plainly that they didn't."""
+def _unread_pages(messages, start, text):
+    """Pages the answer cites that no tool read this message: found by a search but not retrieved, or a failed fetch."""
     read, unread = set(), {}
     calls = {c.get('id'): c for m in messages[start:] if m.get('role') == 'assistant' for c in m.get('tool_calls') or []}
     for message in messages[start:]:
@@ -361,7 +401,34 @@ def _unread_note(messages, start, text):
                 url = ''
             if url:
                 unread.setdefault(_url_key(url), url)
-    cited = [unread[_url_key(u)] for u in dict.fromkeys(URL.findall(text or '')) if _url_key(u) in unread and _url_key(u) not in read]
+    return list(dict.fromkeys(unread[_url_key(u)] for u in URL.findall(text or '') if _url_key(u) in unread and _url_key(u) not in read))
+
+
+UNREAD_NOTE = ('(You did not read {pages}: you only saw search snippets. Rewrite your answer so it does not quote '
+               '{them} or say what {them} state; attribute those details to search results. Keep the links.)')
+
+
+async def _honest_sources(answer, request, messages, start, regenerate):
+    """An answer that cites pages it never read is rewritten once, to attribute those details to search snippets
+    instead of quoting the pages; any page still cited gets a plain note at the end."""
+    text = answer.get('content') or ''
+    if answer.get('tool_calls') or not text.strip():
+        return answer
+    pages = _unread_pages(messages, start, text)
+    if pages:
+        them = 'it' if len(pages) == 1 else 'them'
+        retry = await regenerate(request + [{'role': 'assistant', 'content': text}, {'role': 'user', 'content':
+            UNREAD_NOTE.format(pages=', '.join(pages), them=them)}], False)
+        fixed = retry.get('content') or ''
+        if fixed.strip() and not retry.get('tool_calls') and not TOOL_MARKUP.search(fixed):
+            text = fixed
+    return dict(answer, content=text + _unread_note(messages, start, text))
+
+
+def _unread_note(messages, start, text):
+    """A note for each page the answer cites that no tool read this message. Models cite such pages as if they'd
+    read them; the note says plainly that they didn't."""
+    cited = _unread_pages(messages, start, text)
     if not cited:
         return ''
     one = len(set(cited)) == 1
@@ -1128,8 +1195,8 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                                      body.connection, reasoning=body.reasoning, private=True), 900), tools=not last)
                         answer = await _formatted_answer(answer, request, lambda retry, with_tools: asyncio.wait_for(
                             generate(retry, [], report, body.model, body.connection, reasoning=body.reasoning, private=True), 900))
-                        if not answer.get('tool_calls'):
-                            answer = dict(answer, content=(answer.get('content') or '') + _unread_note(messages, initial, answer.get('content')))
+                        answer = await _honest_sources(answer, request, messages, initial, lambda retry, with_tools: asyncio.wait_for(
+                            generate(retry, [], report, body.model, body.connection, reasoning=body.reasoning, private=True), 900))
                         messages.append(answer)
                         calls = answer.get('tool_calls') or []
                         if not calls:
@@ -1430,8 +1497,8 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
                         if status() == 'cancelled':
                             keep_partial(job, messages, answer.get('content') or progress.get(job['id'], ''))
                         return
-                    if not answer.get('tool_calls'):
-                        answer = dict(answer, content=(answer.get('content') or '') + _unread_note(messages, start, answer.get('content')))
+                    answer = await _honest_sources(answer, request, messages, start, lambda retry, with_tools: asyncio.wait_for(generate(
+                        retry, [], report, options.get('model'), options.get('connection'), job['id'], options.get('reasoning')), timeout=900))
                     messages.append(answer)
                     progress[job['id']] = ''
                     if not answer.get('tool_calls'):

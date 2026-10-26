@@ -23,11 +23,13 @@ fun randomConversationId(): String {
 fun removeLegacyToken() { localStorage.removeItem("friday.server.apiKey") }
 
 /** The sign-in the user asked this browser to remember; local storage, cleared by Lock. */
-/** Unsent draft text kept across a page reload while the sign-in is remembered (see DraftRecovery). */
+/** Unsent draft text kept across a page reload (see DraftRecovery): in local storage while the sign-in is remembered,
+ *  otherwise in session storage, which lasts only as long as the tab. */
 object BrowserDraftRecovery : DraftRecovery {
     private const val KEY = "friday.drafts"
+    private fun storage(): org.w3c.dom.Storage = if (BrowserSavedSignIn.load() != null) localStorage else kotlinx.browser.sessionStorage
     private fun all(): MutableMap<String, String> = runCatching {
-        val saved = kotlinx.serialization.json.Json.parseToJsonElement(localStorage.getItem(KEY) ?: return mutableMapOf()) as kotlinx.serialization.json.JsonObject
+        val saved = kotlinx.serialization.json.Json.parseToJsonElement(storage().getItem(KEY) ?: return mutableMapOf()) as kotlinx.serialization.json.JsonObject
         saved.mapValues { (it.value as kotlinx.serialization.json.JsonPrimitive).content }.toMutableMap()
     }.getOrElse { mutableMapOf() }
     override fun load(key: String): String? = all()[key]
@@ -38,11 +40,11 @@ object BrowserDraftRecovery : DraftRecovery {
         // The newest 50 drafts at most.
         val kept = drafts.entries.toList().takeLast(50)
         runCatching {
-            if (kept.isEmpty()) localStorage.removeItem(KEY)
-            else localStorage.setItem(KEY, kotlinx.serialization.json.JsonObject(kept.associate { it.key to kotlinx.serialization.json.JsonPrimitive(it.value) }).toString())
+            if (kept.isEmpty()) storage().removeItem(KEY)
+            else storage().setItem(KEY, kotlinx.serialization.json.JsonObject(kept.associate { it.key to kotlinx.serialization.json.JsonPrimitive(it.value) }).toString())
         }
     }
-    override fun clear() { runCatching { localStorage.removeItem(KEY) } }
+    override fun clear() { runCatching { localStorage.removeItem(KEY) }; runCatching { kotlinx.browser.sessionStorage.removeItem(KEY) } }
 }
 
 object BrowserSavedSignIn : SavedSignIn {

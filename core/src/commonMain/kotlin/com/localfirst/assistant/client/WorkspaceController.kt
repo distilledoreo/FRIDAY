@@ -79,8 +79,9 @@ interface SavedSignIn {
     fun clear()
 }
 
-/** Where a client keeps unsent draft text across a page reload, by chat ("chat:<id>", or "new:<project>"). Only used
- *  while a sign-in is remembered, never for incognito, and cleared on sign-out. Attachments don't survive a reload. */
+/** Where a client keeps unsent draft text across a page reload, by chat ("chat:<id>", or "new:<project>"). Never used
+ *  for incognito, and cleared on sign-out. The host decides how long it lasts (the browser: across visits while the
+ *  sign-in is remembered, otherwise only for the tab). Attachments don't survive a reload. */
 interface DraftRecovery {
     fun load(key: String): String?
     fun save(key: String, text: String?)
@@ -129,8 +130,7 @@ class WorkspaceController(
         beforeEdit = null
     }
     private fun draftKey(id: String?, project: String?) = if (id != null) "chat:$id" else "new:${project.orEmpty()}"
-    /** Drafts outlive a reload only where the sign-in does: a remembered one. */
-    private fun recovery() = draftRecovery?.takeIf { savedSignIn?.load() != null }
+    private fun recovery() = draftRecovery
     override fun setDraft(text: String) {
         mutable.update { it.copy(draft = text) }
         val s = state.value
@@ -286,7 +286,9 @@ class WorkspaceController(
         polling?.cancel()
         polling = scope.launch {
             while (isActive) {
-                if (!state.value.connected || state.value.busy || !visible()) { delay(250); continue }
+                // A hidden tab checks back slowly; showing it again refreshes at once (the host's visibility listener).
+                if (!visible()) { delay(2000); continue }
+                if (!state.value.connected || state.value.busy) { delay(250); continue }
                 val identity = epoch; val started = clock(); var failed = false
                 val call = launch {
                     try { refreshSnapshot(identity, 10) }
