@@ -124,3 +124,60 @@ python -m desktop.voice_lab.benchmark_turns --path pipeline \
 `--answer-first` tests short, direct answers without acknowledgments. `--clauses` tests long clause boundaries in addition to sentence boundaries. Commas require at least eight preceding words and a following connective, avoiding breaks between adjectives or list items. Keep phrase-completeness and audio-quality checks separate from latency; the benchmark does not change either client's speech queue.
 
 Fresh-chat latency and continuing-conversation latency are different workloads. Changing the first user message changes Orchid's conversation anchor and can trigger state parking/restoration. For a continuing-session test, retain the full message history, including the unchanged first user message, and append new turns. Preserve this distinction in reports rather than attributing every timing difference to GPU or speech changes.
+
+## LFM3-Audio with Qwen delegation
+
+`lfm3_qwen` is an isolated recorded-audio experiment, not a production voice backend.
+Run an LFM3-compatible llama-server with the Audio GGUF and its matching audio
+projector, bound to loopback (default trial port `8093`). A P100 needs the CUDA 12
+build targeting `sm_60`. Keep the existing Qwen service on its own card.
+
+The three paths are:
+
+- `direct`: stream microphone-paced PCM to LFM3-Audio's `/v1/realtime` and collect its text and speech.
+- `hybrid`: expose one `ask_qwen` tool in the model's documented tool prompt. The adapter validates the generated call, streams the query through FRIDAY's authenticated `/chat`, and sends Qwen's clauses to LFM's streaming `/tts`. A deterministic formatter verbalizes numeric notation and removes Markdown emphasis; LFM does not rewrite the answer. Both original clauses and TTS input are recorded.
+- `pipeline`: use FRIDAY's existing recognition, Qwen and Paradee endpoints, with the benchmark's answer-first prompt and clause queue.
+
+The native realtime API currently does not transport structured tool messages, so
+the hybrid path parses the model's XML call. Unknown, malformed, multiple and
+oversized calls fail instead of executing. This trial exposes no action tools,
+account data or personal memory. Each recording opens a new LFM session; it is not
+a test of long conversation continuity. Qwen's usual prefix caching can still
+apply to repeated questions.
+
+Use the official audio response prompt. In the initial native tests, adding a
+general assistant persona caused the model to repeat the input question; that
+behavior is a failed answer, regardless of how quickly audio arrives.
+
+```sh
+python -m desktop.voice_lab.lfm3_qwen --output "$TRIAL_RESULTS" \
+  --repeats 3 --paths direct hybrid pipeline -- question1.wav question2.wav
+```
+
+The command needs `aiohttp`, `numpy` and `num2words`. It uses `ASSISTANT_API_TOKEN` from the
+environment, or reads only that variable from the running local `assistant-api`
+service. Credentials are never saved in results. `--qwen-reasoning low` enables
+thinking for delegated requests; the default preserves FRIDAY's fast reasoning-off
+setting. Keep those runs separate when comparing speed and correctness.
+`--prepared` retains a stable Qwen conversation anchor and history; otherwise
+the questions are independent. `--routing-policy` adds explicit direct-answer
+categories to the audio prompt, but prompting alone has not established reliable
+complexity routing. `--raw-speech` disables numeric verbalization to reproduce
+speech-quality diagnostics; compact numbers and fractions need separate checks.
+
+One warmup per path is excluded. Results include native text, delegation queries,
+Qwen answers, synthesized WAVs, output transcripts and audio packet arrival times.
+The first non-silent playback estimate includes a 60 ms playback buffer; it can
+still be a greeting or filler. Identify the first meaningful answer word before
+claiming answer latency. Recognition of generated speech runs after the timed
+turn. Real microphone endpointing, phone/LAN delivery, interruptions and live
+speaker playback are not measured. Failed requests remain in `results.json`.
+
+```sh
+python -m unittest desktop.voice_lab.tests.test_lfm3_qwen desktop.voice_lab.tests.test_benchmark_turns
+```
+
+The audio server must participate in the existing model-service/image handoff or
+be stopped before a memory-intensive image job. A trial unit with
+`PartOf=assistant-strata.service` stops when the main model service is stopped;
+starting Strata again does not automatically restart the trial.
