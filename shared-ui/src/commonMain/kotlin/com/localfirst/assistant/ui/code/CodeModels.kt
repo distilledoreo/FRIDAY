@@ -4,11 +4,13 @@ import com.localfirst.assistant.ui.wire.JSONArray
 import com.localfirst.assistant.ui.wire.JSONObject
 
 /** A GitHub repository FRIDAY has cloned on the PC for coding tasks. */
-data class CodeProject(val id: String, val repo: String, val defaultBranch: String, val trusted: Boolean, val openTasks: Int) {
+data class CodeProject(val id: String, val repo: String, val defaultBranch: String, val trusted: Boolean, val openTasks: Int,
+                       val kind: String = "github", val requiredChecks: List<CodeRequiredCheck> = emptyList()) {
     val name: String get() = repo.substringAfter('/')
     companion object {
         fun from(j: JSONObject) = CodeProject(j.getString("id"), j.getString("repo"), j.optString("default_branch", "main"),
-            j.optInt("trusted") == 1 || j.optBoolean("trusted"), j.optInt("open_tasks"))
+            j.optInt("trusted") == 1 || j.optBoolean("trusted"), j.optInt("open_tasks"), j.optString("kind", "github"),
+            rows(j.optJSONArray("checks")).map(CodeRequiredCheck::from))
     }
 }
 
@@ -33,11 +35,16 @@ data class CodeTask(
     /** busy, waiting, idle, error, cancelled, interrupted or discarded. */
     val state: String, val prUrl: String?, val created: Double, val stats: CodeStats,
     val modelChoice: String = "auto",
+    val kind: String = "github",
+    val mode: String = "code",
+    val parent: String? = null, val relation: String = "",
+    val queued: Int = 0, val queuePaused: Boolean = false,
 ) {
     companion object {
         fun from(j: JSONObject) = CodeTask(j.getString("id"), j.optString("project"), j.optString("repo"), j.optString("title"),
             j.optString("branch"), j.optString("base"), j.optString("state", "idle"), j.optString("pr_url").takeIf { it.isNotBlank() && it != "null" },
-            j.optDouble("created", 0.0), CodeStats.from(j.optJSONObject("stats")), j.optString("model_choice", "auto"))
+            j.optDouble("created", 0.0), CodeStats.from(j.optJSONObject("stats")), j.optString("model_choice", "auto"), j.optString("kind", "github"), j.optString("mode", "code"),
+            j.optString("parent").takeIf { it.isNotBlank() && it != "null" }, j.optString("relation"), j.optInt("queue_pending"), j.optBoolean("queue_paused"))
     }
 }
 
@@ -57,19 +64,21 @@ data class CodeChanges(val files: List<CodeFile>, val stats: CodeStats) {
 }
 
 data class CodePr(val url: String, val state: String, val draft: Boolean, val merged: Boolean, val review: String?,
-                  val checks: Int, val failed: Int, val pending: Int) {
+                  val checks: Int, val failed: Int, val pending: Int, val kind: String = "github") {
+    val requestName: String get() = if (kind == "gitlab") "Merge request" else "Pull request"
     val label: String get() = when {
         merged -> "Merged"
         state == "closed" -> "Closed"
-        draft -> "Draft pull request"
-        else -> "Pull request open"
+        state == "unknown" || state.isBlank() -> "$requestName status unavailable"
+        draft -> "Draft ${requestName.lowercase()}"
+        else -> "$requestName open"
     }
     companion object {
         fun from(j: JSONObject?): CodePr? {
             j ?: return null
             val checks = j.optJSONObject("checks")
             return CodePr(j.optString("url"), j.optString("state"), j.optBoolean("draft"), j.optBoolean("merged"),
-                j.optString("review").takeIf { it.isNotBlank() && it != "null" }, checks?.optInt("total") ?: 0, checks?.optInt("failed") ?: 0, checks?.optInt("pending") ?: 0)
+                j.optString("review").takeIf { it.isNotBlank() && it != "null" }, checks?.optInt("total") ?: 0, checks?.optInt("failed") ?: 0, checks?.optInt("pending") ?: 0, j.optString("kind", "github"))
         }
     }
 }
@@ -88,6 +97,9 @@ data class CodeTaskView(
     val permissions: List<JSONObject>, val questions: List<JSONObject>,
     val changes: CodeChanges, val pr: CodePr?,
     val elapsedSeconds: Double? = null, val models: List<String> = emptyList(),
+    val verification: CodeVerification = CodeVerification(),
+    val checkpoints: List<CodeCheckpoint> = emptyList(),
+    val queue: CodeQueue = CodeQueue(), val conflicts: CodeConflicts = CodeConflicts(),
 ) {
     val waiting: Boolean get() = permissions.isNotEmpty() || questions.isNotEmpty()
     companion object {
@@ -100,7 +112,47 @@ data class CodeTaskView(
                 rows(session?.optJSONArray("items")).map(CodeItem::from), rows(session?.optJSONArray("permissions")), rows(session?.optJSONArray("questions")),
                 j.optJSONObject("changes")?.let(CodeChanges::from) ?: CodeChanges(emptyList(), CodeStats()), CodePr.from(j.optJSONObject("pr")),
                 timing?.optDouble("elapsed_seconds")?.takeIf { it.isFinite() },
-                modelHistory?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty())
+                modelHistory?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty(),
+                CodeVerification.from(j.optJSONObject("verification")), rows(j.optJSONArray("checkpoints")).map(CodeCheckpoint::from),
+                CodeQueue.from(j.optJSONObject("queue")), CodeConflicts.from(j.optJSONObject("conflicts")))
+        }
+    }
+}
+
+data class CodeCheckpoint(val id: String, val label: String, val head: String, val files: Int) {
+    companion object {
+        fun from(j: JSONObject) = CodeCheckpoint(j.getString("id"), j.optString("label"), j.optString("head"), j.optInt("files"))
+    }
+}
+
+data class CodeCheck(val command: String, val result: String, val current: Boolean,
+                     val exit: Int?, val tests: Int?, val output: String, val cwd: String = "")
+
+data class CodeRequiredCheck(val name: String = "", val command: String = "", val cwd: String = ".",
+                             val runner: String = "tests", val minTests: Int = 1, val state: String = "missing") {
+    fun json() = JSONObject().put("name", name).put("command", command).put("cwd", cwd).put("runner", runner).put("min_tests", minTests)
+    companion object {
+        fun from(j: JSONObject) = CodeRequiredCheck(j.optString("name"), j.optString("command"), j.optString("cwd", "."),
+            j.optString("runner", "tests"), j.optInt("min_tests", 1), j.optString("state", "missing"))
+    }
+}
+
+data class CodeVerification(val state: String = "unverified", val checks: List<CodeCheck> = emptyList(), val reason: String = "",
+                            val required: List<CodeRequiredCheck> = emptyList()) {
+    val label: String get() = when (state) {
+        "passed" -> "Recorded checks passed"
+        "failed" -> "Recorded checks failed"
+        "stale" -> "Checks are out of date"
+        else -> "Not verified"
+    }
+    companion object {
+        fun from(j: JSONObject?): CodeVerification {
+            if (j == null) return CodeVerification()
+            return CodeVerification(j.optString("state", "unverified"), rows(j.optJSONArray("receipts")).map {
+                CodeCheck(it.optString("command"), it.optString("result", "unconfirmed"), it.optBoolean("current"),
+                    it.optDouble("exit").takeIf { n -> n.isFinite() }?.toInt(),
+                    it.optDouble("tests").takeIf { n -> n.isFinite() }?.toInt(), it.optString("output_excerpt"), it.optString("cwd"))
+            }, j.optString("reason").takeUnless { it == "null" }.orEmpty(), rows(j.optJSONArray("required")).map(CodeRequiredCheck::from))
         }
     }
 }
@@ -111,7 +163,7 @@ fun rows(array: JSONArray?): List<JSONObject> = array?.let { a -> (0 until a.len
 fun codeStateLabel(task: CodeTask): String = when {
     task.state == "waiting" -> "Needs you"
     task.state == "busy" -> "Working"
-    task.prUrl != null -> "Pull request"
+    task.prUrl != null -> if (task.kind == "gitlab") "Merge request" else "Pull request"
     task.state == "idle" -> if (task.stats.changed) "Ready to review" else "Finished"
     task.state == "error" -> "Couldn't finish"
     task.state == "cancelled" -> "Stopped"

@@ -67,7 +67,7 @@ def _safe_public_url(url):
 
 def _condense_code(view):
     """The parts of a coding task a model needs, as CodeTools.kt condense()."""
-    out = {key: view[key] for key in ('id', 'title', 'repo', 'branch', 'base', 'state', 'pr_url', 'model_choice') if key in view}
+    out = {key: view[key] for key in ('id', 'title', 'repo', 'branch', 'base', 'state', 'pr_url', 'model_choice', 'mode', 'kind') if key in view}
     session = view.get('session') if isinstance(view.get('session'), dict) else {}
     if 'state' in session:
         out['state'] = session['state']
@@ -85,6 +85,13 @@ def _condense_code(view):
         out['files'] = [f"{f.get('status')} {f.get('path')} +{f.get('additions')} -{f.get('deletions')}" for f in (changes.get('files') or [])[:60]]
     if isinstance(view.get('pr'), dict):
         out['pull_request'] = view['pr']
+    verification = view.get('verification')
+    if isinstance(verification, dict):
+        out['verification'] = {key: verification[key] for key in ('state', 'reason', 'scope') if key in verification}
+        out['verification']['required'] = verification.get('required', [])[:12]
+        out['verification']['receipts'] = [
+            {key: receipt[key] for key in ('command', 'cwd', 'result', 'current', 'tests', 'exit') if key in receipt}
+            for receipt in verification.get('receipts', [])[:5]]
     return out
 
 
@@ -266,15 +273,23 @@ class ChatTools:
             return f"Scheduled on the PC: {f'{runs} runs' if runs > 1 else 'one run'}. Each run starts a new PC task with the usual approvals."
 
         async def start_code_task(args):
-            repo = _text(args, 'repo', 300).strip().removeprefix('https://github.com/').removesuffix('.git').strip('/')
-            if not REPO.match(repo) or '..' in repo:
+            path = args.get('path')
+            existing_project = args.get('project')
+            repo = str(args.get('repo') or '').strip().removeprefix('https://github.com/').removesuffix('.git').strip('/')
+            if sum(bool(v) for v in (path, repo, existing_project)) != 1: raise ToolError('Choose a saved project, repo, or absolute PC repository path')
+            if existing_project and (not isinstance(existing_project, str) or not CODE_TASK.fullmatch(existing_project)): raise ToolError('Invalid saved project id')
+            if path and (not isinstance(path, str) or not path.startswith('/') or len(path) > 4096):
+                raise ToolError('Use an absolute repository path on the PC')
+            if repo and (not REPO.match(repo) or '..' in repo):
                 raise ToolError('Use the repository as owner/name')
             prompt = _text(args, 'prompt', 20000).strip()
             choice = args.get('model_choice') or 'local'
             if choice not in ('local', 'auto'):
                 raise ToolError('Invalid coding model choice')
-            project = await call('POST', '/workspace/code/projects', {'repo': repo})
-            body = {'project': project['id'], 'prompt': prompt, 'model_choice': choice}
+            mode = args.get('mode') or 'code'
+            if mode not in ('code', 'plan'): raise ToolError('Invalid coding task mode')
+            project = {'id': existing_project} if existing_project else await call('POST', '/workspace/code/projects', {'path': path} if path else {'repo': repo})
+            body = {'project': project['id'], 'prompt': prompt, 'model_choice': choice, 'mode': mode}
             base = args.get('base')
             if isinstance(base, str) and base.strip() and len(base) <= 200:
                 body['base'] = base
@@ -290,7 +305,10 @@ class ChatTools:
             return _condense_code(await call('GET', f'/workspace/code/tasks/{code_id(args)}'))
 
         async def send_code_task_message(args):
-            return await call('POST', f'/workspace/code/tasks/{code_id(args)}/messages', {'prompt': _text(args, 'prompt', 20000).strip()})
+            delivery = args.get('delivery') or 'send'
+            if delivery not in ('send', 'queue', 'steer'): raise ToolError('Choose send, queue or steer')
+            action = {'send': 'messages', 'queue': 'queue', 'steer': 'steer'}[delivery]
+            return await call('POST', f'/workspace/code/tasks/{code_id(args)}/{action}', {'prompt': _text(args, 'prompt', 20000).strip()})
 
         async def stop_code_task(args):
             return await call('POST', f'/workspace/code/tasks/{code_id(args)}/abort', {})
@@ -423,20 +441,23 @@ class ChatTools:
             dict(name='list_pc_schedules', run=get('/workspace/pc/schedules'),
                  description='List scheduled PC tasks with their next run and remaining runs. Does not start or cancel anything.', parameters=_schema({})),
             dict(name='start_code_task', run=start_code_task, confirm=True, title='Start a coding task?', approve='Start',
-                 prompt=lambda a: f"Start a coding task in {a.get('repo', '')}?\n\n{a.get('prompt', '')}\n\nFRIDAY works on a new branch on your PC. Nothing is pushed until you create the pull request in Code.",
-                 description="Start a coding task in one of the user's GitHub repositories, like Codex or Claude Code: FRIDAY's coding agent works on the user's PC in a fresh branch and worktree, then the user reviews the diff and opens a pull request from Code. Use for requests to change code in a named repository (owner/name). Write the prompt as a complete brief for an engineer. Only delegate when the user requests coding work or asks you to orchestrate it. Default to the local model; use auto if the user requests automatic cloud selection. Requires confirmation. Nothing is pushed until the user asks.",
-                 parameters=_schema({'repo': {'type': 'string', 'description': 'owner/name on GitHub'}, 'prompt': {'type': 'string', 'minLength': 1, 'maxLength': 20000},
+                 prompt=lambda a: f"Start a {a.get('mode', 'code')} task in {a.get('project') or a.get('path') or a.get('repo', '')}?\n\n{a.get('prompt', '')}\n\nFRIDAY works on a new branch on your PC. Publishing is a separate action in Code.",
+                 description="Start a coding task in a GitHub repository or existing local Git folder, like Codex or Claude Code: FRIDAY's coding agent works on the user's PC in a fresh branch and worktree, then the user reviews the diff and opens a pull request from Code. Use for requests to change code in a named repository (owner/name). Write the prompt as a complete brief for an engineer. Only delegate when the user requests coding work or asks you to orchestrate it. Default to the local model; use auto if the user requests automatic cloud selection. Requires confirmation. Nothing is pushed until the user asks.",
+                 parameters=_schema({'project': {'type': 'string', 'description': 'Saved project id from list_code_projects; choose project, repo or path'}, 'repo': {'type': 'string', 'description': 'owner/name on GitHub; choose project, repo or path'},
+                                     'path': {'type': 'string', 'description': 'Absolute existing Git repository folder on the PC; choose path or repo'},
+                                     'mode': {'type': 'string', 'enum': ['code', 'plan'], 'description': 'plan disables shell commands, edits and delegation until approved in Code'},
+                                     'prompt': {'type': 'string', 'minLength': 1, 'maxLength': 20000},
                                      'base': {'type': 'string', 'maxLength': 200, 'description': "Base branch; the repository's default when omitted"},
-                                     'model_choice': {'type': 'string', 'enum': ['local', 'auto'], 'description': 'local by default; auto uses the automatic cloud chain with local fallback'}}, ['repo', 'prompt'])),
+                                     'model_choice': {'type': 'string', 'enum': ['local', 'auto'], 'description': 'local by default; auto uses the automatic cloud chain with local fallback'}}, ['prompt'])),
             dict(name='get_code_task', run=get_code_task, confirm=True, title='Read coding task?', approve='Read', prompt=lambda a: "Read this coding task's results into the conversation?",
                  description="After confirmation, read a coding task's status, its agent's latest summary, changed files and pull request into this conversation.",
                  parameters=_schema({'id': {'type': 'string', 'maxLength': 12}}, ['id'])),
             dict(name='list_code_projects', run=list_code_projects,
                  description='List the GitHub repositories set up for coding and their recent coding tasks. Starts nothing.', parameters=_schema({})),
             dict(name='send_code_task_message', run=send_code_task_message, confirm=True, title='Send to coding task?', approve='Send',
-                 prompt=lambda a: f"Send this brief to coding task {a.get('id', '')}?\n\n{a.get('prompt', '')}",
-                 description='Send a follow-up brief to an existing coding task when the user requests it or explicitly asks you to orchestrate that task. Preserves its selected model and coding permissions. If busy, read status and wait; never bypass approvals.',
-                 parameters=_schema({'id': {'type': 'string', 'pattern': '^[a-f0-9]{12}$'}, 'prompt': {'type': 'string', 'minLength': 1, 'maxLength': 20000}}, ['id', 'prompt'])),
+                 prompt=lambda a: f"{a.get('delivery', 'send')} this brief to coding task {a.get('id', '')}? Steer stops the current turn.\n\n{a.get('prompt', '')}",
+                 description='Send a user-authorized follow-up to a coding task. delivery=queue waits for completion; delivery=steer stops the current turn and changes direction only when explicitly requested. Preserves model choice and permissions; never bypass approvals.',
+                 parameters=_schema({'id': {'type': 'string', 'pattern': '^[a-f0-9]{12}$'}, 'delivery': {'type': 'string', 'enum': ['send', 'queue', 'steer']}, 'prompt': {'type': 'string', 'minLength': 1, 'maxLength': 20000}}, ['id', 'prompt'])),
             dict(name='stop_code_task', run=stop_code_task, confirm=True, title='Stop coding task?', approve='Stop', prompt=lambda a: f"Stop coding task {a.get('id', '')}? Its changes will be kept.",
                  description="Stop an existing coding task when the user requests stopping it, or explicitly authorizes stopping as part of orchestration. Keeps the task's branch and changes; does not discard work.",
                  parameters=_schema({'id': {'type': 'string', 'pattern': '^[a-f0-9]{12}$'}}, ['id'])),

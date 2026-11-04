@@ -65,23 +65,29 @@ fun CodeHome(state: CodeState, code: CodeWorkspace) {
     var modelChoice by rememberSaveable { mutableStateOf("auto") }
     var picking by remember { mutableStateOf(false) }
     var branching by remember { mutableStateOf(false) }
-    val active = state.tasks.any { it.state == "busy" || it.state == "waiting" }
+    var planning by rememberSaveable { mutableStateOf(false) }
+    var extensions by remember { mutableStateOf(false) }
+    val active = state.tasks.any { it.state == "busy" || it.state == "waiting" || it.queued > 0 && !it.queuePaused }
     FridayVisibleEffect(active) { if (active) while (true) { delay(4000); code.refresh() } }
     Scaffold(containerColor = MaterialTheme.colorScheme.background, modifier = Modifier.imePadding(), topBar = {
         TopAppBar(title = { Text("Code") },
             navigationIcon = { IconButton(onClick = code::close) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back to chat") } },
-            actions = { IconButton(onClick = code::refresh) { Icon(LineIcons.Refresh, "Refresh", Modifier.size(22.dp)) } })
+            actions = {
+                TextButton(onClick = { extensions = true }) { Text("Extensions") }
+                IconButton(onClick = code::refresh) { Icon(LineIcons.Refresh, "Refresh", Modifier.size(22.dp)) }
+            })
     }) { padding ->
         LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
             item { Notices(state, code) }
+            item { FilterChip(planning, { planning = !planning }, enabled = !state.busy, label = { Text("Plan first · read only") }) }
             item {
                 val project = state.project
                 if (project == null && state.loaded) ConnectRepository { picking = true }
                 else TaskComposer(prompt, { prompt = it }, project, state.base ?: project?.defaultBranch, state.busy,
                     onRepo = { picking = true }, onBranch = { branching = true },
                     modelChoice = modelChoice, onModel = { modelChoice = it },
-                    onSend = { code.startTask(prompt, modelChoice) { prompt = "" } })
+                    onSend = { code.startTask(prompt, modelChoice, if (planning) "plan" else "code") { prompt = "" } })
             }
             if (state.tasks.isNotEmpty()) item { Label("Tasks") }
             else if (state.loaded && state.projects.isNotEmpty()) item {
@@ -92,6 +98,7 @@ fun CodeHome(state: CodeState, code: CodeWorkspace) {
         }
     }
     if (picking) RepositorySheet(state, code) { picking = false }
+    if (extensions) CodeExtensionsDialog(state, code) { extensions = false }
     if (branching) state.project?.let { project ->
         FridaySheet(onDismiss = { branching = false }) { _, _, close ->
             Text("Base branch", Modifier.padding(horizontal = 24.dp, vertical = 8.dp), style = MaterialTheme.typography.titleMedium)
@@ -137,7 +144,7 @@ private fun ConnectRepository(onAdd: () -> Unit) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Icon(LineIcons.Code, null, Modifier.size(28.dp), tint = MaterialTheme.colorScheme.primary)
             Text("Code with FRIDAY", style = MaterialTheme.typography.titleLarge)
-            Text("Pick one of your GitHub repositories. FRIDAY clones it on your PC, works on each task in its own branch, " +
+            Text("Pick a GitHub repository or an existing Git folder on your PC. FRIDAY works on each task in its own branch, " +
                 "and shows you the diff. When you're happy, it opens the pull request.",
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Button(onClick = onAdd, shape = MaterialTheme.shapes.small) { Text("Add a repository") }
@@ -238,10 +245,20 @@ private fun RepositorySheet(state: CodeState, code: CodeWorkspace, onDismiss: ()
     var adding by remember { mutableStateOf(state.projects.isEmpty()) }
     var query by remember { mutableStateOf("") }
     var removing by remember { mutableStateOf<CodeProject?>(null) }
-    LaunchedEffect(adding) { if (adding && state.repos == null) code.loadRepos() }
+    var editingChecks by remember { mutableStateOf<CodeProject?>(null) }
+    var local by remember { mutableStateOf(false) }
+    var localPath by remember { mutableStateOf("") }
+    var creating by remember { mutableStateOf(false) }
+    var remote by remember { mutableStateOf(false) }
+    var environment by remember { mutableStateOf<CodeProject?>(null) }
+    LaunchedEffect(adding, local) { if (adding && !local && state.repos == null) code.loadRepos() }
     FridaySheet(onDismiss = onDismiss) { _, _, close ->
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(if (adding) "Add a repository" else "Repositories", Modifier.padding(horizontal = 8.dp), style = MaterialTheme.typography.titleMedium)
+            Row {
+                TextButton(onClick = { creating = true; remote = false }) { Text("New project") }
+                TextButton(onClick = { creating = true; remote = true }) { Text("Other Git host") }
+            }
             if (!adding) {
                 LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
                     items(state.projects, key = { it.id }) { project ->
@@ -251,6 +268,8 @@ private fun RepositorySheet(state: CodeState, code: CodeWorkspace, onDismiss: ()
                             leadingContent = { RadioButton(project.id == state.project?.id, onClick = null) },
                             trailingContent = { MoreActions(listOf(
                                 (if (project.trusted) "Ask before commands" else "Let commands run freely") to { code.setTrusted(project.id, !project.trusted) },
+                                "Required checks" to { editingChecks = project },
+                                "Project environment" to { environment = project },
                                 "Remove" to { removing = project })) },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                             modifier = Modifier.clickable { code.selectProject(project.id); close() })
@@ -260,6 +279,15 @@ private fun RepositorySheet(state: CodeState, code: CodeWorkspace, onDismiss: ()
                 Text("Edits in a task's branch run without asking. Commands follow your Computer access settings unless you let a project run them freely; pushing always waits for you.",
                     Modifier.padding(horizontal = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(!local, { local = false }, label = { Text("GitHub") })
+                    FilterChip(local, { local = true }, label = { Text("Local folder") })
+                }
+                if (local) {
+                    Text("Use an absolute folder path on your PC. Tasks start from committed branch content; existing uncommitted edits stay in the original folder.", style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(localPath, { localPath = it.take(4096) }, label = { Text("Repository folder on PC") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    Button(onClick = { code.addLocal(localPath); close() }, enabled = !state.busy && localPath.startsWith('/')) { Text("Open repository") }
+                } else {
                 OutlinedTextField(query, { query = it.take(200) }, placeholder = { Text("Search, or owner/name") }, singleLine = true,
                     leadingIcon = { Icon(LineIcons.Search, null, Modifier.size(20.dp)) }, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth())
                 val typed = query.trim().removePrefix("https://github.com/").removeSuffix(".git").trim('/')
@@ -287,9 +315,13 @@ private fun RepositorySheet(state: CodeState, code: CodeWorkspace, onDismiss: ()
                     }
                 }
                 if (state.projects.isNotEmpty()) TextButton(onClick = { adding = false }) { Text("Back to your repositories") }
+                }
             }
         }
     }
+    editingChecks?.let { project -> RequiredChecksDialog(project, state.busy, code) { editingChecks = null } }
+    environment?.let { project -> CodeEnvironmentDialog(project, state, code) { environment = null } }
+    if (creating) NewCodeProjectDialog(state, code, remote) { creating = false; onDismiss() }
     removing?.let { project ->
         AlertDialog(onDismissRequest = { removing = null }, title = { FridayDialogWindow(); Text("Remove ${project.repo}?") },
             text = { Text("FRIDAY forgets this project. The clone stays on your PC, and nothing changes on GitHub.") },
@@ -303,11 +335,19 @@ fun CodeTaskScreen(state: CodeState, code: CodeWorkspace) {
     val id = state.taskId ?: return
     val view = state.view?.takeIf { it.task.id == id }
     val task = view?.task ?: state.tasks.firstOrNull { it.id == id }
-    val active = view == null || view.busy || view.waiting
+    val active = view == null || view.busy || view.waiting || (!view.queue.paused && view.queue.messages.any { it.state in setOf("queued", "dispatching") })
     FridayVisibleEffect(id, active) { while (true) { delay(if (active) 2000 else 20000); code.refreshTask() } }
     var tab by rememberSaveable(id) { mutableIntStateOf(0) }
     var proposing by remember { mutableStateOf(false) }
     var discarding by remember { mutableStateOf(false) }
+    var recovering by remember { mutableStateOf(false) }
+    var implementing by remember { mutableStateOf(false) }
+    var queuing by remember { mutableStateOf(false) }
+    var merging by remember { mutableStateOf(false) }
+    var collaboration by remember { mutableStateOf(false) }
+    var stacking by remember { mutableStateOf(false) }
+    var stackPrompt by remember { mutableStateOf("") }
+    var history by remember { mutableStateOf(false) }
     val uri = LocalUriHandler.current
     LaunchedEffect(tab, view?.changes?.stats) { if (tab == 1 && state.diff == null && view != null) code.loadDiff() }
     Scaffold(containerColor = MaterialTheme.colorScheme.background, modifier = Modifier.imePadding(), topBar = {
@@ -320,18 +360,31 @@ fun CodeTaskScreen(state: CodeState, code: CodeWorkspace) {
             actions = {
                 MoreActions(buildList<Pair<String, () -> Unit>> {
                     add("Refresh" to code::refreshTask)
+                    add("Follow-up queue" to { queuing = true })
+                    if (view != null && !view.busy) {
+                        add("Save checkpoint" to code::checkpoint)
+                        add("Restore files" to { recovering = true })
+                        add("Fork task" to code::fork)
+                        add("Start stacked task" to { stacking = true })
+                        add("Prepare environment" to code::prepare)
+                        add("Base branch and conflicts" to { merging = true })
+                        if (view.task.mode == "plan") add("Approve plan and implement" to { implementing = true })
+                    }
                     view?.pr?.let { pr -> add("Open pull request" to { uri.openUri(pr.url) }) }
-                    if (view != null && !view.busy) add("Push branch" to code::push)
+                    if (view?.pr != null) add("Review and CI" to { collaboration = true })
+                    if (view != null && !view.busy && view.task.kind != "local") add("Push branch" to code::push)
                     add("Discard task" to { discarding = true })
                 })
             })
     }, bottomBar = {
         if (tab == 0 && view != null) TaskBottomBar(view, state.busy, onFollowUp = code::followUp, onStop = code::stop,
-            onPropose = { proposing = true }, onOpenPr = { view.pr?.let { uri.openUri(it.url) } })
+            onPropose = { proposing = true }, onOpenPr = { view.pr?.let { uri.openUri(it.url) } }, onQueue = code::queue, onSteer = code::steer)
     }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             if (view == null || view.busy || state.busy) LinearProgressIndicator(Modifier.fillMaxWidth()) else HorizontalDivider(color = Color.Transparent, thickness = 4.dp)
             Box(Modifier.padding(horizontal = 16.dp)) { Notices(state, code) }
+            view?.let { VerificationStatus(it.verification) }
+            task?.parent?.let { parent -> TextButton(onClick = { history = true; code.loadHistory(parent) }) { Text("${task.relation} from $parent · earlier conversation") } }
             val changes = view?.changes?.stats
             PrimaryTabRow(selectedTabIndex = tab, containerColor = Color.Transparent) {
                 val quiet = MaterialTheme.colorScheme.onSurfaceVariant
@@ -350,6 +403,20 @@ fun CodeTaskScreen(state: CodeState, code: CodeWorkspace) {
             }
         }
     }
+    if (recovering && view != null) RecoveryDialog(view, state.busy, code) { recovering = false }
+    if (queuing && view != null) CodeQueueDialog(view, state, code) { queuing = false }
+    if (merging && view != null) CodeMergeDialog(view, state, code) { merging = false }
+    if (collaboration) CodeCollaborationDialog(state, code) { collaboration = false }
+    if (history) task?.parent?.let { CodeHistoryDialog(it, state, code) { history = false } }
+    if (stacking) AlertDialog(onDismissRequest = { stacking = false }, title = { Text("New task on this branch") },
+        text = { Column { Text("The parent must be idle with committed edits. The new request will target this task's branch; publish the parent request first.")
+            OutlinedTextField(stackPrompt, { stackPrompt = it.take(20000) }, label = { Text("Next task") }, minLines = 3) } },
+        confirmButton = { TextButton(onClick = { code.stack(stackPrompt); stacking = false; stackPrompt = "" }, enabled = !state.busy && stackPrompt.isNotBlank()) { Text("Start stacked task") } },
+        dismissButton = { TextButton(onClick = { stacking = false }) { Text("Cancel") } })
+    if (implementing) AlertDialog(onDismissRequest = { implementing = false }, title = { Text("Implement this plan?") },
+        text = { Text("FRIDAY will gain coding tools for this task and begin implementing the plan. Commands follow the project's existing approval settings.") },
+        confirmButton = { TextButton(onClick = { implementing = false; code.implementPlan() }, enabled = !state.busy) { Text("Approve and implement") } },
+        dismissButton = { TextButton(onClick = { implementing = false }) { Text("Cancel") } })
     if (proposing && view != null) PullRequestDialog(view.task.title, onDismiss = { proposing = false }) { title, draft ->
         proposing = false; code.createPullRequest(title, draft)
     }
@@ -359,6 +426,83 @@ fun CodeTaskScreen(state: CodeState, code: CodeWorkspace) {
         dismissButton = { TextButton(onClick = { discarding = false }) { Text("Cancel") } })
 }
 
+@Composable
+private fun RecoveryDialog(view: CodeTaskView, busy: Boolean, code: CodeWorkspace, close: () -> Unit) {
+    var selected by remember { mutableStateOf<CodeCheckpoint?>(null) }
+    AlertDialog(onDismissRequest = close, title = { Text("Restore working files") }, text = {
+        LazyColumn(Modifier.heightIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            item { Text("Restores tracked and nonignored working files, including deletions. Current files are saved as a new checkpoint first. Git history, staging and ignored files stay unchanged. Stop the task before restoring.") }
+            if (view.checkpoints.isEmpty()) item { Text("No recovery checkpoints are available.") }
+            items(view.checkpoints) { checkpoint ->
+                ListItem(headlineContent = { Text(checkpoint.label) }, supportingContent = { Text("${checkpoint.files} files · ${checkpoint.head.take(10)} · ${checkpoint.id.substringBefore('-')}") },
+                    leadingContent = { RadioButton(selected?.id == checkpoint.id, null) }, modifier = Modifier.clickable { selected = checkpoint })
+            }
+        }
+    }, confirmButton = { TextButton(onClick = { selected?.let { code.restore(it.id); close() } }, enabled = !busy && !view.busy && selected != null) { Text("Save current files and restore") } },
+        dismissButton = { TextButton(onClick = close) { Text("Cancel") } })
+}
+
+@Composable
+private fun RequiredChecksDialog(project: CodeProject, busy: Boolean, code: CodeWorkspace, close: () -> Unit) {
+    var checks by remember(project.id) { mutableStateOf(project.requiredChecks) }
+    AlertDialog(onDismissRequest = close, title = { Text("Required checks") }, text = {
+        LazyColumn(Modifier.heightIn(max = 480.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            item { Text("FRIDAY must record every check on the current files. Changing this list requires new evidence. Saving commands does not execute them or bypass command approvals.") }
+            items(checks.size) { index ->
+                val check = checks[index]
+                fun update(value: CodeRequiredCheck) { checks = checks.mapIndexed { i, c -> if (i == index) value else c } }
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    OutlinedTextField(check.name, { update(check.copy(name = it.take(100))) }, label = { Text("Name") }, singleLine = true)
+                    OutlinedTextField(check.command, { update(check.copy(command = it.take(2000))) }, label = { Text("Exact shell command") }, singleLine = true)
+                    OutlinedTextField(check.cwd, { update(check.copy(cwd = it.take(500))) }, label = { Text("Folder within task") }, singleLine = true)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(check.runner == "tests", { update(check.copy(runner = "tests")) }, label = { Text("Tests") })
+                        FilterChip(check.runner == "exit", { update(check.copy(runner = "exit")) }, label = { Text("Build / lint") })
+                    }
+                    if (check.runner == "tests") OutlinedTextField(check.minTests.toString(), { value ->
+                        value.toIntOrNull()?.takeIf { it in 1..1000000 }?.let { update(check.copy(minTests = it)) }
+                    }, label = { Text("Minimum tests") }, singleLine = true)
+                    TextButton(onClick = { checks = checks.filterIndexed { i, _ -> i != index } }) { Text("Remove check") }
+                }
+            }
+            if (checks.size < 12) item { TextButton(onClick = { checks = checks + CodeRequiredCheck() }) { Text("Add check") } }
+        }
+    }, confirmButton = {
+        TextButton(onClick = { code.setChecks(project.id, checks, close) }, enabled = !busy && checks.all { it.name.isNotBlank() && it.command.isNotBlank() && it.cwd.isNotBlank() }) { Text("Save") }
+    }, dismissButton = { TextButton(onClick = close) { Text("Cancel") } })
+}
+
+@Composable
+private fun VerificationStatus(verification: CodeVerification) {
+    var expanded by remember { mutableStateOf(false) }
+    TextButton(onClick = { expanded = true }, modifier = Modifier.padding(horizontal = 8.dp)) {
+        Text(verification.label + " · Details")
+    }
+    if (expanded) AlertDialog(onDismissRequest = { expanded = false }, title = { Text("Verification history") },
+        text = {
+            LazyColumn(Modifier.heightIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                item { Text("These are recorded checks, not a guarantee of correctness. Later file changes make them out of date. Ignored dependencies and the environment are not covered.") }
+                if (verification.reason.isNotBlank()) item { Text(verification.reason) }
+                items(verification.required) { check ->
+                    Column {
+                        Text("${check.name}: ${check.state}", style = MaterialTheme.typography.labelLarge)
+                        Text("${check.cwd} · ${check.command}", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                if (verification.checks.isEmpty()) item { Text("No checks have been recorded for this task.") }
+                items(verification.checks) { check ->
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("${if (check.current) "Current" else "Not current"} · ${check.result} · exit ${check.exit ?: "unknown"} · tests ${check.tests ?: "unknown"}", style = MaterialTheme.typography.labelMedium)
+                        SelectionContainer { Text(check.command, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
+                        if (check.cwd.isNotBlank()) Text("Working directory: ${check.cwd}", style = MaterialTheme.typography.bodySmall)
+                        if (check.output.isNotBlank()) SelectionContainer { Text(check.output, style = MaterialTheme.typography.bodySmall) }
+                        HorizontalDivider()
+                    }
+                }
+            }
+        }, confirmButton = { TextButton(onClick = { expanded = false }) { Text("Close") } })
+}
+
 /** The coding agent's conversation: the request, its replies, its steps and anything waiting on the user. */
 @Composable
 private fun TaskConversation(view: CodeTaskView, busy: Boolean, code: CodeWorkspace) {
@@ -366,10 +510,11 @@ private fun TaskConversation(view: CodeTaskView, busy: Boolean, code: CodeWorksp
     val blocks = remember(view.items) { conversationBlocks(view.items) }
     LaunchedEffect(blocks.size, view.waiting) { if (blocks.isNotEmpty()) list.animateScrollToItem(list.layoutInfo.totalItemsCount.coerceAtLeast(1) - 1) }
     LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item(key = "model-timing") {
+                item(key = "model-timing") {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(if (view.task.modelChoice == "local") "Local model" else "Automatic model selection",
                     style = MaterialTheme.typography.labelLarge)
+                if (view.task.mode == "plan") Text("Read-only plan · approve implementation from the task menu", style = MaterialTheme.typography.bodySmall)
                 view.elapsedSeconds?.let { seconds ->
                     val total = seconds.toLong().coerceAtLeast(0)
                     Text("Elapsed: ${total / 60}m ${total % 60}s · includes tools and waits",
@@ -472,24 +617,37 @@ private fun StepRow(step: CodeItem, running: Boolean) {
 }
 
 @Composable
-private fun TaskBottomBar(view: CodeTaskView, busy: Boolean, onFollowUp: (String) -> Unit, onStop: () -> Unit, onPropose: () -> Unit, onOpenPr: () -> Unit) {
+private fun TaskBottomBar(view: CodeTaskView, busy: Boolean, onFollowUp: (String) -> Unit, onStop: () -> Unit, onPropose: () -> Unit, onOpenPr: () -> Unit,
+                          onQueue: (String) -> Unit, onSteer: (String) -> Unit) {
     var message by rememberSaveable(view.task.id) { mutableStateOf("") }
+    var delivery by rememberSaveable(view.task.id) { mutableStateOf("send") }
+    LaunchedEffect(view.busy, view.waiting) { if ((view.busy || view.waiting) && delivery == "send") delivery = "queue" }
     Surface(color = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             val pr = view.pr
             if (pr != null) PullRequestStrip(pr, onOpenPr)
-            else if (!view.busy && view.changes.stats.changed) Button(onClick = onPropose, enabled = !busy, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth()) {
-                Text("Create pull request")
+            else if (!view.busy && view.changes.stats.changed && view.task.kind in setOf("github", "gitlab")) Button(onClick = onPropose, enabled = !busy, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth()) {
+                Text(if (view.task.kind == "gitlab") "Create merge request" else "Create pull request")
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (!view.busy && !view.waiting) FilterChip(delivery == "send", { delivery = "send" }, label = { Text("Send now") })
+                FilterChip(delivery == "queue", { delivery = "queue" }, label = { Text("Queue") })
+                if (view.busy || view.waiting) FilterChip(delivery == "steer", { delivery = "steer" }, label = { Text("Stop & steer") })
             }
             Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(end = 6.dp)) {
-                    TextField(message, { message = it.take(20000) }, placeholder = { Text(if (view.busy) "FRIDAY is working…" else if (pr != null) "Ask for changes to the PR" else "Ask for changes") },
-                        enabled = !view.busy && !view.waiting, maxLines = 5, modifier = Modifier.weight(1f),
+                    TextField(message, { message = it.take(20000) }, placeholder = { Text(when (delivery) {
+                        "queue" -> "Queue a follow-up"
+                        "steer" -> "New direction (stops this turn)"
+                        else -> if (pr != null) "Ask for changes to the request" else "Ask for changes"
+                    }) },
+                        enabled = !busy, maxLines = 5, modifier = Modifier.weight(1f),
                         colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, disabledContainerColor = Color.Transparent,
                             focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, disabledIndicatorColor = Color.Transparent))
                     if (view.busy && !view.waiting) FilledTonalButton(onClick = onStop, enabled = !busy, shape = CircleShape) { Text("Stop") }
-                    else FilledIconButton(onClick = { val text = message.trim(); if (text.isNotEmpty()) { onFollowUp(text); message = "" } },
-                        enabled = !busy && !view.waiting && message.isNotBlank(), modifier = Modifier.size(40.dp).semantics { contentDescription = "Send" }) {
+                    FilledIconButton(onClick = { val text = message.trim(); if (text.isNotEmpty()) {
+                        when (delivery) { "queue" -> onQueue(text); "steer" -> onSteer(text); else -> onFollowUp(text) }; message = ""
+                    } }, enabled = !busy && message.isNotBlank() && (delivery != "send" || !view.busy && !view.waiting), modifier = Modifier.size(40.dp).semantics { contentDescription = "Send $delivery" }) {
                         Icon(LineIcons.Send, null, Modifier.size(20.dp))
                     }
                 }

@@ -234,6 +234,8 @@ class PcAgent:
                 db.execute("ALTER TABLE sessions ADD COLUMN agent TEXT NOT NULL DEFAULT 'friday'")
             with contextlib.suppress(sqlite3.OperationalError):
                 db.execute("ALTER TABLE sessions ADD COLUMN model_choice TEXT NOT NULL DEFAULT 'auto'")
+            with contextlib.suppress(sqlite3.OperationalError):
+                db.execute('ALTER TABLE sessions ADD COLUMN failure_reason TEXT')
             # Preserve the old index-based model identity when upgrading an existing install.
             with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
                 config = json.loads(self.config_path.read_text())
@@ -370,7 +372,14 @@ class PcAgent:
             if (not isinstance(headers, dict) or len(headers) > 20 or
                     any(not isinstance(key, str) or not key or len(key) > 128 or
                         not isinstance(val, str) or len(val) > 4096 for key, val in headers.items())): raise ValueError('Invalid MCP headers')
-            return {'type': 'remote', 'url': url, 'headers': dict(headers), 'enabled': True}
+            result = {'type': 'remote', 'url': url, 'headers': dict(headers), 'enabled': True}
+            if 'oauth' in entry:
+                oauth = entry['oauth']
+                if oauth is False: result['oauth'] = False
+                elif isinstance(oauth, dict) and not set(oauth) - {'clientId', 'clientSecret', 'scope'} and all(isinstance(v, str) and len(v) <= 4096 for v in oauth.values()):
+                    result['oauth'] = dict(oauth)
+                else: raise ValueError('Invalid MCP OAuth settings')
+            return result
         raise ValueError('Invalid MCP type')
 
     # ---- models ----
@@ -439,9 +448,15 @@ class PcAgent:
         else:
             agents['friday']['prompt'] += ' Desktop vision is currently unavailable. Use the CLI where appropriate; explain when a task requires the screen.'
         agents.update(self.extra_agents)
+        extensions = self.extension_config() if hasattr(self, 'extension_config') else {'plugins': [], 'skills': []}
         return {
             '$schema': 'https://opencode.ai/config.json',
-            'plugin': [(self.root / 'shell-environment.js').as_uri()],
+            'plugin': [(self.root / 'shell-environment.js').as_uri(),
+                       [Path(__file__).with_name('code_workflow.mjs').as_uri(), {
+                           'outputDirectory': str(self.root / 'code-output'), 'verificationPython': sys.executable,
+                           'verificationScript': str(Path(__file__).with_name('verification.py')),
+                           'verificationDirectory': str(self.root / 'code-verification')}]] + extensions['plugins'],
+            'skills': {'paths': extensions['skills']},
             'model': '/'.join(chain[0]), 'small_model': '/'.join(chain[0]),
             'autoupdate': False, 'share': 'disabled',
             'enabled_providers': [PROVIDER, VISION_PROVIDER, LOCAL[0]],
@@ -481,7 +496,7 @@ class PcAgent:
                     healthy = (await self.client.get('/global/health', timeout=3)).status_code == 200
                 if healthy:
                     self.unhealthy_since = None
-                    active = any(row['state'] == 'busy' for row in self.sessions(200))
+                    active = self.active_count() > 0
                     # Never reload config while a task/tool or approval is in flight.
                     if digest == self.config_digest or active: return self.client
                     try:
@@ -585,6 +600,18 @@ class PcAgent:
         return response.json() if response.content else None
 
     # ---- sessions ----
+    async def create_idle(self, body, directory=None, agent='friday'):
+        """Create an owned draft session without dispatching a model turn."""
+        async with self.start_lock:
+            if not self.settings()['enabled']: raise HTTPException(403, 'PC access is turned off')
+            where = {'params': {'directory': directory}} if directory else {}
+            session = await self.call('POST', '/session', timeout=90, json={'title': body.title or body.prompt[:60], 'agent': agent,
+                                       'permission': self.rule_builders[agent](None, directory)}, **where)
+            with self.db() as db:
+                db.execute('INSERT INTO sessions(id,source,title,created,model,state,directory,agent,model_choice) VALUES(?,?,?,?,?,?,?,?,?)',
+                           (session['id'], body.source, session.get('title'), time.time(), 0, 'idle', directory, agent, body.model_choice))
+            return {'id': session['id'], 'title': session.get('title')}
+
     async def start(self, body, directory=None, agent='friday'):
         async with self.start_lock:
             settings = self.settings()
@@ -595,9 +622,12 @@ class PcAgent:
                 if previous:
                     if previous['digest'] != digest: raise HTTPException(409, 'This request id belongs to a different task')
                     return {'id': previous['session'], 'title': self.record(previous['session'])['title']}
-            if sum(s['state'] == 'busy' for s in self.sessions(200)) >= 4: raise HTTPException(409, 'Four PC tasks are already active')
+            if self.active_count() >= 4: raise HTTPException(409, 'Four PC tasks are already active')
             where = {'params': {'directory': directory}} if directory else {}
-            session = await self.call('POST', '/session', json={'title': body.title or body.prompt[:60], 'agent': agent,
+            # Native OpenCode lazily initializes a repository here. Large/cold
+            # projects can exceed the ordinary 30-second read deadline; never
+            # retry a timed-out creation automatically (it may have succeeded).
+            session = await self.call('POST', '/session', timeout=90, json={'title': body.title or body.prompt[:60], 'agent': agent,
                                                                 'permission': self.rule_builders[agent](None, directory)}, **where)
             with self.db() as db:
                 db.execute('INSERT INTO sessions(id, source, title, created, model, state, directory, agent, model_choice) VALUES(?,?,?,?,?,?,?,?,?)',
@@ -653,7 +683,7 @@ class PcAgent:
         provider, model = chain[0]
         await self.call('POST', f'/session/{session_id}/prompt_async',
                         json={'agent': agent, 'model': {'providerID': provider, 'modelID': model}, 'parts': [{'type': 'text', 'text': text}]}, **where)
-        with self.db() as db: db.execute("UPDATE sessions SET state='busy' WHERE id=?", (session_id,))
+        with self.db() as db: db.execute("UPDATE sessions SET state='busy',failure_reason=NULL WHERE id=?", (session_id,))
         if session_id not in self.watchers or self.watchers[session_id].done():
             self.watchers[session_id] = asyncio.create_task(self.watch(session_id))
 
@@ -675,7 +705,8 @@ class PcAgent:
                             running = any(p.get('type') == 'tool' and p.get('state', {}).get('status') in ('pending', 'running') for m in messages for p in m.get('parts', []))
                             if not pending['permissions'] and not pending['questions'] and not running:
                                 await self.call('POST', f'/session/{session_id}/abort', **where)
-                                with self.db() as db: db.execute("UPDATE sessions SET state='error' WHERE id=?", (session_id,))
+                                reason = 'Model retries exceeded 20 seconds with no available fallback. ' + str(status.get('message') or '')[:300]
+                                with self.db() as db: db.execute("UPDATE sessions SET state='error',failure_reason=? WHERE id=?", (reason, session_id))
                                 self._release_schedule_failure(session_id)
                                 return
                     continue
@@ -735,6 +766,8 @@ class PcAgent:
             if info.get('error') and info['error'].get('name') != 'MessageAbortedError':
                 items.append({'id': info['id'] + '-error', 'role': 'assistant', 'kind': 'error', 'text': error_text(info['error'])})
         # Return the current parts: streaming text can change without receiving a new part id.
+        if record.get('failure_reason') and record['state'] == 'error':
+            items.append({'id': session_id + '-retry-error', 'role': 'assistant', 'kind': 'error', 'text': record['failure_reason']})
         items = items[-200:]
         for item in items:
             if 'text' in item: item['text'] = item['text'][-20000:]
@@ -786,6 +819,9 @@ class PcAgent:
     def sessions(self, limit=30):
         with self.db() as db:
             return [dict(row) for row in db.execute('SELECT * FROM sessions ORDER BY created DESC LIMIT ?', (limit,))]
+
+    def active_count(self):
+        with self.db() as db: return db.execute("SELECT COUNT(*) FROM sessions WHERE state IN ('busy','waiting')").fetchone()[0]
 
     async def cancel(self, session_id):
         self.record(session_id)

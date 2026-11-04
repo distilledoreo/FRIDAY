@@ -30,6 +30,10 @@ data class CodeState(
     /** A clone or task start, which can take a while. */
     val working: String? = null,
     val error: String? = null,
+    val extensions: JSONObject? = null, val extensionDraft: JSONObject? = null,
+    val discoveredExtensions: List<JSONObject> = emptyList(), val oauthUrl: String? = null,
+    val environmentRecipe: JSONObject? = null, val collaboration: CodeCollaboration? = null,
+    val history: List<CodeItem> = emptyList(), val historyBefore: String? = null,
 ) {
     val project: CodeProject? get() = projects.firstOrNull { it.id == projectId } ?: projects.firstOrNull()
 }
@@ -67,6 +71,87 @@ class CodeWorkspace(
     fun close() { _state.update { it.copy(open = false, taskId = null, view = null, diff = null, repos = null) } }
 
     fun dismissError() { _state.update { it.copy(error = null) } }
+
+    private fun acceptProject(project: CodeProject) {
+        remembered.project = project.id
+        _state.update { s -> s.copy(projects = listOf(project) + s.projects.filter { it.id != project.id }, projectId = project.id, base = null, branches = emptyList()) }
+        loadBranches(project.id)
+    }
+
+    fun createProject(path: String, template: String, done: () -> Unit) = act("Creating local project…") {
+        acceptProject(CodeProject.from(JSONObject(request("/workspace/code/projects/new", "POST", JSONObject().put("path", path.trim()).put("template", template)))))
+        done()
+    }
+    fun addRemote(url: String, kind: String, done: () -> Unit) = act("Cloning repository…") {
+        acceptProject(CodeProject.from(JSONObject(request("/workspace/code/projects/remote", "POST", JSONObject().put("url", url.trim()).put("kind", kind)))))
+        done()
+    }
+    fun loadEnvironment(id: String) = act {
+        _state.update { it.copy(environmentRecipe = null) }
+        val recipe = JSONObject(request("/workspace/code/projects/$id/environment", "GET", null))
+        _state.update { it.copy(environmentRecipe = recipe) }
+    }
+    fun saveEnvironment(id: String, body: JSONObject, done: () -> Unit) = act {
+        request("/workspace/code/projects/$id/environment", "PUT", body)
+        done(); refresh()
+    }
+    fun loadExtensions() = act {
+        val value = JSONObject(request("/workspace/code/extensions", "GET", null))
+        _state.update { it.copy(extensions = value) }
+    }
+    fun loadExtension(id: String) = act {
+        val value = JSONObject(request("/workspace/code/extensions/$id", "GET", null))
+        _state.update { it.copy(extensionDraft = value) }
+    }
+    fun clearExtensionDraft() { _state.update { it.copy(extensionDraft = null) } }
+    fun restoreExtension(id: String, digest: String) = act {
+        val value = JSONObject(request("/workspace/code/extensions/$id/restore", "POST", JSONObject().put("digest", digest)))
+        _state.update { it.copy(extensionDraft = value) }
+    }
+    fun useDiscoveredExtension(value: JSONObject) { _state.update { it.copy(extensionDraft = value) } }
+    fun discoverExtensions(path: String) = act {
+        val values = rows(JSONArray(request("/workspace/code/extensions/discover", "POST", JSONObject().put("path", path))))
+        _state.update { it.copy(discoveredExtensions = values) }
+    }
+    fun saveExtension(id: String?, body: JSONObject, done: () -> Unit) = act(after = ::loadExtensions) {
+        request("/workspace/code/extensions" + (id?.let { "/$it" } ?: ""), if (id == null) "POST" else "PUT", body)
+        _state.update { it.copy(extensionDraft = null) }; done()
+    }
+    fun extensionAction(id: String, action: String, digest: String? = null) = act(after = ::loadExtensions) {
+        request("/workspace/code/extensions/$id" + if (action == "remove") "" else "/$action", if (action == "remove") "DELETE" else "POST", digest?.let { JSONObject().put("digest", it) })
+        _state.update { it.copy(extensionDraft = null) }
+    }
+    fun saveConnection(name: String, entry: JSONObject, done: () -> Unit) = act(after = ::loadExtensions) {
+        request("/workspace/code/connections/$name", "PUT", JSONObject().put("entry", entry)); done()
+    }
+    fun connectionAction(name: String, action: String, body: JSONObject? = null) = act(after = ::loadExtensions) {
+        val response = request("/workspace/code/connections/$name" + if (action == "remove") "" else "/$action", if (action == "remove") "DELETE" else "POST", body)
+        if (action == "auth") {
+            val value = JSONObject(response)
+            _state.update { it.copy(oauthUrl = value.optString("authorizationUrl").takeIf(String::isNotBlank)) }
+        }
+    }
+    fun clearOAuthUrl() { _state.update { it.copy(oauthUrl = null) } }
+
+    fun loadCollaboration() {
+        val id = _state.value.taskId ?: return
+        act {
+            val value = CodeCollaboration.from(JSONObject(request("/workspace/code/tasks/$id/collaboration", "GET", null)))
+            _state.update { if (it.taskId == id) it.copy(collaboration = value) else it }
+        }
+    }
+    fun reviewAction(thread: String, action: String, body: String = "") {
+        val head = _state.value.collaboration?.head ?: return
+        val id = _state.value.taskId ?: return
+        act(after = ::loadCollaboration) { request("/workspace/code/tasks/$id/collaboration", "POST", JSONObject().put("head", head).put("thread", thread).put("action", action).put("body", body)) }
+    }
+    fun repairCi() { _state.value.collaboration?.head?.let { taskAction("repair", JSONObject().put("head", it), "Loading CI evidence and starting repair…") } }
+    fun loadHistory(task: String, before: String? = null) = act {
+        if (before == null) _state.update { it.copy(history = emptyList(), historyBefore = null) }
+        val result = JSONObject(request("/workspace/code/tasks/$task/history" + (before?.let { "?before=$it" } ?: ""), "GET", null))
+        _state.update { it.copy(history = (rows(result.optJSONArray("items")).map(CodeItem::from) + it.history).distinctBy(CodeItem::id),
+            historyBefore = result.optString("before").takeIf { value -> value.isNotBlank() && value != "null" }) }
+    }
 
     fun refresh() {
         if (refreshJob?.isActive == true) return
@@ -119,6 +204,22 @@ class CodeWorkspace(
         _state.update { s -> s.copy(projects = s.projects.map { if (it.id == id) project else it }) }
     }
 
+    fun addLocal(path: String) = act("Opening local repository…") {
+        val project = CodeProject.from(JSONObject(request("/workspace/code/projects", "POST", JSONObject().put("path", path.trim()))))
+        remembered.project = project.id
+        _state.update { s -> s.copy(projects = listOf(project) + s.projects.filter { it.id != project.id }, projectId = project.id, base = null, branches = emptyList()) }
+        loadBranches(project.id)
+    }
+
+    fun setChecks(id: String, checks: List<CodeRequiredCheck>, onSaved: () -> Unit) = act {
+        val array = JSONArray()
+        checks.forEach { array.put(it.json()) }
+        val project = CodeProject.from(JSONObject(request("/workspace/code/projects/$id/checks", "PUT", JSONObject().put("checks", array))))
+        _state.update { s -> s.copy(projects = s.projects.map { if (it.id == id) project else it }) }
+        onSaved()
+        refreshTask()
+    }
+
     fun removeProject(id: String) = act {
         request("/workspace/code/projects/$id", "DELETE", null)
         _state.update { s -> s.copy(projects = s.projects.filter { it.id != id }, projectId = s.projectId.takeIf { it != id }, branches = emptyList()) }
@@ -126,11 +227,11 @@ class CodeWorkspace(
     }
 
     /** Starts a task in the selected project and opens it. */
-    fun startTask(prompt: String, modelChoice: String = "auto", onStarted: () -> Unit = {}) {
+    fun startTask(prompt: String, modelChoice: String = "auto", mode: String = "code", onStarted: () -> Unit = {}) {
         val project = _state.value.project ?: return
         val text = prompt.trim().take(20000).ifEmpty { return }
         act("Creating a branch and starting FRIDAY…") {
-            val body = JSONObject().put("project", project.id).put("prompt", text).put("model_choice", modelChoice)
+            val body = JSONObject().put("project", project.id).put("prompt", text).put("model_choice", modelChoice).put("mode", mode)
             _state.value.base?.let { body.put("base", it) }
             val task = CodeTask.from(JSONObject(request("/workspace/code/tasks", "POST", body)))
             _state.update { s -> s.copy(tasks = listOf(task) + s.tasks.filter { it.id != task.id }) }
@@ -140,7 +241,7 @@ class CodeWorkspace(
     }
 
     fun openTask(id: String) {
-        _state.update { it.copy(open = true, taskId = id, view = it.view?.takeIf { v -> v.task.id == id }, diff = null) }
+        _state.update { it.copy(open = true, taskId = id, view = it.view?.takeIf { v -> v.task.id == id }, diff = null, collaboration = null) }
         refreshTask()
     }
 
@@ -178,8 +279,37 @@ class CodeWorkspace(
     }
 
     fun followUp(text: String) = taskAction("messages", JSONObject().put("prompt", text.trim().take(20000)))
+    fun queue(text: String) = taskAction("queue", JSONObject().put("prompt", text.trim().take(20000)))
+    fun steer(text: String) = taskAction("steer", JSONObject().put("prompt", text.trim().take(20000)), "Stopping the current turn and changing direction…")
+    fun prepare() = taskAction("prepare", working = "Starting reviewed setup recipe…")
+    fun merge(action: String, path: String? = null) = taskAction("merge", JSONObject().put("action", action).also { if (path != null) it.put("path", path) }, "Updating merge state…")
+    fun pauseQueue(paused: Boolean) {
+        val id = _state.value.taskId ?: return
+        act(after = ::refreshTask) { request("/workspace/code/tasks/$id/queue", "PUT", JSONObject().put("paused", paused)) }
+    }
+    fun removeQueued(id: Long) {
+        val task = _state.value.taskId ?: return
+        act(after = ::refreshTask) { request("/workspace/code/tasks/$task/queue/$id", "DELETE", null) }
+    }
+    fun fork() {
+        val id = _state.value.taskId ?: return
+        act("Creating independent fork…") {
+            val task = CodeTask.from(JSONObject(request("/workspace/code/tasks/$id/fork", "POST", JSONObject())))
+            _state.update { it.copy(tasks = listOf(task) + it.tasks) }; openTask(task.id)
+        }
+    }
+    fun stack(prompt: String) {
+        val task = _state.value.view?.task ?: return
+        act("Creating stacked task…") {
+            val child = CodeTask.from(JSONObject(request("/workspace/code/tasks", "POST", JSONObject().put("project", task.project).put("parent", task.id).put("prompt", prompt).put("model_choice", task.modelChoice).put("mode", task.mode))))
+            _state.update { it.copy(tasks = listOf(child) + it.tasks) }; openTask(child.id)
+        }
+    }
     fun stop() = taskAction("abort")
     fun push() = taskAction("push", working = "Pushing the branch…")
+    fun checkpoint() = taskAction("checkpoints", JSONObject().put("label", "Manual checkpoint"), working = "Saving recovery checkpoint…")
+    fun implementPlan() = taskAction("implement", working = "Starting approved implementation…")
+    fun restore(checkpoint: String) = taskAction("restore", JSONObject().put("checkpoint", checkpoint), working = "Saving current files and restoring checkpoint…")
     fun createPullRequest(title: String, draft: Boolean) =
         taskAction("pr", JSONObject().put("title", title.trim().take(200)).put("draft", draft), working = "Opening the pull request…")
 

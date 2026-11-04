@@ -59,6 +59,32 @@ class FakePc(PcAgent):
 
 
 class PcTests(unittest.IsolatedAsyncioTestCase):
+    async def test_old_busy_tasks_count_even_after_hundreds_of_new_idle_drafts(self):
+        for i in range(3): self.pc.add('ses_old_' + str(i))
+        with self.pc.db() as db:
+            db.executemany('INSERT INTO sessions(id,source,title,created,model,state) VALUES(?,?,?,?,?,?)',
+                [('ses_draft_' + str(i), 'test', 'Draft', time.time() + 10 + i, 0, 'idle') for i in range(210)])
+        with self.assertRaises(HTTPException): await self.pc.start(Prompt(prompt='Do not start a fifth active task'))
+        self.assertFalse(any(c[1] == '/session' for c in self.pc.calls))
+
+    async def test_exhausted_native_retries_leave_a_durable_visible_reason(self):
+        self.pc.fallback = AsyncMock(return_value=False)
+        self.pc.session_chain = AsyncMock(return_value=[LOCAL])
+        original_call = self.pc.call
+        async def call(method, path, **kwargs):
+            if path == '/session/status': return {self.session: {'type': 'retry', 'message': 'Synthetic model unavailable'}}
+            return await original_call(method, path, **kwargs)
+        ticks = iter([100, 121])
+        with patch.object(self.pc, 'call', call), patch('desktop.agent.pc.asyncio.sleep', new=AsyncMock()), \
+             patch('desktop.agent.pc.time', SimpleNamespace(monotonic=lambda: next(ticks), time=time.time)):
+            await self.pc.watch(self.session)
+        self.assertEqual(self.pc.record(self.session)['state'], 'error')
+        self.assertIn('Synthetic model unavailable', self.pc.record(self.session)['failure_reason'])
+        view = await self.pc.view(self.session)
+        self.assertTrue(any(i['kind'] == 'error' and 'no available fallback' in i['text'] for i in view['items']))
+        await self.pc.send(self.session, 'Try again')
+        self.assertIsNone(self.pc.record(self.session)['failure_reason'])
+
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.pc = FakePc(Path(self.tmp.name))

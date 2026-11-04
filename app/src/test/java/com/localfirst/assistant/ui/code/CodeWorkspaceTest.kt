@@ -13,6 +13,9 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.performScrollTo
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.localfirst.assistant.settings.AppearanceSettings
 import com.localfirst.assistant.settings.ThemeMode
@@ -43,6 +46,38 @@ class CodeWorkspaceTest {
     @get:Rule val compose = createComposeRule()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     @After fun close() { scope.cancel() }
+
+    @Test fun extensionReviewRequiresExplicitTrustAndDisplaysTheExactRevision() {
+        val pc = FakePc()
+        val code = CodeWorkspace(scope, pc::request)
+        val digest = "a".repeat(64)
+        val draft = JSONObject().put("id", "fixture").put("kind", "skill").put("name", "review-python").put("version", "1")
+            .put("description", "Review Python changes").put("content", "Inspect the tests and verify error handling.").put("event", "tool.execute.after").put("digest", digest)
+        compose.setContent { MaterialTheme { CodeExtensionEditor(draft, CodeState(), code) {} } }
+        compose.waitForIdle()
+        compose.onNodeWithText("Enable reviewed revision").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Trust this extension revision").performScrollTo().performClick()
+        compose.onNodeWithText("Enable reviewed revision").assertIsEnabled()
+        capture("code-extension-review")
+        compose.onNodeWithText("Enable reviewed revision").performClick()
+        compose.waitForIdle()
+        assertEquals(digest, pc.calls.first { it.first.endsWith("/fixture/approve") }.third!!.getString("digest"))
+    }
+
+    @Test fun busyTasksAcceptQueuedMessagesWithoutBypassingThePendingApproval() {
+        val pc = FakePc()
+        val code = CodeWorkspace(scope, pc::request)
+        code.openTask("0123456789ab")
+        compose.waitForIdle()
+        compose.setContent { MaterialTheme { CodeTaskScreen(code.state.collectAsState().value, code) } }
+        compose.onNodeWithText("Queue").performClick()
+        compose.onNodeWithText("Queue a follow-up").performTextInput("After this turn, add regression tests")
+        capture("code-task-queue")
+        compose.onNodeWithContentDescription("Send queue").performClick()
+        compose.waitForIdle()
+        assertTrue(pc.calls.any { it.first.endsWith("/queue") && it.second == "POST" && it.third?.getString("prompt") == "After this turn, add regression tests" })
+        assertTrue(pc.calls.none { it.first.startsWith("/workspace/pc/permissions/") })
+    }
 
     private class FakePc {
         val calls = mutableListOf<Triple<String, String, JSONObject?>>()

@@ -10,6 +10,35 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CodeToolsTest {
+    @Test fun savedProjectsAndQueueSteerDeliveryDoNotCreateAnotherRepository() = runBlocking {
+        val gateway = Gateway()
+        val tools = codeTools(gateway).associateBy { it.name }
+        tools.getValue(CodeToolNames.START).execute(buildJsonObject { put("project", "abcdef123456"); put("prompt", "Fix") })
+        assertEquals(1, gateway.calls.size)
+        assertEquals("abcdef123456", Json.parseToJsonElement(gateway.calls.single().third!!).jsonObject["project"]!!.jsonPrimitive.content)
+        for (delivery in listOf("queue", "steer")) {
+            tools.getValue(CodeToolNames.FOLLOW_UP).execute(buildJsonObject { put("id", "abcdef123456"); put("prompt", "Next"); put("delivery", delivery) })
+            assertTrue(gateway.calls.last().first.endsWith("/$delivery"))
+        }
+        val count = gateway.calls.size
+        assertTrue(runCatching { tools.getValue(CodeToolNames.FOLLOW_UP).execute(buildJsonObject { put("id", "abcdef123456"); put("prompt", "Next"); put("delivery", "bypass") }) }.isFailure)
+        assertEquals(count, gateway.calls.size)
+    }
+    @Test fun localPlanningAndValidationAreConsistentWithBrowserTools() = runBlocking {
+        val gateway = Gateway()
+        val tool = codeTools(gateway).first { it.name == CodeToolNames.START }
+        tool.execute(buildJsonObject { put("path", "/tmp/example-repo"); put("prompt", "Plan"); put("mode", "plan") })
+        assertEquals("/tmp/example-repo", Json.parseToJsonElement(gateway.calls.first().third!!).jsonObject["path"]!!.jsonPrimitive.content)
+        assertEquals("plan", Json.parseToJsonElement(gateway.calls.last().third!!).jsonObject["mode"]!!.jsonPrimitive.content)
+        gateway.calls.clear()
+        for (args in listOf(
+            buildJsonObject { put("repo", "octo/demo"); put("path", "/tmp/repo"); put("prompt", "Fix") },
+            buildJsonObject { put("path", "../outside"); put("prompt", "Fix") },
+            buildJsonObject { put("repo", "octo/demo"); put("mode", "unsafe"); put("prompt", "Fix") })) {
+            assertTrue(runCatching { tool.execute(args) }.isFailure)
+        }
+        assertTrue(gateway.calls.isEmpty())
+    }
     private class Gateway : WorkspaceGateway {
         val calls = mutableListOf<Triple<String, String, String?>>()
         override suspend fun toolRequest(path: String, method: String, body: String?): String {
@@ -87,6 +116,9 @@ class CodeToolsTest {
         assertEquals(1, json["waiting_for_user"]!!.jsonPrimitive.int)
         assertEquals(listOf("modified src/login.ts +4 -1"), json["files"]!!.jsonArray.map { it.jsonPrimitive.content })
         assertFalse(result.content.contains("npm test output"))
+        assertEquals("stale", json["verification"]!!.jsonObject["state"]!!.jsonPrimitive.content)
+        assertFalse(json["verification"]!!.jsonObject["receipts"]!!.jsonArray[0].jsonObject["current"]!!.jsonPrimitive.boolean)
+        assertFalse(result.content.contains("private saved log"))
         val listed = codeTools(Gateway()).first { it.name == CodeToolNames.LIST }.execute(JsonObject(emptyMap())).content
         assertTrue(listed.contains("octo/demo") && listed.contains("pull/7"))
     }
@@ -108,6 +140,7 @@ class CodeToolsTest {
         val VIEW = """{"id":"0123456789ab","title":"Fix login","repo":"octo/demo","branch":"friday/fix-login-012345","base":"main","state":"busy",
             "session":{"state":"waiting","items":[{"kind":"text","role":"user","text":"Repository: octo/demo"},{"kind":"tool","title":"npm test","output":"npm test output"},
             {"kind":"text","role":"assistant","text":"Done: the login form now validates emails."}],"permissions":[{"id":"per_1"}],"questions":[]},
-            "changes":{"additions":4,"deletions":1,"commits":1,"uncommitted":0,"files":[{"path":"src/login.ts","status":"modified","additions":4,"deletions":1}]},"pr":null}"""
+            "changes":{"additions":4,"deletions":1,"commits":1,"uncommitted":0,"files":[{"path":"src/login.ts","status":"modified","additions":4,"deletions":1}]},"pr":null,
+            "verification":{"state":"stale","receipts":[{"command":"pytest","result":"passed","current":false,"tests":3,"exit":0,"output_excerpt":"private saved log"}]}}"""
     }
 }

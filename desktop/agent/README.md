@@ -1,5 +1,12 @@
 ## Native PC access — 0.18.0
 
+Coding reliability work adds first-turn project trust, bounded coding context,
+explicit command exit evidence, coding-aware compaction, and safer file/diff previews.
+See [assessment, implementation and reproducible validation](../FRIDAY-CODING.md).
+Coding checks now retain private verification records tied to the worktree state;
+both clients distinguish current, failed, stale and unverified evidence. See the
+[comparison with Claude Code, Codex and T3 Code](../FRIDAY-FEATURE-AUDIT.md) for remaining gaps.
+
 FRIDAY also runs OpenCode directly as the PC user, with shell and X11 screenshot/input tools. Phone Settings → Computer access offers Ask every time, Ask before changes (default), and Full access, plus explicit shell allow/deny patterns and a desktop switch. Tasks, exact permissions, questions, cancellation, results and explicit screen preview live in FRIDAY on the phone. Chat PC tools require confirmation and are unavailable in incognito. Free cloud models can receive relevant PC outputs; local fallback is text-only, fixed to background slot 1, and uses the existing GPU/foreground gate. Existing sudo authorization applies; no password is stored or sudo policy changed. Changing access settings stops active work; later human follow-ups refresh the session rules. See [implementation and validation](../FRIDAY-COMPUTER.md).
 
 The older isolated research agent described below remains available for explicit research jobs and existing schedules. Its restrictions describe that subsystem.
@@ -51,3 +58,16 @@ Version 0.13.0 adds `briefing.Briefing`: deterministic, opt-in current-day calen
 The Code composer offers **Automatic** (ranked free cloud models with the existing local fallback) and **Local model** (the running PC model through OpenCode). The API accepts `model_choice: "auto" | "local"` on `POST /workspace/code/tasks`, defaulting to automatic for older clients. Local selection is saved with the session, retained across follow-ups and restarts, and never fails over to cloud. It uses the existing private proxy and GPU gate; tools and permissions stay the same. After a large tool result, the proxy retries a pre-inference Strata context rejection once with the reported remaining output budget (at least 256 tokens), without truncating history. If the request still exceeds context, it returns `context_length_exceeded` so OpenCode can compact. Other validation errors retain their status and response. With Strata the proxy targets Qwen3.8 Flash Next; the OpenCode provider retains its existing `friday-local/qwen3.8-27b` alias.
 
 Task conversations show the actual recorded provider/model history and wall time from the first message. This includes inference, tools, approval waits, fallback and any gaps between follow-ups; it is not pure inference time. Active sessions advance the clock, inactive ones use the last recorded timestamp. `session.timing` includes `started`, `completed`, `elapsed_seconds` and `models`; timestamps use Unix seconds. A completion timestamp requires a recorded final assistant response without an error, rather than idle status alone. For fair comparisons, use fresh tasks with the same prompt, base revision and approval conditions.
+## Coding reliability follow-up
+
+The Code workspace now supports reviewed required checks, existing local Git
+folders, recoverable working-file checkpoints and read-only planning with explicit
+implementation approval. Both Android and browser use the shared UI and contracts.
+See [scope and validation](../FRIDAY-GAP-CLOSURE.md) and the
+[updated comparison audit](../FRIDAY-FEATURE-AUDIT.md) for remaining gaps.
+
+Task queues and steering, independent forks, new-project/setup recipes, GitLab and
+review/CI collaboration, conflict controls, and reviewed skills/plugins/hooks/MCP
+management are described in [Code workspace workflows](../FRIDAY-CODE-WORKSPACE.md).
+These controls share the Android/web implementation; live provider validation limits
+are recorded there.

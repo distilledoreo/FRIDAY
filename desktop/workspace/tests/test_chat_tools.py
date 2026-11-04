@@ -8,7 +8,7 @@ import unittest
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from desktop.workspace.workspace import install
-from desktop.workspace.chat_tools import ChatTools, sources
+from desktop.workspace.chat_tools import ChatTools, sources, _condense_code
 
 
 def chat(text='Remember that I like tea'):
@@ -17,6 +17,42 @@ def chat(text='Remember that I like tea'):
 
 
 class ChatToolTests(unittest.IsolatedAsyncioTestCase):
+    async def test_saved_project_and_queue_steer_routes_preserve_user_selected_delivery(self):
+        made = []
+        async def call(method, path, body=None): made.append((method, path, body)); return {'id': 'task'}
+        tools = ChatTools(self.workspace, call, None, None)
+        await tools.run('start_code_task', {'project': 'abcdef123456', 'prompt': 'Fix'})
+        self.assertEqual(len(made), 1)
+        self.assertEqual(made[0][2]['project'], 'abcdef123456')
+        for delivery in ('queue', 'steer'):
+            await tools.run('send_code_task_message', {'id': 'abcdef123456', 'prompt': 'Next', 'delivery': delivery})
+            self.assertTrue(made[-1][1].endswith('/' + delivery))
+        count = len(made)
+        with self.assertRaises(Exception): await tools.run('send_code_task_message', {'id': 'abcdef123456', 'prompt': 'Next', 'delivery': 'bypass'})
+        self.assertEqual(len(made), count)
+    async def test_local_planning_task_reaches_the_same_project_and_task_api(self):
+        made = []
+        async def call(method, path, body=None):
+            made.append((method, path, body))
+            return {'id': 'project'} if path.endswith('/projects') else {'id': 'task'}
+        tools = ChatTools(self.workspace, call, None, None)
+        await tools.run('start_code_task', {'path': '/tmp/example-repo', 'prompt': 'Plan a fix', 'mode': 'plan'})
+        self.assertEqual(made[0][2], {'path': '/tmp/example-repo'})
+        self.assertEqual(made[1][2]['mode'], 'plan')
+        for bad in ({'repo': 'octo/demo', 'path': '/tmp/repo'}, {'path': '../outside'}, {'repo': 'octo/demo', 'mode': 'unsafe'}):
+            before = len(made)
+            with self.assertRaises(Exception): await tools.run('start_code_task', {**bad, 'prompt': 'Fix'})
+            self.assertEqual(len(made), before)
+
+    def test_code_summary_keeps_verification_without_copying_saved_logs(self):
+        receipt = {'command': 'pytest', 'result': 'passed', 'current': False, 'tests': 3, 'exit': 0,
+                   'output_excerpt': 'private saved log'}
+        condensed = _condense_code({'verification': {'state': 'stale', 'receipts': [receipt] * 20}})
+        self.assertEqual(condensed['verification']['state'], 'stale')
+        self.assertEqual(len(condensed['verification']['receipts']), 5)
+        self.assertFalse(condensed['verification']['receipts'][0]['current'])
+        self.assertNotIn('private saved log', str(condensed))
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.app = FastAPI()
