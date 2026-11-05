@@ -40,7 +40,7 @@ internal fun desktopRequest(
             while (true) {
                 val n = it.read(buffer)
                 if (n < 0) break
-                if (output.size() + n > 30 * 1024 * 1024) throw java.io.IOException("Computer response exceeds 30 MB.")
+                if (output.size() + n > 100 * 1024 * 1024) throw java.io.IOException("Computer response exceeds 100 MB.")
                 output.write(buffer, 0, n)
             }
             output.toByteArray() } ?: ByteArray(0))
