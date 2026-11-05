@@ -46,7 +46,21 @@ fun LibraryScreen(vm: FeatureController, open: (String) -> Unit, attach: (() -> 
     // Library shows the persistent collection in ordinary chats; hosts leave incognito before opening it,
     // so reuse always references a saved file into an ordinary draft and never crosses the private boundary.
     var deleting by remember { mutableStateOf<JsonObject?>(null) }
+    var artifacts by remember { mutableStateOf(false) }
+    var viewing by remember { mutableStateOf<String?>(null) }
+    val artifactState by vm.artifacts.state.collectAsState()
+    if (artifacts) com.localfirst.assistant.ui.artifacts.ArtifactWorkspace(vm.artifacts, open) { artifacts = false }
+    viewing?.let { id -> androidx.compose.ui.window.Dialog(onDismissRequest = { viewing = null }, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxSize()) { Column(Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState())) {
+            TextButton({ viewing = null }) { Text("Close preview") }
+            artifactState.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            if (artifactState.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            artifactState.preview?.takeIf { it.string("source") == id }?.let { com.localfirst.assistant.ui.artifacts.ArtifactPreview(vm.artifacts, it) }
+            TextButton({ open(id) }) { Text("Download original") }
+        } }
+    } }
     ServiceScreen("Library", vm) { state ->
+        item(key = "artifact-entry") { Button({ artifacts = true }) { Text("Documents, apps, slides and sheets") } }
         item(key = "library-controls") { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(state.fileQuery, vm::searchFiles, Modifier.fillMaxWidth(), singleLine = true,
                 label = { Text("Search filenames") }, trailingIcon = { if (state.fileQuery.isNotEmpty()) TextButton({ vm.searchFiles("") }) { Text("Clear") } })
@@ -69,6 +83,10 @@ fun LibraryScreen(vm: FeatureController, open: (String) -> Unit, attach: (() -> 
         items(state.files, key = { it.string("id") }) { file -> FridayCard(Modifier.fillMaxWidth()) {
             ListItem(headlineContent = { Text(file.string("name")) }, supportingContent = { Text("${file.string("size")} bytes · ${file.string("mime")}") },
                 modifier = Modifier.clickable { open(file.string("id")) }, trailingContent = { MoreActions(buildList {
+                    val suffix = file.string("name").substringAfterLast('.').lowercase()
+                    if (suffix in listOf("pdf", "docx", "pptx", "png", "jpg", "jpeg", "webp")) add("Preview" to { viewing = file.string("id"); vm.artifacts.preview(file.string("id")) })
+                    if (suffix in listOf("docx", "md", "txt", "xlsx", "csv", "tsv", "pptx")) add("Import as editable artifact" to { artifacts = true; vm.artifacts.import(file.string("id")) })
+                    if (suffix == "zip") add("Restore artifact backup as copies" to { artifacts = true; vm.artifacts.restoreBackup(file.string("id")) })
                     if (reuse != null) add("Add to chat" to { reuse(file.string("id")) })
                     add("Delete" to { deleting = file })
                 }) })

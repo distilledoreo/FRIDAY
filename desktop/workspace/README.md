@@ -2,6 +2,8 @@
 
 This extension shares the existing desktop assistant gateway and its bearer token. It adds saved chat synchronization, file storage, isolated calculations, a browser client, resumable research, and scheduled jobs. It has no connected-account integrations.
 
+For persistent rich documents, interactive apps, slides, sheets, revision recovery and isolated Office exports, see [Editable artifacts](ARTIFACTS.md).
+
 ## Install
 
 Install `requirements.txt` into the gateway's Python environment and install the `bubblewrap` package. Copy this directory to `api/workspace`. At the end of the gateway module:

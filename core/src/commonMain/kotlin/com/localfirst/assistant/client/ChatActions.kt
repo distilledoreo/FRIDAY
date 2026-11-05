@@ -33,15 +33,17 @@ object ChatEdits {
 }
 
 /** A document drafted from an answer: edited beside the chat and saved to the computer's files. */
-data class CanvasDoc(val title: String, val body: String) {
+data class CanvasDoc(val title: String, val body: String, val kind: String = "document") {
     fun named(title: String) = copy(title = title.take(80))
-    fun edited(body: String) = copy(body = body.take(50000))
+    fun edited(body: String) = copy(body = body)
     val fileName get() = safeFileName(title, "Draft", "md")
 
     companion object {
         /** Opens an answer as plain text; null when there is nothing to edit. */
         fun from(chatTitle: String, answer: String): CanvasDoc? =
-            ReplyText.plain(answer).trim().take(20000).takeIf { it.isNotBlank() }?.let { CanvasDoc(chatTitle.take(80), it) }
+            (if (com.localfirst.assistant.genui.UiCompiler.isInterface(answer)) answer else ReplyText.plain(answer)).trim().takeIf { it.isNotBlank() }?.let {
+                CanvasDoc(chatTitle.take(80), it, if (com.localfirst.assistant.genui.UiCompiler.isInterface(answer)) "app" else "document")
+            }
     }
 }
 

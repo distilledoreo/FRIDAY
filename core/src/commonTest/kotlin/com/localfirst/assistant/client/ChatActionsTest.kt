@@ -173,13 +173,13 @@ class ChatActionsTest {
 
     @Test fun canvasSavesToLibraryAndFeedbackBecomesOnePreference() = runTest {
         val pc = Pc().apply { chat(messages = conversation) }
-        pc.routes["POST /workspace/create-file"] = { body -> buildJsonObject { put("id", "f"); put("name", body!!.getValue("name")) } }
+        pc.routes["POST /workspace/artifacts"] = { body -> buildJsonObject { put("id", "f"); put("title", body!!.getValue("title")) } }
         val vm = connected(pc)
         vm.connect("", "token")!!.join(); vm.select("a")
         vm.openCanvas("## Draft\n**Bold** text")
         assertEquals("Original", vm.state.value.canvas!!.title)
         vm.updateCanvas("Trip plan", "Body"); vm.saveCanvas()!!.join()
-        assertEquals("Trip plan.md", pc.calls.last { it.first == "/workspace/create-file" }.second!!["name"]!!.jsonPrimitive.content)
+        assertEquals("Trip plan", pc.calls.last { it.first == "/workspace/artifacts" }.second!!["title"]!!.jsonPrimitive.content)
         assertNull(vm.state.value.canvas); assertNotNull(vm.state.value.notice)
         vm.feedback(5, "Two", liked = false)!!.join(); vm.feedback(5, "Two", liked = false)!!.join()
         assertEquals(1, pc.facts.size)

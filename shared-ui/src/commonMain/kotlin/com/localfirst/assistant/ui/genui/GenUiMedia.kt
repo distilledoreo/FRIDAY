@@ -64,6 +64,7 @@ data class ImageHit(val image: String, val thumbnail: String, val title: String,
 interface AppBlockStore {
     fun get(id: String): String?
     fun set(id: String, json: String)
+    fun report(message: String) {}
 }
 
 private fun parseRatio(text: String?): Float? = text?.split(':', '/')?.mapNotNull { it.trim().toFloatOrNull() }?.takeIf { it.size == 2 && it[1] > 0 }?.let { it[0] / it[1] }

@@ -51,13 +51,13 @@ fun CanvasSheet(
     onSave: () -> Unit,
     onCopy: (String) -> Unit,
     onClose: () -> Unit,
-    saveLabel: String = "Save to files",
+    saveLabel: String = "Save artifact",
     onDownload: (() -> Unit)? = null,
 ) {
     FridaySheet(onDismiss = onClose) { _, _, close ->
         // Scrolls so the actions stay reachable when the sheet is short.
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Canvas", style = MaterialTheme.typography.titleMedium)
+            Text(if (doc.kind == "app") "Save interactive app source" else "Canvas", style = MaterialTheme.typography.titleMedium)
             OutlinedTextField(value = doc.title, onValueChange = onTitle, label = { Text("Title") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(value = doc.body, onValueChange = onBody, modifier = Modifier.fillMaxWidth().heightIn(min = 200.dp), minLines = 8, maxLines = 30)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -554,8 +554,8 @@ class WorkspaceController(
         val doc = state.value.canvas?.takeIf { it.body.isNotBlank() } ?: return null
         return action { identity ->
             if (state.value.incognito) save(doc.fileName, "text/markdown", doc.body.encodeToByteArray())
-            else repository.gateway.request("/workspace/create-file", "POST", buildJsonObject { put("name", doc.fileName); put("content", doc.body) })
-            if (identity == epoch) mutable.update { it.copy(canvas = null, notice = if (it.incognito) "Draft downloaded as ${doc.fileName}." else "Draft saved to ${doc.fileName} in Library.") }
+            else repository.gateway.request("/workspace/artifacts", "POST", buildJsonObject { put("request", com.localfirst.assistant.artifacts.artifactKey()); put("title", doc.title); put("project", state.value.projectId.orEmpty()); put("source", state.value.activeId?.let { "chat:$it" }.orEmpty()); put("kind", doc.kind); if(doc.kind == "app") put("content", buildJsonObject { put("version", 1); put("format", "genui"); put("source", doc.body) }) else put("text", doc.body) })
+            if (identity == epoch) mutable.update { it.copy(canvas = if (it.canvas == doc) null else it.canvas, notice = if (it.incognito) "Draft downloaded as ${doc.fileName}." else "Draft saved as an editable artifact in Library.") }
         }
     }
     /** Downloads the canvas as a Markdown file on this device. */

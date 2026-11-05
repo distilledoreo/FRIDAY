@@ -31,6 +31,7 @@ fun main() = onWasmReady {
             save = { name, mime, bytes -> downloadBytes(name, mime, bytes) }, inflate = browserInflate, savedSignIn = BrowserSavedSignIn, draftRecovery = BrowserDraftRecovery) }
         val state by vm.state.collectAsState()
         val features = remember { FeatureController(gateway, scope, browserOAuth = true) }
+        var linkedArtifact by remember { mutableStateOf(false) }
         val briefing = remember { BriefingController(gateway, scope) }
         val code = remember { CodeWorkspace(scope, { path, method, body -> gateway.request(path, method, body?.json()).toString() }) }
         val featureState by features.state.collectAsState()
@@ -139,10 +140,16 @@ fun main() = onWasmReady {
         CompositionLocalProvider(LocalOAuthLauncher provides { url -> oauthWindow = window.open(url, "friday-account-sign-in", "popup,width=600,height=750") }, LocalFeatureImages provides images::path, LocalFeatureVideos provides { path -> videos.url(path) }, LocalReplyImages provides images, LocalReplyApps provides apps, LocalUriHandler provides object : UriHandler {
             override fun openUri(uri: String) {
                 val artifact = Regex("^assistant://artifact/([a-f0-9]{32})$").matchEntire(uri)
-                if (artifact != null) vm.artifact(artifact.groupValues[1])
+                val editable = com.localfirst.assistant.artifacts.editableArtifactId(uri)
+                if (editable != null) {
+                    if (state.incognito) vm.reportError("Leave incognito to open saved artifacts.")
+                    else { features.artifacts.open(editable); linkedArtifact = true }
+                } else if (artifact != null) vm.artifact(artifact.groupValues[1])
                 else if (uri.startsWith("https://") || uri.startsWith("http://")) window.open(uri, "_blank", "noopener,noreferrer")
             }
-        }) { AssistantTheme(state.preferences) { WorkspaceApp(vm, state, features, code,
+        }) { AssistantTheme(state.preferences) {
+        com.localfirst.assistant.ui.artifacts.ArtifactWorkspaceHost(features.artifacts, linkedArtifact && state.connected, vm::artifact, { linkedArtifact = false }) {
+        WorkspaceApp(vm, state, features, code,
             onAttach = { pickBrowserFiles(scope, vm) }, onLibraryUpload = { pickBrowserFiles(scope, vm, false) },
             onDictate = { audio.dictate(vm, voice.active) }, dictating = dictating,
             voice = voiceState, voiceControls = VoiceControls(toggle = { if (voice.active) voice.close() else scope.launch {
@@ -181,7 +188,7 @@ fun main() = onWasmReady {
             val legacy = remember { legacyChats() }
             if (legacy.isNotEmpty()) androidx.compose.material3.OutlinedButton({ vm.importLegacy(legacy, ::importId) }, enabled = !state.busy) { androidx.compose.material3.Text("Import ${legacy.size} older browser chats") }
             androidx.compose.material3.Text("Import copies older local chats into shared history. The originals stay in this browser.")
-        } } }
+        } } } }
     }
 }
 

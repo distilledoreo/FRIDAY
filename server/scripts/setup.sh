@@ -18,7 +18,7 @@ mkdir -p "$DEST/api" "$DEST/searxng/config" "$DEST/maintenance" "$DEST/llama" "$
 # Gateway core from server/; selected feature modules from desktop/.
 cp "$HERE"/api/{app.py,prompt_cache.py,requirements.txt} "$DEST/api/"
 for module in $MODULES; do
-  rsync -a --delete --exclude tests --exclude __pycache__ --exclude config.json "$APP_REPO/desktop/$module/" "$DEST/api/$module/"
+  rsync -a --delete --exclude tests --exclude __pycache__ --exclude node_modules --exclude config.json "$APP_REPO/desktop/$module/" "$DEST/api/$module/"
 done
 cp "$HERE"/compose.yml "$HERE"/test.sh "$DEST/"
 cp "$HERE"/maintenance/memory-backup.py "$HERE"/maintenance/api-watchdog.py "$DEST/maintenance/"

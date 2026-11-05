@@ -654,6 +654,7 @@ class Workspace:
         # Reaches the gateway's own authenticated routes; set by the host so chats can use the Android tool set.
         self.loopback = None
         self._analysis_lock = threading.Lock()
+        self._artifact_format_lock = threading.Lock()
         self._sandbox_check = (0, False, "Not checked")
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -675,6 +676,8 @@ class Workspace:
                                ('pending', 'TEXT'), ('decisions', 'TEXT'), ('options', 'TEXT')]:
                 if name not in columns:
                     db.execute(f'ALTER TABLE jobs ADD COLUMN {name} {kind}')
+        from .artifacts import Artifacts
+        self.artifacts = Artifacts(self)
 
     def db(self):
         db = sqlite3.connect(self.root / 'workspace.sqlite', timeout=10)
@@ -683,6 +686,8 @@ class Workspace:
         return db
 
     def sync(self, item_id, revision, payload, deleted=False):
+        if item_id.startswith('artifact-'):
+            raise HTTPException(400, 'Artifact metadata is managed by the artifact service')
         if len(item_id) > 100 or not item_id or not all(c.isalnum() or c in '-_' for c in item_id):
             raise HTTPException(400, 'Invalid item id')
         if item_id.startswith('preferences-') and not deleted:
@@ -770,7 +775,7 @@ class Workspace:
         name = Path(unquote(name).replace('\\', '/')).name[:160] or 'file'
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
-            total = db.execute('SELECT COALESCE(SUM(size),0) FROM files').fetchone()[0]
+            total = self.artifacts.make_room(db, len(data))
             if total + len(data) > MAX_TOTAL:
                 raise HTTPException(507, 'Workspace file quota reached. Delete unused files.')
             file_id = uuid.uuid4().hex
@@ -785,7 +790,7 @@ class Workspace:
         return {'id': file_id, 'name': name, 'mime': mime, 'size': len(data), 'url': f'assistant://artifact/{file_id}'}
 
     def list_files(self, q='', kind='all', sort='recent', limit=200, offset=0, paged=False):
-        clauses, values = [], []
+        clauses, values = ["id NOT IN (SELECT file FROM artifact_exports WHERE format='preview')"], []
         if q.strip():
             clauses.append('INSTR(CASEFOLD(name), ?) > 0')
             values.append(q.strip().casefold())
@@ -1033,6 +1038,8 @@ class JobRequest(BaseModel):
 def install(app, auth, root, model, search, fetch):
     workspace = Workspace(root)
     router = APIRouter(prefix='/workspace', dependencies=auth)
+    from .artifacts import enable as enable_artifacts
+    enable_artifacts(router, workspace, model)
     running = {}
     phases = {}
     from .model_connections import enable as enable_connections
@@ -1050,6 +1057,11 @@ const q=new URLSearchParams(location.search);history.replaceState(null,'',locati
 if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('code'),state:q.get('state'),error:q.get('error')},location.origin);window.close();}
 </script>""", headers={'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
             'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"})
+
+    @app.get('/artifact-editor.html', include_in_schema=False)
+    async def artifact_editor():
+        return FileResponse(Path(__file__).with_name('editor') / 'dist/artifact-editor.html', media_type='text/html',
+                            headers={'Cache-Control': 'no-cache', 'Referrer-Policy': 'no-referrer'})
 
     # Public application assets contain no user data; workspace APIs retain bearer authentication.
     # Mounted after the callback route, which the /friday mount would otherwise answer with a 404.
@@ -1172,6 +1184,8 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
     async def remove(file_id: str):
         info = workspace.file(file_id)
         with workspace.db() as db:
+            if db.execute('SELECT 1 FROM artifact_links WHERE file=?', (file_id,)).fetchone():
+                raise HTTPException(409, 'This file is retained by an artifact revision or import')
             db.execute('DELETE FROM files WHERE id=?', (file_id,))
         (workspace.files / info['id']).unlink(missing_ok=True)
         return {'deleted': True}

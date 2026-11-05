@@ -204,12 +204,19 @@ fun ChatScreen(viewModel: ChatViewModel) {
     BackHandler(enabled = drawerState.isOpen) { scope.launch { if(palette.reducedMotion)drawerState.snapTo(DrawerValue.Closed)else drawerState.animateTo(DrawerValue.Closed,tween(220)) } }
 
     val defaultUriHandler = LocalUriHandler.current
-    val workspaceUriHandler = remember(defaultUriHandler, viewModel) { object : UriHandler {
+    var linkedArtifact by remember { mutableStateOf(false) }
+    val workspaceUriHandler = object : UriHandler {
         override fun openUri(uri: String) {
-            if (uri.startsWith("assistant://artifact/")) viewModel.openArtifact(uri) else defaultUriHandler.openUri(uri)
+            val id = com.localfirst.assistant.artifacts.editableArtifactId(uri)
+            if (id != null) {
+                if (state.privacy.incognito) Toast.makeText(context, "Leave incognito to open saved artifacts.", Toast.LENGTH_SHORT).show()
+                else { viewModel.features.artifacts.open(id); linkedArtifact = true }
+            } else if (uri.startsWith("assistant://artifact/")) viewModel.openArtifact(uri) else defaultUriHandler.openUri(uri)
         }
-    } }
+    }
     CompositionLocalProvider(LocalUriHandler provides workspaceUriHandler) {
+    CompositionLocalProvider(com.localfirst.assistant.ui.workspace.LocalFeatureImages provides viewModel::loadFeatureImage) {
+    com.localfirst.assistant.ui.artifacts.ArtifactWorkspaceHost(viewModel.features.artifacts, linkedArtifact, { viewModel.openArtifact("assistant://artifact/$it") }, { linkedArtifact = false }) {
     Box(modifier = Modifier.fillMaxSize().pointerInput(backGestureInset,edgeWidth,palette.reducedMotion) {
         // Listen as an ancestor without stealing taps; leave Android's back strip to the system.
         awaitEachGesture {
@@ -462,6 +469,8 @@ fun ChatScreen(viewModel: ChatViewModel) {
 
     if (state.showWorkspace) WorkspacePage(state, viewModel)
     com.localfirst.assistant.ui.code.CodeScreen(viewModel.code)
+    }
+    }
     }
     if (dashboardOpen && !state.showWorkspace && !state.showSettings) {
         FridaySheet(onDismiss={dashboardOpen=false}) { expanded,toggle,close ->

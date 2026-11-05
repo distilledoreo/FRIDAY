@@ -33,7 +33,7 @@ internal actual fun AppBlockView(raw: UiRaw) {
         val html = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">
 <style>:root{--viz-text:#25252b;--viz-muted:#666;--viz-card:#fff;--viz-panel:#eee;--viz-border:#ddd;--viz-accent:#b66348;--viz-bg:#fff;--viz-danger:#ba1a1a}body{font:15px system-ui;margin:12px}</style>
-<script>let savedState=$initial;window.friday={sendMessage:t=>parent.postMessage({kind:'friday-message',text:String(t)},'*'),copy:t=>parent.postMessage({kind:'friday-copy',text:String(t)},'*'),state:{get:()=>savedState,set:v=>{savedState=v;parent.postMessage({kind:'friday-state',json:JSON.stringify(v)},'*')}};</script></head><body>${raw.source}</body></html>"""
+<script>window.addEventListener('error',e=>parent.postMessage({kind:'friday-error',text:String(e.message).slice(0,1000)},'*'));window.addEventListener('unhandledrejection',e=>parent.postMessage({kind:'friday-error',text:String(e.reason).slice(0,1000)},'*'));let savedState=$initial;window.friday={sendMessage:t=>parent.postMessage({kind:'friday-message',text:String(t)},'*'),copy:t=>parent.postMessage({kind:'friday-copy',text:String(t)},'*'),state:{get:()=>savedState,set:v=>{savedState=v;parent.postMessage({kind:'friday-state',json:JSON.stringify(v)},'*')}};</script></head><body>${raw.source}</body></html>"""
         val blob = js("new Blob([html], {type:'text/html'})") as org.w3c.files.Blob
         val url = org.w3c.dom.url.URL.createObjectURL(blob); frame.src = url
         val listener: (Event) -> Unit = { event ->
@@ -41,6 +41,7 @@ internal actual fun AppBlockView(raw: UiRaw) {
             if (message.source == frame.contentWindow) {
                 val data = message.data
                 when(data?.kind as? String) {
+                    "friday-error" -> context.appBlocks?.report((data.text as? String).orEmpty().take(1000))
                     "friday-message" -> { val text = (data.text as? String).orEmpty().take(4000); if (text.isNotBlank()) { pending = text; open = false } }
                     "friday-copy" -> context.act(UiAction.Copy((data.text as? String).orEmpty().take(20000)))
                     "friday-state" -> (data.json as? String)?.takeIf { it.length <= 200000 }?.let { runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it) }.getOrNull()?.let { value -> context.appBlocks?.set(id, value.toString()) } }

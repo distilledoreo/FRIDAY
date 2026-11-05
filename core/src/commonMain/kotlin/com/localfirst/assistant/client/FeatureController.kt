@@ -31,7 +31,8 @@ data class FeatureState(
 private val TERMINAL = setOf("completed", "failed", "cancelled")
 
 /** Portable service orchestration; optional PC services report their own availability per screen. */
-class FeatureController(val gateway: WorkspaceGateway, private val scope: CoroutineScope, private val browserOAuth: Boolean = false) {
+class FeatureController(val gateway: WorkspaceGateway, private val scope: CoroutineScope, private val browserOAuth: Boolean = false, drafts: com.localfirst.assistant.artifacts.ArtifactDrafts? = null) {
+    val artifacts = com.localfirst.assistant.artifacts.ArtifactController(gateway, scope, drafts)
     private val mutable = MutableStateFlow(FeatureState())
     val state = mutable.asStateFlow()
     private var epoch = 0
@@ -52,7 +53,7 @@ class FeatureController(val gateway: WorkspaceGateway, private val scope: Corout
         return if (working) 3_000 else 30_000
     }
     private var filesLoadedAt = 0L
-    fun reset() { epoch++; operation?.cancel(); fileGeneration++; fileOperation?.cancel(); mutable.value = FeatureState() }
+    fun reset() { artifacts.reset(); epoch++; operation?.cancel(); fileGeneration++; fileOperation?.cancel(); mutable.value = FeatureState() }
     fun dismissError() { mutable.update { it.copy(error = null) } }
     fun open(page: String, taskId: String? = null, sessionId: String? = null) {
         fileGeneration++; fileOperation?.cancel(); eventCursor = 0

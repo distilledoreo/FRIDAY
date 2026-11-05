@@ -48,6 +48,7 @@ class ChatPrivacyTest {
         assertEquals(1, executed)
         assertFalse(privacy.copy(freshSlate = true).allowsTool("search_memory"))
         assertFalse(privacy.copy(freshSlate = true).recall)
+        listOf("list_artifacts", "read_artifact", "export_artifact", "create_artifact", "propose_artifact_edit").forEach { assertFalse(privacy.allowsTool(it)) }
         assertFalse(privacy.allowsTool("propose_agent_task"))
         assertFalse(privacy.allowsTool("list_agent_activity"))
         assertFalse(privacy.allowsTool("get_agent_report"))

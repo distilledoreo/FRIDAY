@@ -67,7 +67,9 @@ private class AppBridge(
     private val onCopy: (String) -> Unit,
     private val load: () -> String?,
     private val save: (String) -> Unit,
+    private val report: (String) -> Unit,
 ) {
+    @JavascriptInterface fun error(message: String) = report(message.take(1000))
     @JavascriptInterface fun resize(height: Int) = onResize(height)
     @JavascriptInterface fun sendMessage(text: String) = onMessage(text.take(4_000))
     @JavascriptInterface fun copy(text: String) = onCopy(text.take(20_000))
@@ -98,6 +100,7 @@ input,select,textarea{font:inherit;color:var(--viz-text);background:var(--viz-ca
 window.friday={sendMessage:function(t){FridayHost.sendMessage(String(t))},copy:function(t){FridayHost.copy(String(t))},
 state:{get:function(){try{return JSON.parse(FridayHost.loadState())}catch(e){return null}},set:function(v){FridayHost.saveState(JSON.stringify(v))}}};
 window.openai=window.friday;
+window.addEventListener('error',e=>FridayHost.error(String(e.message)));window.addEventListener('unhandledrejection',e=>FridayHost.error(String(e.reason)));
 function __fridayHeight(){FridayHost.resize(Math.ceil(document.documentElement.scrollHeight))}
 window.addEventListener('load',__fridayHeight);new ResizeObserver(__fridayHeight).observe(document.documentElement);
 </script></head><body>${raw.source}</body></html>"""
@@ -151,6 +154,7 @@ internal actual fun AppBlockView(raw: UiRaw) {
                     onCopy = { text -> main.post { clipboard.setText(androidx.compose.ui.text.AnnotatedString(text)) } },
                     load = { context.appBlocks?.get(id) },
                     save = { json -> context.appBlocks?.set(id, json) },
+                    report = { message -> main.post { context.appBlocks?.report(message) } },
                 ), "FridayHost")
                 loadDataWithBaseURL("https://appblock.invalid/", document, "text/html", "utf-8", null)
             }

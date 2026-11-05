@@ -241,7 +241,17 @@ class ChatViewModel(
         override fun lock() {}
         override suspend fun request(path: String, method: String, body: kotlinx.serialization.json.JsonObject?) =
             com.localfirst.assistant.client.wireJson.parseToJsonElement((workspace ?: error("Computer unavailable")).request(path, method, body?.let { JSONObject(it.toString()) }))
-    }, viewModelScope)
+    }, viewModelScope, drafts = app?.let { context -> object : com.localfirst.assistant.artifacts.ArtifactDrafts {
+        private fun file(id: String): File { require(Regex("[a-f0-9]{32}").matches(id)); return File(context.filesDir, "artifact-drafts/$id.json") }
+        override fun read(id: String): kotlinx.serialization.json.JsonObject? = runCatching { com.localfirst.assistant.client.wireJson.parseToJsonElement(file(id).readText()) as kotlinx.serialization.json.JsonObject }.getOrNull()
+        override fun write(id: String, draft: kotlinx.serialization.json.JsonObject?) {
+            val target = file(id)
+            if (draft == null) { target.delete(); return }
+            target.parentFile?.mkdirs()
+            val temporary = File(target.parentFile, "$id.tmp"); temporary.writeText(draft.toString())
+            check(temporary.renameTo(target)) { "Could not save draft recovery" }
+        }
+    } })
     /** Decoded workspace images by path and size; galleries scroll tiles in and out of view, and each decode costs. */
     private val featureImages = object : android.util.LruCache<String, androidx.compose.ui.graphics.ImageBitmap>(
         (Runtime.getRuntime().maxMemory() / 8).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()) {
@@ -1417,13 +1427,13 @@ class ChatViewModel(
 
     /** Opens an answer in the canvas editor. */
     fun openCanvas(text: String) {
-        val plain = com.localfirst.assistant.presentation.ReplyText.plain(text).trim().take(20000)
-        if (plain.isBlank() || _state.value.busy) return
-        _state.update { it.copy(canvas = CanvasDoc(it.title.take(80), plain)) }
+        if (_state.value.busy) return
+        val doc = CanvasDoc.from(_state.value.title, text) ?: return
+        _state.update { it.copy(canvas = doc) }
     }
 
     fun updateCanvas(title: String, body: String) {
-        _state.update { it.copy(canvas = it.canvas?.copy(title = title.take(80), body = body.take(50000))) }
+        _state.update { it.copy(canvas = it.canvas?.copy(title = title.take(80), body = body)) }
     }
 
     fun closeCanvas() { _state.update { it.copy(canvas = null) } }
@@ -1434,10 +1444,10 @@ class ChatViewModel(
         if (doc.body.isBlank() || _state.value.workspaceBusy || _state.value.privacy.incognito) return
         workspaceAction {
             val name = (doc.title.ifBlank { "Draft" }.replace(Regex("[^A-Za-z0-9 _-]"), "").trim().ifBlank { "Draft" }.take(80) + ".md")
-            workspace?.request("/workspace/create-file", "POST", JSONObject().put("name", name).put("content", doc.body))
+            workspace?.request("/workspace/artifacts", "POST", JSONObject().put("request", java.util.UUID.randomUUID().toString()).put("title", doc.title).put("project", _state.value.projectId.orEmpty()).put("source", _state.value.conversationId?.let { "chat:$it" }.orEmpty()).put("kind", doc.kind).apply { if (doc.kind == "app") put("content", JSONObject().put("version", 1).put("format", "genui").put("source", doc.body)) else put("text", doc.body) })
                 ?: error("Computer unavailable.")
-            _state.update { it.copy(canvas = null) }
-            "Draft saved to $name."
+            _state.update { it.copy(canvas = if (it.canvas == doc) null else it.canvas) }
+            "Draft saved as an editable artifact in Library."
         }
     }
 

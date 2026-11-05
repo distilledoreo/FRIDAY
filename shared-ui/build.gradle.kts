@@ -27,6 +27,7 @@ kotlin {
 }
 android {
     namespace = "com.localfirst.assistant.shared.ui"
+    sourceSets["main"].assets.srcDir("../desktop/workspace/editor/dist")
     compileSdk = 35
     defaultConfig { minSdk = 26 }
     compileOptions {
