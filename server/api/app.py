@@ -56,6 +56,8 @@ auth = [Depends(require_token)]
 
 @app.get("/health")
 async def health():
+    from workspace.integration import context_managed
+
     async def up(client: httpx.AsyncClient, url: str) -> bool:
         try:
             return (await client.get(url, timeout=3.0)).status_code < 500
@@ -67,7 +69,11 @@ async def health():
         "search": await up(http, f"{SEARXNG_URL}/healthz"),
         "fetch": await up(http, f"{CRAWL4AI_URL}/health"),
     }
-    return JSONResponse({"ok": all(status.values()), **status}, status_code=200 if all(status.values()) else 503)
+    # Whether the model server bounds the context itself. Clients that see True send the
+    # whole history and let ORCHID decide; False means they must trim to fit before sending.
+    managed = context_managed()
+    return JSONResponse({"ok": all(status.values()), "context_managed": managed, **status},
+                        status_code=200 if all(status.values()) else 503)
 
 
 # ---- chat -----------------------------------------------------------------

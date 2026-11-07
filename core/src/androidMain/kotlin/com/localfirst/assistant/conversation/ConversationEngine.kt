@@ -28,6 +28,14 @@ import kotlinx.serialization.json.JsonPrimitive
  */
 class ConversationEngine(
     private val maxToolRounds: Int = DEFAULT_MAX_TOOL_ROUNDS,
+    /**
+     * True when the model server bounds the context window itself (the ORCHID gateway).
+     * The whole history is then sent untouched — no turn is dropped and no tool result or
+     * attachment is truncated — because ORCHID decides what the model sees. False is the
+     * safety trim for a server that does not (llama.cpp runs with --no-context-shift), so
+     * requests still fit its window.
+     */
+    var contextManaged: Boolean = false,
 ) {
     init {
         require(maxToolRounds >= 1) { "maxToolRounds must be at least 1." }
@@ -318,35 +326,44 @@ class ConversationEngine(
     internal fun outboundMessages(systemPrompt: String, messages: List<Message>, note: String? = null, recall: String? = null): List<Message> {
         // Keep complete user turns, including all associated tool calls/results.
         // The on-device archive remains complete and searchable with search_history.
-        val starts = messages.indices.filter { messages[it] is Message.User }
-        // Compact sizes are the same for equal messages, so one pass up front serves every trim
-        // candidate below without re-running compactPhoneState on each.
-        val compactedLength = HashMap<Message, Int>()
-        for (m in messages) {
-            if (m is Message.ToolResult && m.name in PhoneUseToolNames.SCREEN && (m.success || m.image != null)) {
-                compactedLength[m] = compactPhoneState(m.content).length
-            }
-        }
         var start = 0
-        // Budget what is sent, not what is stored: tool results and attachment text are truncated
-        // before they leave, so measuring the stored messages over-counted by every tool result's
-        // full size and dropped the turn before it even though it fit.
-        var length = sentLength(messages, 0, compactedLength)
-        for (next in starts.drop(1)) {
-            if (length <= OUTBOUND_CHARS) break
-            start = next
-            length = sentLength(messages, next, compactedLength)
+        if (!contextManaged) {
+            // Compact sizes are the same for equal messages, so one pass up front serves every trim
+            // candidate below without re-running compactPhoneState on each.
+            val compactedLength = HashMap<Message, Int>()
+            for (m in messages) {
+                if (m is Message.ToolResult && m.name in PhoneUseToolNames.SCREEN && (m.success || m.image != null)) {
+                    compactedLength[m] = compactPhoneState(m.content).length
+                }
+            }
+            val starts = messages.indices.filter { messages[it] is Message.User }
+            // Budget what is sent, not what is stored: tool results and attachment text are truncated
+            // before they leave, so measuring the stored messages over-counted by every tool result's
+            // full size and dropped the turn before it even though it fit.
+            var length = sentLength(messages, 0, compactedLength)
+            for (next in starts.drop(1)) {
+                if (length <= OUTBOUND_CHARS) break
+                start = next
+                length = sentLength(messages, next, compactedLength)
+            }
         }
         val tail = messages.drop(start)
         // Older phone-use states are stale (their element indices no longer apply) and large. They are
         // shortened in batches of PHONE_STATE_BATCH, so the earlier prompt stays identical between
-        // batches and the server's prompt cache keeps working.
+        // batches and the server's prompt cache keeps working. This is a correctness fix rather than a
+        // context budget, so it still applies when the server bounds the context itself.
         val stale = stalePhoneStates(tail)
         val selected = tail.map { m ->
             when (m) {
-                is Message.ToolResult -> if (m in stale) m.copy(content = compactPhoneState(m.content), image = null) else m.copy(content = m.content.take(TOOL_RESULT_CHARS))
-                is Message.User -> m.copy(attachments = m.attachments.map { it.copy(text = it.text?.take(ATTACHMENT_CHARS), note = if ((it.text?.length ?: 0) > ATTACHMENT_CHARS)
-                    listOfNotNull(it.note, "Model excerpt limited to 24,000 characters. Use execute_python on the workspace file for complete analysis.").joinToString(" ") else it.note) })
+                is Message.ToolResult -> when {
+                    m in stale -> m.copy(content = compactPhoneState(m.content), image = null)
+                    contextManaged -> m
+                    else -> m.copy(content = m.content.take(TOOL_RESULT_CHARS))
+                }
+                is Message.User ->
+                    if (contextManaged) m
+                    else m.copy(attachments = m.attachments.map { it.copy(text = it.text?.take(ATTACHMENT_CHARS), note = if ((it.text?.length ?: 0) > ATTACHMENT_CHARS)
+                        listOfNotNull(it.note, "Model excerpt limited to 24,000 characters. Use execute_python on the workspace file for complete analysis.").joinToString(" ") else it.note) })
                 else -> m
             }
         }

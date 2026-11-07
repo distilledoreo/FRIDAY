@@ -41,6 +41,14 @@ class ConversationSession(
     /** Returns a fresh, transient screen frame when the model explicitly requests one. */
     var capturePhoneScreen: suspend () -> Attachment? = { null }
 
+    /**
+     * Whether the model server bounds the context window itself (the ORCHID gateway).
+     * When true the engine sends the whole history untouched; see [ConversationEngine.contextManaged].
+     */
+    var contextManaged: Boolean
+        get() = engine.contextManaged
+        set(value) { engine.contextManaged = value }
+
     private val messages = initialMessages.toMutableList()
     private val mutex = Mutex()
 

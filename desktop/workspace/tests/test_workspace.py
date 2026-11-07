@@ -1,11 +1,13 @@
 import asyncio
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import time
 import unittest
 import uuid
+from unittest.mock import patch
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -806,3 +808,51 @@ class ThinkingLevelTests(unittest.TestCase):
             w.sync('preferences-thinking', 0, {'preferences': json.dumps({'value': 'MEDIUM'})})
             with self.assertRaises(HTTPException):
                 w.sync('preferences-thinking', 1, {'preferences': json.dumps({'value': 'EXTREME'})})
+
+
+class ContextBudgetTests(unittest.TestCase):
+    """The chat-history budget is skipped entirely when the server bounds the context itself."""
+
+    def _history(self, turns=8):
+        messages = [{'role': 'system', 'content': 'Be useful.'}]
+        for i in range(turns):
+            messages.append({'role': 'user', 'content': f'question {i} ' + 'x' * 12000})
+            messages.append({'role': 'tool_call', 'content': json.dumps({'id': f'c{i}', 'name': 'fetch'})})
+            messages.append({'role': 'tool_result', 'content': f'result {i} ' + 'y' * 4000})
+            messages.append({'role': 'assistant', 'content': f'answer {i}'})
+        return messages
+
+    def test_context_managed_defaults_off(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('FRIDAY_CONTEXT_MANAGED', None)
+            self.assertFalse(module.context_managed())
+
+    def test_context_managed_reads_the_flag(self):
+        for value, expected in (('1', True), ('true', True), ('YES', True),
+                                ('0', False), ('', False), ('no', False)):
+            with self.subTest(value=value), patch.dict(os.environ, {'FRIDAY_CONTEXT_MANAGED': value}):
+                self.assertEqual(module.context_managed(), expected)
+
+    def test_over_budget_history_is_trimmed_at_user_boundaries(self):
+        messages = self._history()
+        self.assertGreater(len(json.dumps(messages)), 100000)
+        with patch.dict(os.environ, {'FRIDAY_CONTEXT_MANAGED': '0'}):
+            trimmed = module._trim_to_budget(messages)
+        self.assertLess(len(trimmed), len(messages))
+        self.assertLessEqual(len(json.dumps(trimmed)), 100000)
+        # The system prompt and the latest exchange survive, older complete turns do not.
+        self.assertEqual(trimmed[0], messages[0])
+        self.assertEqual(trimmed[-1], messages[-1])
+        self.assertNotIn('question 0', json.dumps(trimmed))
+        self.assertIn(f'question {7}', json.dumps(trimmed))
+        # A tool result never survives ahead of the user turn it belongs to.
+        first_user = next(i for i, m in enumerate(trimmed) if m['role'] == 'user')
+        self.assertEqual(first_user, 1)
+        self.assertTrue(all(m['role'] != 'tool_result' for m in trimmed[:first_user]))
+
+    def test_managed_server_receives_the_whole_history(self):
+        messages = self._history()
+        self.assertGreater(len(json.dumps(messages)), 100000)
+        with patch.dict(os.environ, {'FRIDAY_CONTEXT_MANAGED': '1'}):
+            self.assertTrue(module.context_managed())
+            self.assertEqual(module._trim_to_budget(messages), messages)

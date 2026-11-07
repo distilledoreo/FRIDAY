@@ -72,4 +72,28 @@ class WorkspaceTest {
         assertTrue(outbound.any { it is Message.ToolCall && it.id == "c1" })
         assertFalse((outbound.first() as Message.System).content.contains("Earlier turns were omitted"))
     }
+
+    /**
+     * When the server bounds the context itself (ORCHID), FRIDAY sends everything: no turn is
+     * dropped and no tool result is truncated, because ORCHID decides what the model sees.
+     */
+    @Test fun aManagedServerReceivesTheWholeHistoryUntouched() {
+        val engine = ConversationEngine(contextManaged = true)
+        val first = listOf(Message.User("Where is the office?"), Message.ToolCall("c1", "fetch_page", "{}"),
+            Message.ToolResult("c1", "fetch_page", "p".repeat(72000), true), Message.Assistant("It is on Main Street."))
+        val history = first + listOf(Message.User("And the parking?"))
+        val outbound = engine.outboundMessages("Be useful", history, "Current time")
+
+        // System prompt plus every stored message, in order and unmodified.
+        assertEquals(history.size + 1, outbound.size)
+        val sent = outbound.drop(1).toMutableList()
+        val noted = sent.removeAt(sent.lastIndex) as Message.User
+        assertEquals(history.dropLast(1), sent)
+        // Nothing was truncated: the full 72,000-character result is on the wire.
+        assertEquals(72000, (outbound[3] as Message.ToolResult).content.length)
+        assertFalse((outbound.first() as Message.System).content.contains("Earlier turns were omitted"))
+        // Per-turn context still rides the latest user message rather than the system prompt.
+        assertTrue(noted.content.startsWith("And the parking?"))
+        assertTrue(noted.content.contains("Current time"))
+    }
 }

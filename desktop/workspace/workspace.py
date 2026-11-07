@@ -37,6 +37,31 @@ MAX_FILE = 25 * 1024 * 1024
 MAX_TOTAL = 500 * 1024 * 1024
 
 
+def context_managed():
+    """True when the model server bounds the context window itself (the ORCHID gateway).
+
+    Callers then send the whole history and nothing is trimmed here: ORCHID decides what
+    the model sees. Without it (llama.cpp runs with --no-context-shift) the caller must
+    trim to fit before sending, so the default stays False.
+    """
+    return os.environ.get('FRIDAY_CONTEXT_MANAGED', '').strip().lower() in ('1', 'true', 'yes')
+
+
+def _trim_to_budget(messages, limit=100000):
+    """Drop complete user turns from the front until the payload fits.
+
+    Trim only at user boundaries so a tool call never separates from its result, and retain
+    the latest turn and the system prompt. When the model server bounds the context itself
+    (ORCHID) it owns this decision, so the whole history is returned untouched.
+    """
+    if context_managed():
+        return messages
+    while len(json.dumps(messages)) > limit and sum(m['role'] == 'user' for m in messages) > 1:
+        next_user = next(i for i in range(2, len(messages)) if messages[i]['role'] == 'user')
+        messages = messages[:1] + messages[next_user:]
+    return messages
+
+
 def _is_uuid(value):
     try:
         uuid.UUID(value)
@@ -1530,9 +1555,7 @@ if(window.opener){window.opener.postMessage({kind:'friday-oauth',code:q.get('cod
             elif role == 'tool_result':
                 messages.append(_earlier_result(entry))
         # Trim only at user boundaries; retain latest turn and project knowledge.
-        while len(json.dumps(messages)) > 100000 and sum(m['role'] == 'user' for m in messages) > 1:
-            next_user = next(i for i in range(2, len(messages)) if messages[i]['role'] == 'user')
-            messages = messages[:1] + messages[next_user:]
+        messages = _trim_to_budget(messages)
         _recall(messages, memory_context)
         _note(messages, (body.turn_note or '') + _quote_note(messages) + _sent_note())
         prompt = next((e.get('content', '') for e in reversed(chat['messages']) if e['role'] == 'user'), 'Continue chat')

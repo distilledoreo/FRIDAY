@@ -2,7 +2,7 @@
 import os
 import json
 from pathlib import Path
-from .workspace import install
+from .workspace import install, context_managed
 
 
 # The user's thinking level (ThinkingLevel.kt) and the Qwen template's reasoning effort for it.

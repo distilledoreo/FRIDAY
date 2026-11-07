@@ -370,6 +370,12 @@ class ChatViewModel(
     private fun newPhoneUseSession() = phoneUse?.newConversation(::askPhoneApp, ::reviewPhoneAction)
 
     private var provider: ModelProvider = providers(settingsStore.load())
+    /**
+     * Whether the server says the model bounds the context window itself (ORCHID), in which
+     * case chat history is sent whole and never pre-trimmed. Defaults to false: until the
+     * server answers, FRIDAY keeps its safety trim, which is always safe.
+     */
+    private var contextManaged = false
     private var session: ConversationSession = newSession(emptyList())
     private var turnJob: Job? = null
     private var foregroundBeat: Job? = null
@@ -423,6 +429,7 @@ class ChatViewModel(
         workspace?.let { client ->
             _state.update { it.copy(imageSettings = client.imageSettings.load(client.serverIdentity)) }
             viewModelScope.launch { client.imageStatus.collect { status -> _state.update { it.copy(imageStatus = status) } } }
+            refreshContextCapability(client)
         }
         if (app != null) viewModelScope.launch {
             voiceState.collect { it ?: run { VoiceForegroundService.stop(app); VoiceBubbleService.stop(app) } }
@@ -1201,8 +1208,19 @@ class ChatViewModel(
         confirmer = confirmer,
         checkpoint = { persist() },
     ).also { session ->
+        session.contextManaged = contextManaged
         session.capturePhoneScreen = {
             app?.let { ScreenContextService.captureFreshSnapshot(it, privacy.incognito) }
+        }
+    }
+
+    /** Reads whether the server bounds the context itself, so chat history need not be pre-trimmed. */
+    private fun refreshContextCapability(client: WorkspaceClient) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val managed = runCatching { JSONObject(client.request("/health")) }
+                .getOrNull()?.optBoolean("context_managed", false) ?: false
+            contextManaged = managed
+            session.contextManaged = managed
         }
     }
 
@@ -1880,6 +1898,10 @@ class ChatViewModel(
         val client = workspace ?: error("Workspace unavailable.")
         val health = JSONObject(client.request("/workspace/health"))
         val services = runCatching { JSONObject(client.request("/health")) }.getOrNull()
+        services?.optBoolean("context_managed", false)?.let { managed ->
+            contextManaged = managed
+            session.contextManaged = managed
+        }
         val jobs = JSONArray(client.request("/workspace/jobs"))
         val tasks = (0 until jobs.length()).map { BackgroundTask.from(jobs.getJSONObject(it)) }
         val fileList = JSONArray(client.request("/workspace/files"))
