@@ -42,16 +42,34 @@ class WorkspaceTest {
     }
     @Test fun longHistoryTrimsCompleteTurnsAndPreservesToolPairing() {
         val engine = ConversationEngine()
-        val old = listOf(Message.User("Old question"), Message.ToolCall("oldcall", "search", "{}"),
-            Message.ToolResult("oldcall", "search", "x".repeat(72000), true), Message.Assistant("Old answer"))
+        val old = listOf(Message.User("Old question")) + (1..5).flatMap { n ->
+            listOf(Message.ToolCall("oldcall$n", "search", "{}"),
+                Message.ToolResult("oldcall$n", "search", "x".repeat(72000), true))
+        } + listOf(Message.Assistant("Old answer"))
         val latest = listOf(Message.User("Latest"), Message.ToolCall("newcall", "search", "{}"), Message.ToolResult("newcall", "search", "result", true))
         val all = old + latest
         val outbound = engine.outboundMessages("Be useful", all, "Current time")
-        assertFalse(outbound.any { it is Message.ToolCall && it.id == "oldcall" })
+        assertFalse(outbound.any { it is Message.ToolCall && it.id.startsWith("oldcall") })
         assertEquals(1, outbound.filterIsInstance<Message.ToolCall>().size)
         assertEquals(1, outbound.filterIsInstance<Message.ToolResult>().size)
         assertTrue((outbound[1] as Message.User).content.contains("Current time"))
-        assertEquals(7, all.size)
+        assertEquals(15, all.size)
         assertTrue((outbound.first() as Message.System).content.contains("search_history"))
+    }
+
+    /**
+     * Tool results are sent truncated to 16,000 characters, so one large result must not push the
+     * turn before it out of the budget: dropping it is what made the model forget the exchange it
+     * had just had.
+     */
+    @Test fun aLargeToolResultKeepsTheTurnBeforeIt() {
+        val engine = ConversationEngine()
+        val first = listOf(Message.User("Where is the office?"), Message.ToolCall("c1", "fetch_page", "{}"),
+            Message.ToolResult("c1", "fetch_page", "p".repeat(72000), true), Message.Assistant("It is on Main Street."))
+        val outbound = engine.outboundMessages("Be useful", first + listOf(Message.User("And the parking?")), "Current time")
+        assertTrue(outbound.any { it is Message.User && it.content.startsWith("Where is the office?") })
+        assertTrue(outbound.any { it is Message.Assistant && it.content == "It is on Main Street." })
+        assertTrue(outbound.any { it is Message.ToolCall && it.id == "c1" })
+        assertFalse((outbound.first() as Message.System).content.contains("Earlier turns were omitted"))
     }
 }
