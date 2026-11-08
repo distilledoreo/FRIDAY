@@ -12,8 +12,8 @@ android {
         applicationId = "com.localfirst.assistant"
         minSdk = 26
         targetSdk = 35
-        versionCode = 86
-        versionName = "0.30.0"
+        versionCode = 87
+        versionName = "0.30.1"
         // ONNX Runtime (the wake phrase) is the only native code; one 64-bit ARM copy keeps the APK small.
         ndk { abiFilters += "arm64-v8a" }
     }
