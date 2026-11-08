@@ -18,7 +18,25 @@ android {
         ndk { abiFilters += "arm64-v8a" }
     }
 
+    // Always sign with the debug keystore the installed app was signed with. AGP otherwise
+    // locates the .android directory through XDG_CONFIG_HOME, which yields a different key on
+    // a machine that sets it — and the in-app updater then refuses the build with
+    // "Update signer doesn't match this app" instead of installing it.
+    signingConfigs {
+        create("pinned") {
+            storeFile = file("${System.getProperty("user.home")}/.android/debug.keystore")
+            // Google's public debug-keystore defaults, not secrets: every Android debug
+            // keystore is generated with them.
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("pinned")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
